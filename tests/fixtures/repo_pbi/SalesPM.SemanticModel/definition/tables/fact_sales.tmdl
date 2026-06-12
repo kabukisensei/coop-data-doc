@@ -1,0 +1,34 @@
+table fact_sales
+	lineageTag: 55555555-5555-5555-5555-555555555555
+
+	measure 'Total Sales' = SUM(fact_sales[order_total])
+		formatString: $ #,0
+		lineageTag: 66666666-6666-6666-6666-666666666666
+
+	measure 'Sales per Customer' = DIVIDE([Total Sales], [Customer Count])
+		formatString: $ #,0.00
+		lineageTag: 77777777-7777-7777-7777-777777777777
+
+	column order_id
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: order_id
+
+	column customer_id
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: customer_id
+
+	column order_total
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: order_total
+
+	partition fact_sales = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("myserver.database.windows.net", "gold"),
+				    salespm_fact_sales = Source{[Schema="salespm",Item="fact_sales"]}[Data]
+				in
+				    salespm_fact_sales

@@ -1,0 +1,13 @@
+{
+  "sections": [
+    {
+      "name": "ReportSection1",
+      "displayName": "Overview",
+      "visualContainers": [
+        {
+          "config": "{\"name\":\"v1\",\"singleVisual\":{\"visualType\":\"columnChart\",\"projections\":{\"Y\":[{\"queryRef\":\"dim_customer.Customer Count\"}]}}}"
+        }
+      ]
+    }
+  ]
+}

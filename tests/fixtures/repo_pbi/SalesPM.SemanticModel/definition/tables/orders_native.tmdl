@@ -1,0 +1,16 @@
+table orders_native
+	lineageTag: 88888888-8888-8888-8888-888888888888
+
+	column order_id
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: order_id
+
+	partition orders_native = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("myserver.database.windows.net", "gold"),
+				    q = Value.NativeQuery(Source, "SELECT order_id FROM salespm.v_orders_star")
+				in
+				    q

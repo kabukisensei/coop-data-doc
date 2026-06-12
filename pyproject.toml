@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "coop-data-doc"
+version = "0.1.0"
+description = "Offline, deterministic data-lineage documentation for SQL + Power BI estates: Markdown for LLM agents, searchable dark-mode HTML for humans."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Aaron Jennings" }]
+keywords = ["data-lineage", "documentation", "powerbi", "sql", "tmdl", "mkdocs"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Documentation",
+    "Topic :: Database",
+]
+dependencies = [
+    "pydantic>=2.5",
+    "PyYAML>=6.0",
+    "sqlglot>=25.0",
+    "click>=8.1",
+    "questionary>=2.0",
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+coop-data-doc = "coop_data_doc.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jenningsapiaries/coop-data-doc"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coop_data_doc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

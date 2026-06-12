@@ -1,0 +1,281 @@
+import io
+import json
+import zipfile
+from pathlib import Path
+
+from coop_data_doc.config import Config, RepoConfig
+from coop_data_doc.crawler import FileEntry, FileKind, crawl
+from coop_data_doc.graph import LineageGraph, NodeType, to_json_str
+from coop_data_doc.parsers.dax import extract_refs
+from coop_data_doc.parsers.mcode import extract_source
+from coop_data_doc.parsers.pbir import link_visual_bindings, parse_legacy_reports, parse_pbir
+from coop_data_doc.parsers.pbix import parse_pbix
+from coop_data_doc.parsers.tmdl import parse_tmdl
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def pbi_inventory():
+    config = Config(
+        repos={
+            "powerbi": RepoConfig(
+                path=str(FIXTURES / "repo_pbi"),
+                include=[
+                    "**/*.tmdl",
+                    "**/*.bim",
+                    "**/report.json",
+                    "**/visual.json",
+                    "**/page.json",
+                    "**/*.pbix",
+                ],
+            )
+        }
+    )
+    inventory, _ = crawl(config)
+    return inventory
+
+
+def parse_all() -> tuple[LineageGraph, list]:
+    graph = LineageGraph()
+    inventory = pbi_inventory()
+    warnings = parse_tmdl(inventory.by_kind(FileKind.TMDL), graph)
+    warnings += parse_pbir(
+        inventory.by_kind(FileKind.PBIR_VISUAL),
+        inventory.by_kind(FileKind.PBIR_PAGE),
+        graph,
+    )
+    warnings += parse_legacy_reports(inventory.by_kind(FileKind.REPORT_JSON_LEGACY), graph)
+    warnings += link_visual_bindings(graph)
+    return graph, warnings
+
+
+def edge_keys(graph: LineageGraph) -> set[tuple[str, str, str]]:
+    return {edge.key() for edge in graph.edges}
+
+
+# ---- mcode unit tests ------------------------------------------------------
+
+
+def test_mcode_sql_database():
+    ref, sqls = extract_source(
+        'let Source = Sql.Database("srv", "gold"), '
+        'd = Source{[Schema="salespm",Item="dim_customer"]}[Data] in d'
+    )
+    assert sqls == []
+    assert ref.schema_name == "salespm"
+    assert ref.object_name == "dim_customer"
+    assert ref.raw_kind == "sql_database"
+
+
+def test_mcode_native_query():
+    ref, sqls = extract_source(
+        'let Source = Sql.Database("srv", "gold"), '
+        'q = Value.NativeQuery(Source, "SELECT a FROM salespm.v_orders_star") in q'
+    )
+    assert ref.raw_kind == "native_query"
+    assert sqls == ["SELECT a FROM salespm.v_orders_star"]
+
+
+def test_mcode_lakehouse():
+    ref, _ = extract_source(
+        'let Source = Lakehouse.Contents(), '
+        'w = Source{[Name="gold_lakehouse"]}[Data], '
+        't = w{[Name="fact_sales"]}[Data] in t'
+    )
+    assert ref.raw_kind == "lakehouse"
+    assert ref.object_name == "fact_sales"
+    assert ref.schema_name == "gold_lakehouse"
+
+
+def test_mcode_unresolved():
+    ref, sqls = extract_source('let Source = OData.Feed("https://x.example") in Source')
+    assert ref is None and sqls == []
+
+
+# ---- dax unit tests --------------------------------------------------------
+
+
+def test_dax_refs():
+    measures, tables = extract_refs("DIVIDE([Total Sales], fact_sales[order_total])")
+    assert measures == {"Total Sales"}
+    assert tables == {"fact_sales"}
+
+
+def test_dax_quoted_table_and_strings_ignored():
+    measures, tables = extract_refs(
+        "IF('My Table'[flag] = \"[Not A Ref]\", [Real Measure], 0) // [comment ref]"
+    )
+    assert measures == {"Real Measure"}
+    assert tables == {"my table"}
+
+
+# ---- TMDL model ------------------------------------------------------------
+
+
+def test_tmdl_model_structure():
+    graph, _ = parse_all()
+    assert "semantic_model:salespm" in graph.nodes
+    for table in ("dim_customer", "fact_sales", "orders_native", "ext_unresolved"):
+        node_id = f"pbi_table:salespm.{table}"
+        assert node_id in graph.nodes
+        assert (node_id, "semantic_model:salespm", "feeds") in edge_keys(graph)
+    columns = {c.name: c.data_type for c in graph.nodes["pbi_table:salespm.dim_customer"].columns}
+    assert columns == {"customer_id": "int64", "customer_name": "string"}
+    relationships = graph.nodes["semantic_model:salespm"].metadata["relationships"]
+    assert relationships == [
+        {"from": "fact_sales.customer_id", "to": "dim_customer.customer_id"}
+    ]
+
+
+def test_tmdl_partition_sources():
+    graph, warnings = parse_all()
+    dim = graph.nodes["pbi_table:salespm.dim_customer"]
+    assert dim.metadata["partition_source"] == {
+        "schema": "salespm",
+        "object": "dim_customer",
+        "raw_kind": "sql_database",
+    }
+    native = graph.nodes["pbi_table:salespm.orders_native"]
+    assert native.metadata["native_query_tables"] == ["salespm.v_orders_star"]
+    assert native.metadata["partition_source"]["raw_kind"] == "native_query"
+    unresolved = graph.nodes["pbi_table:salespm.ext_unresolved"]
+    assert unresolved.metadata.get("partition_source_unresolved") is True
+    assert any(w.category == "unresolved_partition_source" for w in warnings)
+
+
+def test_measure_dependencies():
+    graph, _ = parse_all()
+    keys = edge_keys(graph)
+    spc = "measure:salespm.sales per customer"
+    assert (spc, "measure:salespm.total sales", "references") in keys
+    assert (spc, "measure:salespm.customer count", "references") in keys
+    assert (
+        "measure:salespm.total sales",
+        "pbi_table:salespm.fact_sales",
+        "references",
+    ) in keys
+    assert graph.nodes[spc].metadata["dax_refs_heuristic"] is True
+
+
+# ---- reports ---------------------------------------------------------------
+
+
+def test_pbir_report_structure():
+    graph, _ = parse_all()
+    keys = edge_keys(graph)
+    assert "report:salespm" in graph.nodes
+    page = "report_page:salespm.customer overview"
+    visual = "visual:salespm.abc123"
+    assert (page, "report:salespm", "feeds") in keys
+    assert (visual, page, "feeds") in keys
+    assert graph.nodes[visual].metadata["visual_type"] == "card"
+    assert (visual, "pbi_table:salespm.dim_customer", "visualizes") in keys
+    assert (visual, "measure:salespm.customer count", "visualizes") in keys
+    assert "pending_model_resolution" not in graph.nodes[visual].metadata
+
+
+def test_legacy_report_structure():
+    graph, _ = parse_all()
+    keys = edge_keys(graph)
+    assert "report:legacything" in graph.nodes
+    visual = "visual:legacything.v1"
+    assert (visual, "report_page:legacything.overview", "feeds") in keys
+    assert (visual, "pbi_table:salespm.dim_customer", "visualizes") in keys
+    assert (visual, "measure:salespm.customer count", "visualizes") in keys
+
+
+# ---- pbix ------------------------------------------------------------------
+
+
+def make_pbix(path: Path, with_layout: bool = True, with_mashup: bool = True) -> None:
+    layout = {
+        "sections": [
+            {
+                "name": "s1",
+                "displayName": "Main",
+                "visualContainers": [
+                    {
+                        "config": json.dumps(
+                            {
+                                "name": "vx",
+                                "singleVisual": {
+                                    "visualType": "table",
+                                    "projections": {
+                                        "Values": [{"queryRef": "orders.order_id"}]
+                                    },
+                                },
+                            }
+                        )
+                    }
+                ],
+            }
+        ]
+    }
+    section_m = (
+        "section Section1;\n"
+        'shared orders = let Source = Sql.Database("srv", "gold"), '
+        'd = Source{[Schema="dbo",Item="orders"]}[Data] in d;\n'
+    )
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("Formulas/Section1.m", section_m)
+    with zipfile.ZipFile(path, "w") as zf:
+        if with_layout:
+            zf.writestr("Report/Layout", json.dumps(layout).encode("utf-16-le"))
+        if with_mashup:
+            zf.writestr("DataMashup", b"\x00\x00\x00\x00" + inner.getvalue())
+        zf.writestr("DataModel", b"\x01\x02\x03")
+
+
+def pbix_entry(path: Path) -> FileEntry:
+    return FileEntry(
+        path=path.name,
+        abs_path=str(path),
+        repo_key="powerbi",
+        kind=FileKind.PBIX,
+        size=path.stat().st_size,
+    )
+
+
+def test_pbix_best_effort(tmp_path: Path):
+    pbix_path = tmp_path / "Minimal.pbix"
+    make_pbix(pbix_path)
+    graph = LineageGraph()
+    warnings = parse_pbix([pbix_entry(pbix_path)], graph)
+    assert "semantic_model:minimal" in graph.nodes
+    table = graph.nodes["pbi_table:minimal.orders"]
+    assert table.metadata["partition_source"] == {
+        "schema": "dbo",
+        "object": "orders",
+        "raw_kind": "sql_database",
+    }
+    assert "report:minimal" in graph.nodes
+    # mashup recovered the model, so no opaque-model warning
+    assert not any(w.category == "pbix_opaque_model" for w in warnings)
+
+
+def test_pbix_opaque_model_warns(tmp_path: Path):
+    pbix_path = tmp_path / "Opaque.pbix"
+    make_pbix(pbix_path, with_mashup=False)
+    graph = LineageGraph()
+    warnings = parse_pbix([pbix_entry(pbix_path)], graph)
+    assert graph.nodes["semantic_model:opaque"].metadata["pbix_model_opaque"] is True
+    assert any(w.category == "pbix_opaque_model" for w in warnings)
+
+
+def test_pbix_garbage_never_raises(tmp_path: Path):
+    garbage = tmp_path / "Broken.pbix"
+    garbage.write_bytes(b"this is not a zip at all")
+    graph = LineageGraph()
+    warnings = parse_pbix([pbix_entry(garbage)], graph)
+    assert any(w.category == "pbix_unreadable" for w in warnings)
+    assert graph.nodes == {}
+
+
+# ---- determinism -----------------------------------------------------------
+
+
+def test_determinism():
+    first, _ = parse_all()
+    second, _ = parse_all()
+    assert to_json_str(first) == to_json_str(second)

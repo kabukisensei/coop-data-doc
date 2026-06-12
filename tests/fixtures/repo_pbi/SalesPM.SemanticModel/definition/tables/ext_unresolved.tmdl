@@ -1,0 +1,15 @@
+table ext_unresolved
+	lineageTag: 99999999-9999-9999-9999-999999999999
+
+	column id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: id
+
+	partition ext_unresolved = m
+		mode: import
+		source =
+				let
+				    Source = OData.Feed("https://example.com/odata/things")
+				in
+				    Source
