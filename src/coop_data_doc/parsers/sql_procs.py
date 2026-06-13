@@ -196,6 +196,10 @@ def parse_sql_procs(
                 stripped = scrub(chunk, strip_strings=True)
 
                 if DYNAMIC_SQL_RE.search(stripped):
+                    # persistent marker so doc consumers (agents) can see
+                    # this proc's lineage is knowingly incomplete — the
+                    # ParseWarning alone only reaches the console
+                    proc.metadata["dynamic_sql_untraced"] = True
                     warnings.append(
                         ParseWarning(
                             file=entry.path,

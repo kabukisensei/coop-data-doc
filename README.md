@@ -1,152 +1,434 @@
 # coop-data-doc
 
-Offline, deterministic data-lineage documentation for Microsoft BI estates.
-
-Point it at two git repos — your SQL repo (stored procedures, tables, views) and your Power BI
-repo (PBIP/TMDL semantic models, PBIR/legacy reports) — and it maps the full chain:
+**Automatic documentation for your data estate.** Point this tool at two git repos — your
+SQL repo (stored procedures, tables, views) and your Power BI repo (semantic models and
+reports) — and it maps how data flows through everything:
 
 ```
-silver table → stored proc → gold table → view → semantic model table → measure → report visual
+silver table → stored proc → gold table → view → semantic model → measure → report visual
 ```
 
-then renders two doc sets from one lineage graph:
+…then writes two kinds of documentation from that map:
 
-- **Markdown with strict YAML front-matter** — designed for LLM agents to reason over
-  (`manifest.json` is the machine entrypoint; every page declares `upstream_inputs` /
-  `downstream_dependents` and its column contract)
-- **A searchable, dark-mode HTML portal** — MkDocs Material, works completely offline over
-  `file://` (search, Mermaid lineage flowcharts, fonts: all local, zero CDN)
+- 📄 **Markdown files** with machine-readable headers — built for AI agents and scripts
+  (see [For AI agents](#-for-ai-agents) below)
+- 🌐 **A searchable website** with dark mode and clickable lineage diagrams — built for
+  humans. It works straight off your hard drive: no server, no internet, no login.
 
-No database connections, no servers, no LLM calls at runtime — pure AST/regex parsing
-(`sqlglot` for T-SQL / Fabric warehouse SQL).
+Everything runs on your machine by reading files. It never connects to a database, never
+calls an AI service, and produces byte-identical output for identical inputs — so the
+generated docs can live in git and be checked in CI.
 
-## Installation
+---
 
-Not yet published to PyPI. Until then, install from a git checkout (or a git URL):
+## Table of contents
+
+1. [Before you start](#before-you-start)
+2. [Install](#install)
+3. [First run — about 5 minutes](#first-run--about-5-minutes)
+4. [Day-to-day use](#day-to-day-use)
+5. [The config file, explained](#the-config-file-explained)
+6. [When it asks you questions](#when-it-asks-you-questions)
+7. [Adding your own notes to the docs](#adding-your-own-notes-to-the-docs)
+8. [Command reference](#command-reference)
+9. [Keeping the tool updated](#keeping-the-tool-updated)
+10. [Using it in CI](#using-it-in-ci)
+11. [🤖 For AI agents](#-for-ai-agents)
+12. [Troubleshooting](#troubleshooting)
+13. [Notes on .pbix files](#notes-on-pbix-files)
+
+---
+
+## Before you start
+
+You'll need three things:
+
+1. **A terminal.** That's the text window where you type commands.
+   - **macOS:** press `Cmd+Space`, type `Terminal`, press Enter.
+   - **Windows:** press the Windows key, type `PowerShell`, press Enter.
+2. **Python 3.10 or newer.** Check by typing `python3 --version` (macOS) or
+   `python --version` (Windows) and pressing Enter. If that prints something like
+   `Python 3.12.4`, you're set. Otherwise install Python from
+   [python.org](https://www.python.org/downloads/) first.
+3. **The two repos on your machine** — your SQL repo and your Power BI repo.
+   ("Repo" = a folder managed by git; "cloned" = downloaded to your machine with git or
+   GitHub Desktop.) You'll need their folder paths — to get a path, drag the folder onto
+   the terminal window (macOS), or right-click it in File Explorer and choose
+   **Copy as path** (Windows).
+
+> 💡 **Terminal survival kit:** you type a command, press Enter, and read what comes
+> back. `cd some/folder` moves you into a folder. Paste with `Cmd+V` (macOS) or
+> right-click (Windows). In menus: ↑↓ to move, Enter to select, `Ctrl+C` to safely
+> cancel.
+>
+> ⚠️ **Windows users:** wherever this README shows `python3`, type `python` instead —
+> that applies to every command below.
+
+## Install
+
+The recommended installer is **pipx**, which keeps the tool isolated so it can't
+conflict with anything else on your machine. One-time pipx setup:
 
 ```bash
-# from a clone
-pipx install /path/to/coop-data-doc          # or: uv tool install /path/to/coop-data-doc
-# or straight from your git host
-pipx install git+https://github.com/<org>/coop-data-doc.git
-# or for development
-pip install -e ".[dev]"
+python3 -m pip install --user pipx      # Windows: python -m pip install --user pipx
+python3 -m pipx ensurepath              # Windows: python -m pipx ensurepath
 ```
 
-Once published (`git tag v0.1.0 && git push --tags` triggers the included
-trusted-publishing workflow), it becomes:
+Close and reopen your terminal, then install the tool. It isn't published to PyPI yet,
+so install it from your git host or from a folder you already have:
 
 ```bash
-pipx install coop-data-doc        # or: uv tool install coop-data-doc
+# from your git host — needs git installed (check with: git --version)
+pipx install git+https://github.com/jenningsapiaries/coop-data-doc.git
+
+# or from a local folder (drag the folder into the terminal to get its path)
+pipx install /path/to/coop-data-doc
 ```
 
-## Quickstart
+Check it worked:
 
 ```bash
-cd your-docs-folder
-coop-data-doc                     # bare command = interactive menu: it walks you through
-                                  # setup the first time, then offers "update the docs"
-open data-docs-site/index.html
+coop-data-doc --version
 ```
 
-Or as direct commands: `coop-data-doc setup` then `coop-data-doc update`. Prefer editing
-a file by hand? `coop-data-doc init` writes a commented starter config instead. Re-run
-`coop-data-doc setup` anytime — it prefills your current values so you can change just
-one thing.
+You should see `coop-data-doc, version 0.1.0`. If the terminal says
+*"command not found"* (macOS) or *"the term 'coop-data-doc' is not recognized…"*
+(Windows), see [Troubleshooting](#troubleshooting).
 
-## How it works
+<details>
+<summary>Other ways to install (click to expand)</summary>
+
+```bash
+uv tool install /path/to/coop-data-doc     # if you use uv
+pip install /path/to/coop-data-doc         # plain pip, into the current environment
+pip install -e "/path/to/coop-data-doc[dev]"   # contributors: editable + test deps
+```
+</details>
+
+## First run — about 5 minutes
+
+**Step 1 — make a home for the docs.** Create a folder for the generated documentation
+**next to your two repos** (that makes the wizard's suggested paths like `../sql-repo`
+correct). For example, if your repos live in `~/repos` (macOS) or `C:\repos` (Windows):
+
+```bash
+cd ~/repos          # Windows: cd C:\repos
+mkdir my-data-docs
+cd my-data-docs
+```
+
+**Step 2 — run the tool with no arguments:**
+
+```bash
+coop-data-doc
+```
+
+Because there's no configuration here yet, it offers to walk you through setup. Choose
+**"Set up interactively"** (↑↓ + Enter) and answer the questions:
+
+- **Project name** — the title shown on the docs website.
+- **SQL repo path** and **Power BI repo path** — type or paste the folder paths; the
+  wizard checks they exist and lets you re-type a typo.
+- **Output folders** — press Enter to accept the defaults.
+- **"Add a view-schema → semantic-model mapping?"** — this is a hint like *"the
+  `salespm` schema feeds the Sales and Project Management model"*. If you know one,
+  add it; **if you're not sure, answer No (type `n`)** — you can always add hints
+  later, and the tool will simply ask you about specific tables during the build.
+
+**Step 3 — build the docs.** Run the bare command again and choose
+**"Update the docs"** — or run `coop-data-doc update`. (If the tool suggests
+`coop-data-doc build`: `build` and `update` are the same command.) You'll see a
+summary like:
 
 ```
-SQL repo ─┐                                          ┌─► data-docs/*.md   (for agents)
-          ├─► crawl ─► parse (sqlglot AST + TMDL/M/  ├─► manifest.json    (machine entrypoint)
-PBI repo ─┘           DAX/PBIR parsers) ─► link ─────┴─► data-docs-site/  (for humans)
-                      (cache → exact → config rule → fuzzy → ask once)
+Warnings:
+  dynamic_sql                    1
+  ...
+26 objects, 30 lineage edges (2 cross-repo links; 1 unresolved)
+Markdown docs: /Users/you/repos/my-data-docs/data-docs
+HTML portal:   file:///Users/you/repos/my-data-docs/data-docs-site/index.html
 ```
 
-Full design documentation: [ARCHITECTURE.md](ARCHITECTURE.md).
+A **Warnings** block is normal and informational — the build succeeded if you see the
+object count and the two output paths. (Each warning category is explained in
+[Troubleshooting](#troubleshooting).) The first run may also ask a few **mapping
+questions** — see [When it asks you questions](#when-it-asks-you-questions).
 
-## The two-repo setup
+**Step 4 — open the website.** Copy the `file://…` line into your browser's address
+bar — or:
+
+```bash
+open data-docs-site/index.html        # macOS
+start data-docs-site\index.html       # Windows
+```
+
+You'll get a searchable site with a page per table, view, stored procedure, semantic
+model, measure, and report — each with its columns, where its data comes from, what
+depends on it, and a clickable flowchart.
+
+**Step 5 (recommended) — commit everything.** One command at a time:
+
+```bash
+git init
+git add -A
+git commit -m "Initial data docs"
+```
+
+> If this is your first-ever `git commit` on this machine, git may ask you to
+> introduce yourself first:
+> `git config --global user.name "Your Name"` and
+> `git config --global user.email "you@example.com"` — then re-run the commit.
+
+## Day-to-day use
+
+When SQL or Power BI changes land in your repos, refresh the docs:
+
+```bash
+cd my-data-docs
+coop-data-doc            # choose "Update the docs"  — or —
+coop-data-doc update     # the same thing, no menu
+```
+
+Pages for new objects appear, changed objects update, and pages for deleted objects
+are removed. Notes you've written in [Business Intent](#adding-your-own-notes-to-the-docs)
+blocks are preserved. Re-running is always safe.
+
+## The config file, explained
+
+Setup writes a single file, `coop-data-doc.yml`, which you can edit by hand anytime
+(or re-run `coop-data-doc setup` — it pre-fills your current answers so you can change
+just one thing):
 
 ```yaml
-# coop-data-doc.yml
+project_name: Coop BI Estate        # the title shown on the docs website
+
 repos:
-  sql:
-    path: ../sql-repo             # procs, tables, views
-    include: ["**/*.sql"]
-    exclude: ["**/archive/**"]
-  powerbi:
-    path: ../pbi-repo             # PBIP semantic models + PBIR reports
+  sql:                              # your SQL repo
+    path: ../sql-repo               # relative paths start from THIS file's folder
+    include: ["**/*.sql"]           # which files to read
+    exclude: ["**/archive/**"]      # which files to skip (wins over include)
+  powerbi:                          # your Power BI repo (PBIP/TMDL + PBIR)
+    path: ../pbi-repo
     include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
-schema_mappings:                  # view schema -> the semantic model it feeds
+    exclude: []
+
+schema_mappings:                    # hint: which view schema feeds which model
   - schema: salespm
     model: "Sales and Project Management"
+
+output:
+  dir: ./data-docs                  # the markdown (agents read this)
+  site_dir: ./data-docs-site        # the website (humans read this)
+
+sql_dialect: tsql                   # covers SQL Server, Azure SQL, Fabric warehouse
 ```
 
-View schemas and semantic-model names are often *similar but not identical* —
-`schema_mappings` handles the bulk, and anything still ambiguous triggers a one-time
-interactive prompt. Answers are saved to **`.lineage-cache.json` — commit it!** —
-so every later run (including CI) is fully automated.
+`schema_mappings` matters because view schemas and semantic-model names are often
+*similar but not identical* — e.g. the `salespm` schema feeds the "Sales and Project
+Management" model. Each hint you add means fewer questions on the next run.
 
-## Commands
+## When it asks you questions
 
-Running bare **`coop-data-doc`** in a terminal starts an interactive menu — it detects
-whether a config exists and offers setup or update/scan/check accordingly. Everything is
-also available as a direct command:
+When a Power BI table's source can't be matched to a SQL object automatically, the tool
+shows a pick-list: the most likely candidates with similarity scores, plus *"Mark as
+external source"* (for data that doesn't live in these repos) and *"Skip for now"*.
+
+Every answer — including skips — is saved instantly to **`.lineage-cache.json`**, which
+lives **next to `coop-data-doc.yml`** (it's a hidden file; `git add -A` picks it up even
+if Finder/Explorer doesn't show it). **Commit that file.** It's what makes every later
+run — yours, a coworker's, CI's — fully automatic.
+
+Two things worth knowing:
+
+- If you cancel mid-way (`Ctrl+C`), the answers you already gave are kept; run again to
+  continue from where you stopped.
+- *"Skip for now"* is remembered too, so you won't be re-asked on the next run. To be
+  asked again (or change any answer), open `.lineage-cache.json` in a text editor and
+  delete that entry, then re-run.
+
+## Adding your own notes to the docs
+
+Every generated page has a **Business Intent** section between two marker comments:
+
+```markdown
+## Business Intent
+
+<!-- intent:begin -->
+Write anything here: what this table is for, who owns it, gotchas.
+<!-- intent:end -->
+```
+
+Text between the markers survives every rebuild verbatim. Everything *outside* the
+markers is regenerated, so put your notes inside them.
+
+## Command reference
 
 | Command | What it does |
 | --- | --- |
 | `coop-data-doc` | interactive menu (in scripts/CI it prints help instead) |
-| `coop-data-doc setup [PATH]` | interactive wizard — create or update the config (prefills current values) |
-| `coop-data-doc init [PATH] [--force]` | scaffold a commented config to edit by hand |
+| `coop-data-doc setup [PATH]` | guided wizard — create or update the config (prefills current values) |
+| `coop-data-doc init [PATH] [--force]` | write a commented starter config to edit by hand |
 | `coop-data-doc update` | re-scan the repos and refresh all documentation |
-| `coop-data-doc build` | same as `update` (`--skip-html`, `--serve` for live preview) |
-| `coop-data-doc scan` | crawl + parse + link only; writes `graph.json` and a warning summary |
-| `coop-data-doc check [--lenient]` | CI gate: fails on stale docs, unresolved references, or risky parses (`--lenient` tolerates the latter) |
-| `coop-data-doc upgrade [--check] [--yes]` | update the **tool itself** + non-breaking dependency updates |
+| `coop-data-doc build` | identical to `update` — two names for the same command |
+| `coop-data-doc scan` | crawl + parse + link only; writes `graph.json`, no rendering |
+| `coop-data-doc check [--lenient]` | CI gate — fails on stale docs, unresolved references, or risky parses (`--lenient` tolerates the latter) |
+| `coop-data-doc upgrade [--check] [--yes]` | update the **tool itself** + dependency updates |
 | `coop-data-doc help [command]` | show help (same as `--help`) |
 
-Options: `scan`/`build`/`update` accept `--non-interactive` (never prompt; CI mode) and
-`--strict` (exit 2 on unresolved refs or risky parses). Every pipeline command accepts
-`--config PATH` (default `./coop-data-doc.yml`). Global: `--version`, `-v` (debug +
-tracebacks), `-q` (suppress warning summaries) — global flags go *before* the
-subcommand, e.g. `coop-data-doc -q build`.
+Options for `build`/`update`: `--skip-html` (markdown only), `--serve` (live-preview
+the site). `scan`/`build`/`update` all accept `--non-interactive` (never prompt; for
+CI) and `--strict` (exit code 2 on unresolved references or risky parses). Every
+pipeline command accepts `--config PATH` (default: `./coop-data-doc.yml`). Global flags
+go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet) —
+e.g. `coop-data-doc -q update`.
 
-### Keeping the tool updated
+## Keeping the tool updated
 
-`coop-data-doc upgrade` is the one command that uses the network. It detects how the
-tool was installed (pipx / uv tool / pip / a git checkout), updates it — for a git
-checkout it pulls new commits and reinstalls — and applies dependency updates **within
-the same major version only**. Major-version dependency jumps are reported but never
-auto-applied, so nothing breaking lands without a human reviewing it.
-`upgrade --check` reports without changing anything; `upgrade --yes` applies without
-prompting (for scheduled jobs).
+```bash
+coop-data-doc upgrade --check    # see what's available, change nothing
+coop-data-doc upgrade            # apply (asks for confirmation first)
+```
 
-## Editing the docs
+`upgrade` detects how the tool was installed (pipx / uv / pip / a git checkout) and
+updates it — a git checkout gets new commits pulled and reinstalled. For pip and
+git-checkout installs it also updates the tool's direct dependencies, **but only within
+the same major version**; major-version jumps are listed for a human to review and never
+applied automatically. (pipx and uv manage their own isolated environments, so for those
+installs `upgrade` delegates dependency handling to them.) This is the single command
+that uses the internet; documentation builds are always fully offline.
 
-Each generated page has a **Business Intent** section between
-`<!-- intent:begin -->` / `<!-- intent:end -->` markers. Write whatever you want there —
-it survives regeneration verbatim. Everything else is overwritten on each build.
+## Using it in CI
 
-## .pbix files
+Two useful gates for a pipeline (e.g. GitHub Actions / Azure DevOps):
 
-`.pbix` support is best-effort: the report layout and Power Query (M) source usually
-extract; the compiled model does not. For full lineage, open the file in Power BI Desktop
-and **save as a .pbip project** (which is the git-friendly format these repos should hold
-anyway). The tool tells you when it hits an opaque model.
+```bash
+coop-data-doc check              # fails if committed docs are stale,
+                                 # references are unresolved, or risky
+                                 # parses exist (use --lenient to tolerate
+                                 # known dynamic-SQL/cursor procs)
+
+coop-data-doc build --non-interactive --strict   # rebuild; exit 2 on problems
+```
+
+Exit codes: `0` success · `1` stale docs / friendly error · `2` unresolved references,
+risky parses, or an invalid command line (typo'd flag/command) · `130` cancelled with
+Ctrl+C.
+
+## 🤖 For AI agents
+
+The Markdown output (`output.dir`, default `data-docs/`) is designed to be read by LLM
+agents without custom tooling. If you're an agent (or wiring one up), here's the
+contract:
+
+**Entry points**
+
+- `data-docs/manifest.json` — the entire lineage graph in one JSON file. Best for
+  programmatic traversal and impact analysis. (`data-docs/graph.json` is a byte-identical
+  copy written by every pipeline run; read `manifest.json`.)
+- `data-docs/<type>/<slug>.md` — one page per object. Best for reading context about a
+  specific object. `data-docs/index.md` lists object counts and unresolved items.
+
+**Identifiers.** Node ids are stable, lowercase strings: `"<type>:<schema>.<name>"` —
+e.g. `view:salespm.dim_customer`. Caveats: the `<schema>.` part is **omitted** for
+objects that have no schema (`report:salespm`, `semantic_model:salespm`), and names may
+contain spaces (`measure:salespm.total sales`). Prefer reading the explicit
+`name`/`schema` fields over parsing ids.
+
+**Page paths.** A node's page lives at `<type>/<slug>.md`, where slug = **everything
+after the first `:` in the id**, with `.`, spaces, `/`, and `\` each replaced by `-`.
+Worked example: `view:salespm.dim_customer` → `view/salespm-dim_customer.md`.
+
+**Page front-matter** — strict YAML, fixed key order, all strings double-quoted,
+non-empty lists in block style (empty lists render as `[]`):
+
+```yaml
+---
+id: "view:salespm.dim_customer"
+type: "view"                              # silver_table | gold_table | view | stored_proc |
+                                          # semantic_model | pbi_table | measure | report |
+                                          # report_page | visual
+name: "dim_customer"
+schema: "salespm"                         # SQL schema; for pbi_table/measure nodes it's the
+                                          # (lowercased) model name; for report_page/visual
+                                          # it's the report name; "" for report/semantic_model
+source_file: "views/salespm/dim_customer.sql"   # repo-relative; cite this as evidence
+upstream_inputs:                          # direct (depth-1) data sources, flow-normalized
+  - "gold_table:dbo.fact_sales"
+downstream_dependents:                    # direct (depth-1) consumers
+  - "pbi_table:salespm.dim_customer"
+tags:
+  - "salespm"
+---
+```
+
+**Manifest shape.** `manifest.json` has `nodes` (object keyed by id) and `edges`
+(list). Node fields use the internal names `node_type` and `schema_name` (the
+front-matter keys `type`/`schema` are renderer aliases for them), plus `name`,
+`source_file`, `columns`, and `metadata`. Edge fields: `source_id`, `target_id`,
+`edge_type`, `evidence` — edges carry **no metadata**; trust markers live on nodes.
+
+**Traversal rules**
+
+- *"What breaks if X changes?"* → follow `downstream_dependents` page to page.
+  *"Where does this number come from?"* → follow `upstream_inputs`.
+- In `manifest.json`, edges are stored in authoring direction; convert to data-flow
+  direction with this rule: for `edge_type` ∈ {`reads`, `references`, `visualizes`}
+  data flows **target → source**; for {`writes`, `feeds`, `defines`} data flows
+  **source → target**. (Front-matter lists are already flow-normalized — prefer them
+  when reading pages.)
+- Column contracts (name, type, nullability, constraints) are in each page's
+  **Structural Contract** table; measure DAX is on measure pages under **DAX**.
+
+**Trust markers** — these live in `nodes[<id>].metadata` in `manifest.json` (check the
+**endpoint nodes** of an edge; pages don't carry them, and an empty `upstream_inputs`
+on a page does *not* mean the object was verified to have no sources):
+
+| marker (on the node) | meaning |
+| --- | --- |
+| `parse_quality: "regex_fallback"` | lineage came from pattern-matching, not a full parse — verify before high-stakes use |
+| `dynamic_sql_untraced: true` | this proc builds SQL in strings; some of its real reads/writes are **knowingly missing** |
+| `unresolved: true` / `partition_source_unresolved: true` | a human hasn't mapped this source yet — lineage incomplete |
+| `skipped: true` | a human chose "skip for now" — same caution as unresolved |
+| `external_source: true` | deliberately marked as living outside these repos — upstream ends here by design |
+| `columns_unresolved: true` | column list couldn't be derived (e.g. `SELECT *`) |
+| `pbix_model_opaque: true` | a .pbix model couldn't be extracted; lineage behind it is missing |
+| `dax_refs_heuristic: true` | present on **every** measure — all DAX dependency extraction is heuristic. The discriminating signal is `unmatched_dax_refs` (bracket references that matched nothing) |
+
+**Editing**: agents may write inside `<!-- intent:begin -->…<!-- intent:end -->` blocks
+(those survive rebuilds). Never edit generated content outside the markers — it's
+overwritten on the next `update`. To regenerate after source changes, run
+`coop-data-doc update --non-interactive` and check the exit code.
+
+> Working on this tool's own source code instead? Read `CLAUDE.md` and
+> `ARCHITECTURE.md` in the repo root.
 
 ## Troubleshooting
 
-| Symptom | Meaning / fix |
+| Symptom | What it means / what to do |
 | --- | --- |
-| `dynamic_sql` warning | a proc builds SQL in strings; lineage is never guessed — document it manually in Business Intent |
-| `regex_fallback` warning | sqlglot couldn't fully parse a statement; edges came from pattern matching — worth eyeballing |
-| `unresolved_partition_source` | a partition's M code wasn't recognized; map it interactively or mark external |
-| `check` exits 1 | committed docs are stale — rerun `coop-data-doc build` |
-| `check`/`--strict` exits 2 | unresolved references or risky parses present |
+| `command not found: coop-data-doc` (macOS) or `the term 'coop-data-doc' is not recognized…` (Windows) | The install location isn't on your PATH. Run `python3 -m pipx ensurepath` (Windows: `python -m pipx ensurepath`), then close and reopen the terminal. |
+| `externally-managed-environment` during install (macOS) | Your Python is managed by Homebrew. Run `brew install pipx`, then `pipx ensurepath`, and retry. |
+| `Config file not found` | You're in the wrong folder. `cd` to the folder containing `coop-data-doc.yml`, or pass `--config path/to/coop-data-doc.yml`. |
+| `Repo 'sql' path does not exist` | The path in `coop-data-doc.yml` is wrong. Re-run `coop-data-doc setup` and fix it. |
+| `dynamic_sql` warning | A stored proc builds SQL inside strings; lineage can't be traced safely so the tool refuses to guess. Document that proc by hand in its Business Intent block. |
+| `regex_fallback` warning | A statement was too gnarly for full parsing; its lineage came from pattern-matching. Usually right — worth a quick eyeball. |
+| `unresolved_partition_source` warning | A Power BI table loads from something unrecognized. Run interactively once and map it, or mark it external. |
+| `fuzzy_auto` warning | Two names were close enough to auto-match — listed so you can spot a wrong guess. |
+| `check` exits 1 | Committed docs are out of date — run `coop-data-doc update` and commit. |
+| `check` exits 2 | Unresolved references or risky parses. Resolve interactively, or use `check --lenient` if the risky parses are known and accepted. |
+| Diagrams or search don't work in the browser | Make sure you opened `data-docs-site/index.html` (the built site), not a file in `data-docs/`. |
+| Want to change a saved mapping answer | Edit `.lineage-cache.json` (next to your config): delete the entry and re-run. |
+
+## Notes on .pbix files
+
+`.pbix` support is best-effort: report layout and Power Query (M) source usually
+extract; the compiled data model does not. For full lineage, open the file in Power BI
+Desktop and **save as a .pbip project** — the git-friendly format these repos should
+hold anyway. The tool tells you when it hits an opaque model.
 
 ## Third-party assets
 
-The wheel vendors `mermaid.min.js` 11.15.0 and `iframe-worker` 1.0.4 (both MIT) so
+The package vendors `mermaid.min.js` 11.15.0 and `iframe-worker` 1.0.4 (both MIT) so
 generated sites render diagrams and search over `file://` with no network. See
 `src/coop_data_doc/templates/assets/README.md` for provenance.
 
@@ -157,4 +439,9 @@ pip install -e ".[dev]"
 pytest
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the module map and design rules.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the module map and design rules, and
+[ARCHITECTURE.md](ARCHITECTURE.md) for how it all works.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

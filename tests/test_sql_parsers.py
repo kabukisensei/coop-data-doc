@@ -143,6 +143,9 @@ def test_dynamic_sql_warned_not_guessed():
     assert any(w.category == "dynamic_sql" for w in warnings)
     # the table named inside the string literal must NOT appear
     assert not any("refresh_log" in node_id for node_id in graph.nodes)
+    # and the gap must be visible to doc consumers, not just the console
+    proc = graph.nodes["stored_proc:dbo.usp_dynamic_refresh"]
+    assert proc.metadata["dynamic_sql_untraced"] is True
 
 
 def test_classify_silver():
