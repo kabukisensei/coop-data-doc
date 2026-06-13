@@ -295,6 +295,11 @@ coop-data-doc upgrade --check    # see what's available, change nothing
 coop-data-doc upgrade            # apply (asks for confirmation first)
 ```
 
+After upgrading, `coop-data-doc --version` should report the new version (e.g. `0.2.0`).
+If it still shows the old number even though you expected changes, force a clean re-pull:
+`pipx reinstall coop-data-doc` (or `pipx uninstall coop-data-doc && pipx install
+git+https://github.com/kabukisensei/coop-data-doc.git`).
+
 `upgrade` detects how the tool was installed (pipx / uv / pip / a git checkout) and
 updates it — a git checkout gets new commits pulled and reinstalled. For pip and
 git-checkout installs it also updates the tool's direct dependencies, **but only within
