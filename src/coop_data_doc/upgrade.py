@@ -47,6 +47,7 @@ class UpgradePlan:
     tool_installed: str
     tool_note: str
     dependencies: list[DependencyStatus] = field(default_factory=list)
+    pip_spec: str | None = None  # for "pip": the URL/VCS spec to reinstall from
 
     @property
     def safe_updates(self) -> list[DependencyStatus]:
@@ -97,6 +98,34 @@ def direct_dependencies() -> list[str]:
         if match:
             names.add(match.group(0))
     return sorted(names, key=str.lower)
+
+
+def pip_install_origin() -> str | None:
+    """The spec to reinstall from when the install came from a URL/VCS.
+
+    pip records the original source in PEP 610 ``direct_url.json``. A bare
+    ``pip install -U coop-data-doc`` would hit PyPI (where the package isn't
+    published yet) and silently no-op, so for a git/url install we must
+    reinstall from the recorded URL instead. Returns e.g.
+    ``git+https://github.com/.../coop-data-doc.git``, or None for a normal
+    PyPI install (or when the metadata is unavailable).
+    """
+    try:
+        raw = metadata.distribution(PACKAGE_NAME).read_text("direct_url.json")
+    except (metadata.PackageNotFoundError, FileNotFoundError, OSError):
+        return None
+    if not raw:
+        return None
+    try:
+        info = json.loads(raw)
+    except ValueError:
+        return None
+    url = info.get("url")
+    if not url:
+        return None
+    if "vcs_info" in info:
+        return f"{info['vcs_info'].get('vcs', 'git')}+{url}"
+    return url  # local directory or a direct archive URL
 
 
 def detect_install_method() -> tuple[str, Path | None]:
@@ -182,11 +211,15 @@ def build_plan(
     fetch=fetch_latest_version,
     runner=subprocess.run,
     installed_version_of=metadata.version,
+    origin=pip_install_origin,
 ) -> UpgradePlan:
     method, checkout = detect_install_method()
+    pip_spec = origin() if method == "pip" else None
 
     if method == "git-checkout" and checkout is not None:
         tool_note = _git_checkout_note(checkout, runner)
+    elif method == "pip" and pip_spec and "+" in pip_spec:
+        tool_note = f"installed from {pip_spec}; upgrading re-pulls the latest commit"
     else:
         latest = fetch(PACKAGE_NAME)
         if latest is None:
@@ -204,6 +237,7 @@ def build_plan(
         checkout=checkout,
         tool_installed=__version__,
         tool_note=tool_note,
+        pip_spec=pip_spec,
     )
 
     for name in direct_dependencies():
@@ -242,6 +276,20 @@ def apply_plan(plan: UpgradePlan, runner=subprocess.run) -> list[list[str]]:
             _run(pull, runner)
             executed.append(pull)
         command = [sys.executable, "-m", "pip", "install", "-q", "-U", str(plan.checkout)]
+    elif plan.pip_spec:
+        # installed from a git/URL via plain pip: reinstall from that exact
+        # source. --force-reinstall guarantees a moving branch is re-pulled
+        # even when the version string is unchanged.
+        command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "-U",
+            "--force-reinstall",
+            plan.pip_spec,
+        ]
     else:
         command = [sys.executable, "-m", "pip", "install", "-q", "-U", PACKAGE_NAME]
     _run(command, runner)

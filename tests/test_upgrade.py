@@ -135,6 +135,39 @@ def test_apply_uv_tool():
     assert executed == [["uv", "tool", "upgrade", "coop-data-doc"]]
 
 
+def test_build_plan_pip_from_git_reinstalls_from_url(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "plain"))
+    monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])
+    git_url = "git+https://github.com/kabukisensei/coop-data-doc.git"
+    plan = build_plan(
+        fetch=lambda _n: None,
+        origin=lambda: git_url,
+    )
+    assert plan.install_method == "pip"
+    assert plan.pip_spec == git_url
+    assert "re-pulls" in plan.tool_note  # not the misleading "not on PyPI" note
+    executed = apply_plan(plan, runner=recording_runner())
+    assert executed[0] == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "-q",
+        "-U",
+        "--force-reinstall",
+        git_url,
+    ]
+
+
+def test_pip_without_origin_falls_back_to_pypi(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "plain"))
+    monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])
+    plan = build_plan(fetch=lambda _n: None, origin=lambda: None)
+    assert plan.pip_spec is None
+    executed = apply_plan(plan, runner=recording_runner())
+    assert executed[0] == [sys.executable, "-m", "pip", "install", "-q", "-U", "coop-data-doc"]
+
+
 def test_apply_pip_with_safe_deps_never_majors(tmp_path):
     runner = recording_runner()
     plan = make_plan("pip", safe=["alpha", "beta"])
