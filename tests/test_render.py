@@ -144,3 +144,23 @@ def test_slug_is_filesystem_safe():
     assert slug("pbi_table:sales and project management.dim_customer") == (
         "sales-and-project-management-dim_customer"
     )
+
+
+def test_orphaned_pages_pruned_on_rerender(tmp_path: Path):
+    graph = build_graph()
+    render_markdown(graph, tmp_path, "Test Estate")
+    view_page = tmp_path / "view" / "salespm-dim_customer.md"
+    hand_authored = tmp_path / "view" / "notes-from-a-human.txt"
+    hand_authored.write_text("keep me", encoding="utf-8")
+    assert view_page.is_file()
+
+    # the view disappears from the estate
+    del graph.nodes["view:salespm.dim_customer"]
+    graph.edges = [
+        e for e in graph.edges
+        if "view:salespm.dim_customer" not in (e.source_id, e.target_id)
+    ]
+    render_markdown(graph, tmp_path, "Test Estate")
+
+    assert not view_page.exists()  # orphan pruned
+    assert hand_authored.is_file()  # non-.md files untouched

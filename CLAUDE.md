@@ -15,14 +15,18 @@ interface in depth.
 
 If `.venv` is missing: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`.
 
-## Hard rules (CI-enforced)
+## Hard rules
 
-1. **Determinism** — sorted iteration everywhere, no timestamps/randomness in
-   output. `tests/test_determinism.py` byte-compares two full builds.
-2. **Offline** — no network/DB/LLM at runtime; built HTML must work over
-   `file://` (vendored assets in `src/coop_data_doc/templates/assets/`).
-3. **Pure parsers** — no print/exit outside `cli.py`, `wizard.py`, and
-   `linker/interactive.py`; warnings are returned as `ParseWarning` values.
+1. **Determinism** (CI-enforced) — sorted iteration everywhere, no
+   timestamps/randomness in output. `tests/test_determinism.py`
+   byte-compares two full builds.
+2. **Offline pipeline** — no network/DB/LLM anywhere in doc generation;
+   built HTML must work over `file://` (vendored assets in
+   `src/coop_data_doc/templates/assets/`). Sole exception: the explicit
+   `upgrade` command (`upgrade.py`); the pipeline never imports it.
+3. **Pure parsers** (convention, reviewed not CI-enforced) — no print/exit
+   outside `cli.py`, `wizard.py`, and `linker/interactive.py`; warnings are
+   returned as `ParseWarning` values.
 4. **Never guess lineage** — un-provable things become warnings or
    `unresolved` markers, not edges.
 

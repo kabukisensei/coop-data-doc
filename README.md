@@ -44,14 +44,15 @@ pipx install coop-data-doc        # or: uv tool install coop-data-doc
 
 ```bash
 cd your-docs-folder
-coop-data-doc setup               # interactive wizard: repo paths, mappings, output dirs
-coop-data-doc build               # answers a few mapping questions the first time
+coop-data-doc                     # bare command = interactive menu: it walks you through
+                                  # setup the first time, then offers "update the docs"
 open data-docs-site/index.html
 ```
 
-Prefer editing a file by hand? `coop-data-doc init` writes a commented starter
-config instead. Re-run `coop-data-doc setup` anytime — it prefills your current
-values so you can change just one thing.
+Or as direct commands: `coop-data-doc setup` then `coop-data-doc update`. Prefer editing
+a file by hand? `coop-data-doc init` writes a commented starter config instead. Re-run
+`coop-data-doc setup` anytime — it prefills your current values so you can change just
+one thing.
 
 ## How it works
 
@@ -75,7 +76,7 @@ repos:
     exclude: ["**/archive/**"]
   powerbi:
     path: ../pbi-repo             # PBIP semantic models + PBIR reports
-    include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/*.pbix"]
+    include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
 schema_mappings:                  # view schema -> the semantic model it feeds
   - schema: salespm
     model: "Sales and Project Management"
@@ -88,14 +89,37 @@ so every later run (including CI) is fully automated.
 
 ## Commands
 
+Running bare **`coop-data-doc`** in a terminal starts an interactive menu — it detects
+whether a config exists and offers setup or update/scan/check accordingly. Everything is
+also available as a direct command:
+
 | Command | What it does |
 | --- | --- |
-| `coop-data-doc setup` | interactive wizard — create or update the config (prefills current values) |
-| `coop-data-doc init` | scaffold a commented config to edit by hand |
-| `coop-data-doc scan` | crawl + parse + link; writes `graph.json` and a warning summary |
-| `coop-data-doc build` | scan + Markdown docs + offline HTML portal (`--skip-html`, `--serve`) |
-| `coop-data-doc check` | CI gate: fails if docs are stale or references unresolved |
-| flags | `--non-interactive` (never prompt), `--strict` (exit 2 on risky parses) |
+| `coop-data-doc` | interactive menu (in scripts/CI it prints help instead) |
+| `coop-data-doc setup [PATH]` | interactive wizard — create or update the config (prefills current values) |
+| `coop-data-doc init [PATH] [--force]` | scaffold a commented config to edit by hand |
+| `coop-data-doc update` | re-scan the repos and refresh all documentation |
+| `coop-data-doc build` | same as `update` (`--skip-html`, `--serve` for live preview) |
+| `coop-data-doc scan` | crawl + parse + link only; writes `graph.json` and a warning summary |
+| `coop-data-doc check [--lenient]` | CI gate: fails on stale docs, unresolved references, or risky parses (`--lenient` tolerates the latter) |
+| `coop-data-doc upgrade [--check] [--yes]` | update the **tool itself** + non-breaking dependency updates |
+| `coop-data-doc help [command]` | show help (same as `--help`) |
+
+Options: `scan`/`build`/`update` accept `--non-interactive` (never prompt; CI mode) and
+`--strict` (exit 2 on unresolved refs or risky parses). Every pipeline command accepts
+`--config PATH` (default `./coop-data-doc.yml`). Global: `--version`, `-v` (debug +
+tracebacks), `-q` (suppress warning summaries) — global flags go *before* the
+subcommand, e.g. `coop-data-doc -q build`.
+
+### Keeping the tool updated
+
+`coop-data-doc upgrade` is the one command that uses the network. It detects how the
+tool was installed (pipx / uv tool / pip / a git checkout), updates it — for a git
+checkout it pulls new commits and reinstalls — and applies dependency updates **within
+the same major version only**. Major-version dependency jumps are reported but never
+auto-applied, so nothing breaking lands without a human reviewing it.
+`upgrade --check` reports without changing anything; `upgrade --yes` applies without
+prompting (for scheduled jobs).
 
 ## Editing the docs
 

@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 
 import click
+import questionary
 
 from coop_data_doc import __version__
 from coop_data_doc.config import Config, ConfigError, ParseWarning
@@ -127,17 +128,105 @@ def _load_config(config_path: str) -> Config:
     return Config.load(Path(config_path))
 
 
-@click.group()
+def _stdio_is_interactive() -> bool:
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+@click.group(invoke_without_command=True)
 @click.version_option(version=__version__, prog_name="coop-data-doc")
 @click.option("-v", "--verbose", is_flag=True, help="Debug logging and full tracebacks.")
 @click.option("-q", "--quiet", is_flag=True, help="Suppress warning summaries.")
 @click.pass_context
 def cli(ctx: click.Context, verbose: bool, quiet: bool) -> None:
-    """Offline data-lineage documentation for SQL + Power BI estates."""
+    """Offline data-lineage documentation for SQL + Power BI estates.
+
+    Run with no arguments in a terminal to get an interactive menu.
+    """
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING)
+    if not verbose:
+        # sqlglot logs every unsupported-syntax fallback; those parse issues
+        # are already surfaced (deduplicated) via the ParseWarning summary
+        logging.getLogger("sqlglot").setLevel(logging.ERROR)
+    if ctx.invoked_subcommand is None:
+        if _stdio_is_interactive():
+            _interactive_home(ctx)
+        else:
+            click.echo(ctx.get_help())
+
+
+def _interactive_home(ctx: click.Context) -> None:
+    """The menu shown when `coop-data-doc` is run bare in a terminal."""
+    click.echo(f"coop-data-doc {__version__} — offline lineage docs for SQL + Power BI\n")
+    config_exists = Path(DEFAULT_CONFIG).is_file()
+    if config_exists:
+        message = f"Found {DEFAULT_CONFIG} in this folder. What would you like to do?"
+        choices = [
+            questionary.Choice("Update the docs (scan repos + rebuild everything)", "update"),
+            questionary.Choice("Scan only (refresh graph.json, no rendering)", "scan"),
+            questionary.Choice("Change settings (re-run the setup wizard)", "setup"),
+            questionary.Choice("Check docs freshness (the CI gate)", "check"),
+            questionary.Choice("Upgrade the tool & dependencies (uses network)", "upgrade"),
+            questionary.Choice("Exit", "exit"),
+        ]
+    else:
+        message = "No coop-data-doc.yml in this folder yet. What would you like to do?"
+        choices = [
+            questionary.Choice("Set up interactively (recommended)", "setup"),
+            questionary.Choice("Write a starter config to edit by hand", "init"),
+            questionary.Choice("Exit", "exit"),
+        ]
+    try:
+        # unsafe_ask: let Ctrl-C propagate so it exits 130, distinct from "Exit"
+        action = questionary.select(message, choices=choices).unsafe_ask()
+    except OSError:
+        click.echo(ctx.get_help())
+        return
+    if action in (None, "exit"):
+        return
+    if action == "setup":
+        ctx.invoke(setup, path=DEFAULT_CONFIG)
+    elif action == "init":
+        ctx.invoke(init, path=DEFAULT_CONFIG, force=False)
+    elif action == "scan":
+        ctx.invoke(scan, config_path=DEFAULT_CONFIG, non_interactive=False, strict=False)
+    elif action == "check":
+        ctx.invoke(check, config_path=DEFAULT_CONFIG)
+    elif action == "upgrade":
+        ctx.invoke(upgrade, check_only=False, yes=False)
+    elif action == "update":
+        _run_build(
+            ctx,
+            config_path=DEFAULT_CONFIG,
+            non_interactive=False,
+            strict=False,
+            skip_html=False,
+            serve=False,
+        )
+
+
+@cli.command(name="help")
+@click.argument("command_name", required=False)
+@click.pass_context
+def help_cmd(ctx: click.Context, command_name: str | None) -> None:
+    """Show help for coop-data-doc or a specific command."""
+    if command_name is None:
+        click.echo(ctx.parent.get_help())
+        return
+    command = cli.get_command(ctx, command_name)
+    if command is None:
+        # UsageError -> exit 2, same as `coop-data-doc <unknown>` itself
+        raise click.UsageError(
+            f"unknown command '{command_name}' — try `coop-data-doc help`",
+            ctx=ctx.parent,
+        )
+    sub_ctx = click.Context(command, info_name=command_name, parent=ctx.parent)
+    click.echo(command.get_help(sub_ctx))
 
 
 @cli.command()
@@ -180,9 +269,14 @@ def init(path: str, force: bool) -> None:
     target = Path(path)
     if target.exists() and not force:
         raise click.ClickException(f"{target} already exists (use --force to overwrite)")
-    if target.exists():
-        target.unlink()
-    Config.scaffold(target)
+    try:
+        if target.exists():
+            target.unlink()
+        if target.parent != Path(""):
+            target.parent.mkdir(parents=True, exist_ok=True)
+        Config.scaffold(target)
+    except OSError as exc:
+        raise click.ClickException(f"could not write {target}: {exc}") from exc
     click.echo(f"Wrote {target}.")
     click.echo("Next: edit the two repo paths, then run `coop-data-doc build`.")
 
@@ -198,14 +292,7 @@ def scan(ctx: click.Context, config_path: str, non_interactive: bool, strict: bo
     _scan(config, non_interactive, strict, ctx.obj["quiet"])
 
 
-@cli.command()
-@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
-@click.option("--non-interactive", is_flag=True, help="Never prompt (CI mode).")
-@click.option("--strict", is_flag=True, help="Exit 2 on unresolved refs / risky parses.")
-@click.option("--skip-html", is_flag=True, help="Markdown only; skip the mkdocs site.")
-@click.option("--serve", is_flag=True, help="Start `mkdocs serve` after building.")
-@click.pass_context
-def build(
+def _run_build(
     ctx: click.Context,
     config_path: str,
     non_interactive: bool,
@@ -213,7 +300,7 @@ def build(
     skip_html: bool,
     serve: bool,
 ) -> None:
-    """Full pipeline: scan + markdown docs + searchable HTML portal."""
+    """Shared implementation behind `build` and `update`."""
     config = _load_config(config_path)
     graph = _scan(config, non_interactive, strict, ctx.obj["quiet"])
     out_dir = config.output_dir()
@@ -229,14 +316,123 @@ def build(
     click.echo(f"HTML portal:   file://{index}", err=True)
 
 
+_BUILD_OPTIONS = [
+    click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True),
+    click.option("--non-interactive", is_flag=True, help="Never prompt (CI mode)."),
+    click.option("--strict", is_flag=True, help="Exit 2 on unresolved refs / risky parses."),
+    click.option("--skip-html", is_flag=True, help="Markdown only; skip the mkdocs site."),
+    click.option("--serve", is_flag=True, help="Start `mkdocs serve` after building."),
+]
+
+
+def _with_build_options(func):
+    for option in reversed(_BUILD_OPTIONS):
+        func = option(func)
+    return func
+
+
+@cli.command()
+@_with_build_options
+@click.pass_context
+def build(
+    ctx: click.Context,
+    config_path: str,
+    non_interactive: bool,
+    strict: bool,
+    skip_html: bool,
+    serve: bool,
+) -> None:
+    """Full pipeline: scan + markdown docs + searchable HTML portal."""
+    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve)
+
+
+@cli.command()
+@_with_build_options
+@click.pass_context
+def update(
+    ctx: click.Context,
+    config_path: str,
+    non_interactive: bool,
+    strict: bool,
+    skip_html: bool,
+    serve: bool,
+) -> None:
+    """Re-scan the repos and refresh all documentation (same as build)."""
+    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve)
+
+
+@cli.command()
+@click.option("--check", "check_only", is_flag=True, help="Report available updates; change nothing.")
+@click.option("--yes", is_flag=True, help="Apply without asking for confirmation.")
+def upgrade(check_only: bool, yes: bool) -> None:
+    """Update the tool itself and apply non-breaking dependency updates.
+
+    The ONLY command that uses the network (PyPI metadata / git fetch).
+    Major-version dependency jumps are reported but never auto-applied.
+    """
+    from coop_data_doc.upgrade import UpgradeError, apply_plan, build_plan
+
+    click.echo("Checking for updates…", err=True)
+    plan = build_plan()
+    click.echo(f"\ncoop-data-doc {plan.tool_installed} ({plan.install_method}) — {plan.tool_note}")
+    if plan.dependencies:
+        click.echo("\nDependencies:")
+        for dep in plan.dependencies:
+            latest = dep.latest or "?"
+            label = {
+                "current": "up to date",
+                "safe": f"update available → {latest}",
+                "major": f"MAJOR update available → {latest} (review before applying)",
+                "unknown": "could not check (offline?)",
+            }[dep.kind]
+            click.echo(f"  {dep.name:20} {dep.installed:12} {label}")
+    if check_only:
+        return
+    nothing_to_apply = not plan.safe_updates and "new commit(s)" not in plan.tool_note and (
+        "latest release is" not in plan.tool_note
+    )
+    if nothing_to_apply and plan.install_method not in ("pip", "git-checkout"):
+        click.echo("\nEverything is up to date.")
+        return
+    if not yes:
+        if not _stdio_is_interactive():
+            click.echo("\nRe-run with --yes to apply in non-interactive environments.", err=True)
+            return
+        answer = questionary.confirm(
+            "Apply the tool upgrade and non-breaking dependency updates?", default=True
+        ).ask()
+        if not answer:
+            click.echo("Nothing changed.")
+            return
+    try:
+        executed = apply_plan(plan)
+    except UpgradeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    for command in executed:
+        click.echo(f"ran: {' '.join(command)}", err=True)
+    click.echo("Upgrade complete. Run `coop-data-doc --version` to confirm.")
+
+
 @cli.command()
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--lenient",
+    is_flag=True,
+    help="Tolerate risky-parse warnings (regex_fallback/dynamic_sql); still "
+    "fail on unresolved references and stale docs.",
+)
 @click.pass_context
-def check(ctx: click.Context, config_path: str) -> None:
-    """CI gate: fail if committed docs are stale or refs are unresolved."""
+def check(ctx: click.Context, config_path: str, lenient: bool) -> None:
+    """CI gate: fail when committed docs are stale, references are
+    unresolved, or (unless --lenient) risky-parse warnings exist
+    (regex_fallback / dynamic_sql). Exit 2 for pipeline problems, 1 for
+    stale docs."""
     config = _load_config(config_path)
     graph, result, warnings = run_pipeline(config, interactive=False)
-    failures = _strict_failures(result, warnings)
+    if lenient:
+        failures = [f"unresolved reference: {key}" for key in result.unresolved]
+    else:
+        failures = _strict_failures(result, warnings)
     if failures:
         for failure in failures:
             click.echo(f"check: {failure}", err=True)
@@ -263,33 +459,59 @@ def check(ctx: click.Context, config_path: str) -> None:
 
 
 def _tree_diff(committed: Path, fresh: Path) -> list[str]:
-    """Names of generated files that differ between the two doc trees."""
-    stale: list[str] = []
-    for fresh_file in sorted(fresh.rglob("*.md")) + [fresh / "graph.json", fresh / "manifest.json"]:
-        if not fresh_file.is_file():
-            continue
-        relative = fresh_file.relative_to(fresh)
+    """Generated files that differ between the two doc trees, both ways:
+    changed/missing in committed AND committed files the fresh render no
+    longer produces (orphaned pages of deleted objects)."""
+
+    def generated_files(root: Path) -> set[Path]:
+        files = {p.relative_to(root) for p in root.rglob("*.md") if p.is_file()}
+        for name in ("graph.json", "manifest.json"):
+            if (root / name).is_file():
+                files.add(Path(name))
+        return files
+
+    stale: set[str] = set()
+    fresh_files = generated_files(fresh)
+    committed_files = generated_files(committed)
+    for relative in fresh_files | committed_files:
         committed_file = committed / relative
-        if not committed_file.is_file() or not filecmp.cmp(
-            committed_file, fresh_file, shallow=False
+        fresh_file = fresh / relative
+        if not (
+            committed_file.is_file()
+            and fresh_file.is_file()
+            and filecmp.cmp(committed_file, fresh_file, shallow=False)
         ):
-            stale.append(str(relative))
-    return stale
+            stale.add(str(relative))
+    return sorted(stale)
 
 
 def main() -> None:
-    """Console-script entrypoint: friendly one-line errors, exit 130 on Ctrl-C."""
+    """Console-script entrypoint: friendly one-line errors, exit 130 on Ctrl-C.
+
+    standalone_mode=False so click doesn't swallow KeyboardInterrupt into a
+    bare "Aborted!" — interactive sessions (linker prompts, the menu) need
+    the cache-preservation message and the conventional 130 exit code.
+    """
     try:
-        cli(obj={})
+        cli(obj={}, standalone_mode=False)
+    except click.exceptions.Abort:
+        # click converts EOFError/KeyboardInterrupt inside commands to Abort
+        click.echo(
+            "\nInterrupted — any answers you gave are saved in "
+            ".lineage-cache.json; run again to continue.",
+            err=True,
+        )
+        sys.exit(130)
+    except click.exceptions.Exit as exc:  # e.g. --help / --version
+        sys.exit(exc.exit_code)
+    except click.ClickException as exc:
+        exc.show()
+        sys.exit(exc.exit_code)
     except ConfigError as exc:
         click.echo(f"error: {exc}", err=True)
         sys.exit(1)
     except KeyboardInterrupt:
-        click.echo(
-            "\nInterrupted — answers so far are saved in .lineage-cache.json; "
-            "run again to continue.",
-            err=True,
-        )
+        click.echo("\nInterrupted.", err=True)
         sys.exit(130)
 
 

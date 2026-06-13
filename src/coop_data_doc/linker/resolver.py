@@ -24,7 +24,7 @@ from coop_data_doc.graph.model import (
     normalize_identifier,
 )
 from coop_data_doc.linker import interactive
-from coop_data_doc.linker.cache import CacheEntry, LineageCache
+from coop_data_doc.linker.cache import LineageCache
 
 FUZZY_AUTO_ACCEPT = 0.92
 FUZZY_AMBIGUOUS = 0.6

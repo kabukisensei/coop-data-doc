@@ -5,7 +5,7 @@ from pathlib import Path
 
 from coop_data_doc.config import Config, RepoConfig
 from coop_data_doc.crawler import FileEntry, FileKind, crawl
-from coop_data_doc.graph import LineageGraph, NodeType, to_json_str
+from coop_data_doc.graph import LineageGraph, to_json_str
 from coop_data_doc.parsers.dax import extract_refs
 from coop_data_doc.parsers.mcode import extract_source
 from coop_data_doc.parsers.pbir import link_visual_bindings, parse_legacy_reports, parse_pbir

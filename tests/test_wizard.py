@@ -142,3 +142,32 @@ def test_ctrl_c_writes_nothing(tmp_path: Path, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         wizard.run_setup(config_path)
     assert not config_path.exists()
+
+
+def test_rerun_prefills_even_when_saved_config_not_runnable(tmp_path: Path, monkeypatch):
+    (tmp_path / "pbi-repo").mkdir()
+    config_path = tmp_path / "coop-data-doc.yml"
+    first = FakeQuestionary(
+        [
+            "Custom Name",
+            "./not-cloned-yet", True,   # missing repo, use anyway
+            "./pbi-repo",
+            "./docs", "./site",
+            True, "salespm", "Sales and PM", False,
+        ]
+    )
+    monkeypatch.setattr(wizard, "questionary", first)
+    assert wizard.run_setup(config_path) is None  # saved but not runnable
+
+    # re-running must prefill the saved answers, not start fresh
+    second = FakeQuestionary(
+        ["Custom Name", "./not-cloned-yet", True, "./pbi-repo", "./docs", "./site",
+         True, False]
+    )
+    monkeypatch.setattr(wizard, "questionary", second)
+    wizard.run_setup(config_path)
+    defaults = {message: kwargs.get("default") for _, message, kwargs in second.calls}
+    assert defaults["Project name (shown as the docs site title):"] == "Custom Name"
+    assert defaults["SQL repo path (procs, tables, views):"] == "./not-cloned-yet"
+    # the keep-mappings confirm only appears when mappings were preserved
+    assert any("Keep existing schema mappings" in message for _, message, _k in second.calls)

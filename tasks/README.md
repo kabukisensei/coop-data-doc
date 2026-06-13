@@ -21,7 +21,7 @@ Each `module-N.md` is a self-contained brief for a coding LLM (Claude Sonnet, Ki
 
 ## Review checklist for every returned module
 - [ ] `pytest` green, including new fixtures
-- [ ] No prints/exits outside cli.py; warnings returned as data
+- [ ] No prints/exits outside cli.py, wizard.py, and linker/interactive.py; warnings returned as data
 - [ ] Determinism: run twice on fixtures → identical output (sorted iteration everywhere)
 - [ ] No new dependencies beyond the allowed list
 - [ ] Type hints + module docstring present

@@ -11,7 +11,6 @@ from __future__ import annotations
 import fnmatch
 import re
 from enum import Enum
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 

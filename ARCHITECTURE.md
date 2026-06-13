@@ -17,6 +17,7 @@ coop-data-doc.yml ──► [crawler] ──► FileInventory (classified files)
    sql_procs: proc DML           mcode: partition M ──► SourceRef
      (INSERT/MERGE/UPDATE/       dax:  measure ──► measure/table refs
       SELECT INTO/EXEC)          pbir: report/page/visual + field bindings
+                                       (PBIR folders AND legacy report.json)
                                  pbix: best-effort zip extraction
              │                             │
              ▼                             ▼

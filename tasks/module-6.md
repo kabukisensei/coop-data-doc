@@ -1,6 +1,9 @@
 # MODULE 6 — CLI (`click`) ✅ IMPLEMENTED
 
 > Status: **done** — kept as interface reference; do not reimplement.
+> Post-brief additions: `setup` (interactive config wizard, see `wizard.py`),
+> `update` (alias of `build`), `help [command]`, and an interactive menu when
+> `coop-data-doc` is run bare in a terminal (prints help when not a TTY).
 
 **Files to create:** `src/coop_data_doc/cli.py`, `tests/test_cli.py`.
 

@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import questionary
+import yaml
 
 from coop_data_doc.config import (
     Config,
@@ -55,13 +56,33 @@ def _ask_repo_path(label: str, default: str, base_dir: Path) -> str:
 
 
 def _existing_config(config_path: Path) -> Config | None:
+    """Previous config for prefilling, loaded leniently.
+
+    Strict loading fails when a repo path doesn't exist — which is exactly
+    the 'saved but not runnable yet' state setup itself creates — so fall
+    back to validating the YAML without the path-existence check rather
+    than discarding the user's saved answers.
+    """
     if not config_path.is_file():
         return None
     try:
         return Config.load(config_path)
     except ConfigError as exc:
-        print(f"note: existing config could not be loaded ({exc}); starting fresh", file=sys.stderr)
-        return None
+        try:
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            lenient = Config.model_validate(data)
+        except Exception:
+            print(
+                f"note: existing config could not be read ({exc}); starting fresh",
+                file=sys.stderr,
+            )
+            return None
+        print(
+            f"note: existing config isn't runnable yet ({exc}) — "
+            "your saved values are prefilled anyway",
+            file=sys.stderr,
+        )
+        return lenient
 
 
 def _repo_default(existing: Config | None, key: str, fallback: str) -> str:
@@ -147,22 +168,25 @@ def run_setup(config_path: Path) -> Config | None:
     # preserve any hand-tuned globs/dialect from the existing config
     sql_repo = existing.repos.get("sql") if existing else None
     pbi_repo = existing.repos.get("powerbi") if existing else None
-    config_path.write_text(
-        render_config_yaml(
-            project_name=project_name,
-            sql_path=sql_path,
-            pbi_path=pbi_path,
-            mappings=mappings,
-            sql_include=sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
-            sql_exclude=sql_repo.exclude if sql_repo else DEFAULT_SQL_EXCLUDE,
-            pbi_include=pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
-            pbi_exclude=pbi_repo.exclude if pbi_repo else [],
-            output_dir=output_dir,
-            site_dir=site_dir,
-            sql_dialect=existing.sql_dialect if existing else "tsql",
-        ),
-        encoding="utf-8",
+    rendered = render_config_yaml(
+        project_name=project_name,
+        sql_path=sql_path,
+        pbi_path=pbi_path,
+        mappings=mappings,
+        sql_include=sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
+        sql_exclude=sql_repo.exclude if sql_repo else DEFAULT_SQL_EXCLUDE,
+        pbi_include=pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
+        pbi_exclude=pbi_repo.exclude if pbi_repo else [],
+        output_dir=output_dir,
+        site_dir=site_dir,
+        sql_dialect=existing.sql_dialect if existing else "tsql",
     )
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(rendered, encoding="utf-8")
+    except OSError as exc:
+        # distinct from questionary's no-TTY OSError: report as a config problem
+        raise ConfigError(f"could not write {config_path}: {exc}") from exc
     try:
         return Config.load(config_path)  # refresh: reload + validate what was written
     except ConfigError as exc:

@@ -236,4 +236,18 @@ def render_markdown(graph: LineageGraph, out_dir: Path, project_name: str) -> li
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(to_json_str(graph), encoding="utf-8")
     written.append(manifest_path)
+
+    # prune pages of objects that no longer exist (e.g. a dropped view) —
+    # only inside the node-type directories this renderer manages, so any
+    # hand-authored files elsewhere in the docs tree are never touched
+    written_set = set(written)
+    managed = {node_type.value for node_type in NodeType}
+    for subdir in sorted(out_dir.iterdir()):
+        if not subdir.is_dir() or subdir.name not in managed:
+            continue
+        for page in sorted(subdir.glob("*.md")):
+            if page not in written_set:
+                page.unlink()
+        if not any(subdir.iterdir()):
+            subdir.rmdir()
     return sorted(written)
