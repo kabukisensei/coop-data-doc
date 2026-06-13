@@ -1,0 +1,170 @@
+"""Interactive configuration wizard (`coop-data-doc setup`).
+
+Walks the user through every config value, prefilling defaults from an
+existing coop-data-doc.yml when present (so re-running setup edits rather
+than starts over), writes the file, and reloads it through Config.load to
+validate. Nothing is written until the very end, so Ctrl-C is always safe.
+
+Terminal I/O is allowed here (like cli.py and linker/interactive.py);
+everything else in the codebase stays pure.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import questionary
+
+from coop_data_doc.config import (
+    Config,
+    ConfigError,
+    render_config_yaml,
+    DEFAULT_PBI_INCLUDE,
+    DEFAULT_SQL_EXCLUDE,
+    DEFAULT_SQL_INCLUDE,
+)
+
+
+def _ask(prompt) -> object:
+    """Run a questionary prompt; Ctrl-C/EOF becomes KeyboardInterrupt."""
+    answer = prompt.ask()
+    if answer is None:
+        raise KeyboardInterrupt
+    return answer
+
+
+def _ask_repo_path(label: str, default: str, base_dir: Path) -> str:
+    """Prompt for a repo path until it exists (or the user opts to keep it)."""
+    while True:
+        raw = str(
+            _ask(questionary.path(f"{label}:", default=default, only_directories=True))
+        ).strip()
+        if not raw:
+            continue
+        resolved = (base_dir / Path(raw).expanduser()).resolve()
+        if resolved.is_dir():
+            return raw
+        keep = _ask(
+            questionary.confirm(
+                f"'{resolved}' doesn't exist (yet). Use it anyway?", default=False
+            )
+        )
+        if keep:
+            return raw
+
+
+def _existing_config(config_path: Path) -> Config | None:
+    if not config_path.is_file():
+        return None
+    try:
+        return Config.load(config_path)
+    except ConfigError as exc:
+        print(f"note: existing config could not be loaded ({exc}); starting fresh", file=sys.stderr)
+        return None
+
+
+def _repo_default(existing: Config | None, key: str, fallback: str) -> str:
+    if existing is not None and key in existing.repos:
+        return existing.repos[key].path
+    return fallback
+
+
+def run_setup(config_path: Path) -> Config | None:
+    """Run the wizard, write the config, and return the validated result.
+
+    Returns None when the file was saved but doesn't validate yet (e.g. the
+    user pointed at a repo they haven't cloned and chose 'use it anyway').
+    """
+    config_path = Path(config_path).resolve()
+    base_dir = config_path.parent
+    existing = _existing_config(config_path)
+    if existing is not None:
+        print(f"Updating {config_path} (current values shown as defaults)", file=sys.stderr)
+
+    project_name = str(
+        _ask(
+            questionary.text(
+                "Project name (shown as the docs site title):",
+                default=existing.project_name if existing else "Coop BI Estate",
+            )
+        )
+    ).strip() or "Coop BI Estate"
+
+    sql_path = _ask_repo_path(
+        "SQL repo path (procs, tables, views)",
+        _repo_default(existing, "sql", "../sql-repo"),
+        base_dir,
+    )
+    pbi_path = _ask_repo_path(
+        "Power BI repo path (semantic models, reports)",
+        _repo_default(existing, "powerbi", "../pbi-repo"),
+        base_dir,
+    )
+
+    output_dir = str(
+        _ask(
+            questionary.text(
+                "Markdown output folder:",
+                default=existing.output.dir if existing else "./data-docs",
+            )
+        )
+    ).strip() or "./data-docs"
+    site_dir = str(
+        _ask(
+            questionary.text(
+                "HTML site output folder:",
+                default=existing.output.site_dir if existing else "./data-docs-site",
+            )
+        )
+    ).strip() or "./data-docs-site"
+
+    mappings: list[tuple[str, str]] = []
+    if existing is not None and existing.schema_mappings:
+        current = ", ".join(
+            f"{m.schema_name} → {m.model}" for m in existing.schema_mappings
+        )
+        keep = _ask(
+            questionary.confirm(
+                f"Keep existing schema mappings ({current})?", default=True
+            )
+        )
+        if keep:
+            mappings = [(m.schema_name, m.model) for m in existing.schema_mappings]
+
+    while _ask(
+        questionary.confirm(
+            "Add a view-schema → semantic-model mapping?", default=not mappings
+        )
+    ):
+        schema = str(_ask(questionary.text("View schema (e.g. salespm):"))).strip()
+        model = str(
+            _ask(questionary.text("Semantic model it feeds (e.g. Sales and Project Management):"))
+        ).strip()
+        if schema and model:
+            mappings.append((schema, model))
+
+    # preserve any hand-tuned globs/dialect from the existing config
+    sql_repo = existing.repos.get("sql") if existing else None
+    pbi_repo = existing.repos.get("powerbi") if existing else None
+    config_path.write_text(
+        render_config_yaml(
+            project_name=project_name,
+            sql_path=sql_path,
+            pbi_path=pbi_path,
+            mappings=mappings,
+            sql_include=sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
+            sql_exclude=sql_repo.exclude if sql_repo else DEFAULT_SQL_EXCLUDE,
+            pbi_include=pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
+            pbi_exclude=pbi_repo.exclude if pbi_repo else [],
+            output_dir=output_dir,
+            site_dir=site_dir,
+            sql_dialect=existing.sql_dialect if existing else "tsql",
+        ),
+        encoding="utf-8",
+    )
+    try:
+        return Config.load(config_path)  # refresh: reload + validate what was written
+    except ConfigError as exc:
+        print(f"Saved, but not runnable yet: {exc}", file=sys.stderr)
+        return None

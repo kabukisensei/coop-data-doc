@@ -142,9 +142,41 @@ def cli(ctx: click.Context, verbose: bool, quiet: bool) -> None:
 
 @cli.command()
 @click.argument("path", default=DEFAULT_CONFIG)
+def setup(path: str) -> None:
+    """Interactively create or update coop-data-doc.yml.
+
+    Prompts for every value, prefilled from the existing config when present,
+    then saves and re-validates. Ctrl-C before the end writes nothing.
+    """
+    from coop_data_doc.wizard import run_setup
+
+    try:
+        config = run_setup(Path(path))
+    except KeyboardInterrupt:
+        click.echo("\nSetup cancelled — nothing was written.", err=True)
+        sys.exit(130)
+    except OSError:
+        click.echo(
+            "setup needs an interactive terminal. In CI or scripts, edit "
+            "coop-data-doc.yml directly or scaffold one with `coop-data-doc init`.",
+            err=True,
+        )
+        sys.exit(1)
+    if config is None:
+        click.echo(f"Saved {path}. Fix the noted problem, then run `coop-data-doc build`.")
+        return
+    click.echo(
+        f"Saved {path} — project '{config.project_name}', "
+        f"{len(config.repos)} repos, {len(config.schema_mappings)} schema mapping(s)."
+    )
+    click.echo("Next: run `coop-data-doc build`.")
+
+
+@cli.command()
+@click.argument("path", default=DEFAULT_CONFIG)
 @click.option("--force", is_flag=True, help="Overwrite an existing config.")
 def init(path: str, force: bool) -> None:
-    """Create a starter coop-data-doc.yml."""
+    """Write a starter coop-data-doc.yml to edit by hand (see also: setup)."""
     target = Path(path)
     if target.exists() and not force:
         raise click.ClickException(f"{target} already exists (use --force to overwrite)")

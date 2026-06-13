@@ -7,6 +7,7 @@ the structured warning type that every parser returns instead of printing.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -123,39 +124,99 @@ class Config(BaseModel):
         path = Path(path)
         if path.exists():
             raise FileExistsError(f"{path} already exists")
-        path.write_text(SCAFFOLD_TEMPLATE, encoding="utf-8")
+        path.write_text(
+            render_config_yaml(
+                project_name="Coop BI Estate",
+                sql_path="../sql-repo",
+                pbi_path="../pbi-repo",
+                mappings=[("salespm", "Sales and Project Management")],
+            ),
+            encoding="utf-8",
+        )
 
 
-SCAFFOLD_TEMPLATE = """\
+DEFAULT_SQL_INCLUDE = ["**/*.sql"]
+DEFAULT_SQL_EXCLUDE = ["**/archive/**"]
+DEFAULT_PBI_INCLUDE = [
+    "**/*.tmdl",
+    "**/*.bim",
+    "**/report.json",
+    "**/visual.json",
+    "**/page.json",
+    "**/*.pbix",
+]
+
+_CONFIG_TEMPLATE = """\
 # coop-data-doc configuration
 # Point the tool at your repos, then run `coop-data-doc build`.
 # All relative paths resolve against the folder containing THIS file.
+# Re-run `coop-data-doc setup` anytime to update this file interactively.
 
-project_name: Coop BI Estate
+project_name: {project_name}
 
 # The repos to crawl.
 repos:
   sql:
-    path: ../sql-repo
-    include: ["**/*.sql"]
-    exclude: ["**/archive/**"]
+    path: {sql_path}
+    include: {sql_include}
+    exclude: {sql_exclude}
   powerbi:
-    path: ../pbi-repo
-    include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/*.pbix"]
-    exclude: []
+    path: {pbi_path}
+    include: {pbi_include}
+    exclude: {pbi_exclude}
 
 # Hints linking SQL view schemas to the semantic models they feed.
 # Anything still ambiguous is resolved interactively on first run and
 # remembered in .lineage-cache.json (commit that file!).
-schema_mappings:
-  - schema: salespm
-    model: "Sales and Project Management"
+{mappings_block}
 
 output:
-  dir: ./data-docs            # markdown docs (for agents)
-  site_dir: ./data-docs-site  # html portal (for humans)
+  dir: {output_dir}        # markdown docs (for agents)
+  site_dir: {site_dir}     # html portal (for humans)
 
 # sqlglot dialect used to parse the SQL repo (tsql covers SQL Server,
 # Azure SQL/serverless, and Fabric warehouse).
-sql_dialect: tsql
+sql_dialect: {sql_dialect}
 """
+
+
+def render_config_yaml(
+    *,
+    project_name: str,
+    sql_path: str,
+    pbi_path: str,
+    mappings: list[tuple[str, str]],
+    sql_include: list[str] | None = None,
+    sql_exclude: list[str] | None = None,
+    pbi_include: list[str] | None = None,
+    pbi_exclude: list[str] | None = None,
+    output_dir: str = "./data-docs",
+    site_dir: str = "./data-docs-site",
+    sql_dialect: str = "tsql",
+) -> str:
+    """Render a commented coop-data-doc.yml from values.
+
+    Used by both `init` (defaults) and the `setup` wizard (entered/refreshed
+    values). All scalars are JSON-quoted, which is valid YAML.
+    """
+    if mappings:
+        lines = ["schema_mappings:"]
+        for schema, model in mappings:
+            lines.append(f"  - schema: {json.dumps(schema)}")
+            lines.append(f"    model: {json.dumps(model)}")
+        mappings_block = "\n".join(lines)
+    else:
+        mappings_block = "schema_mappings: []"
+    return _CONFIG_TEMPLATE.format(
+        project_name=json.dumps(project_name),
+        sql_path=json.dumps(sql_path),
+        sql_include=json.dumps(sql_include if sql_include is not None else DEFAULT_SQL_INCLUDE),
+        sql_exclude=json.dumps(sql_exclude if sql_exclude is not None else DEFAULT_SQL_EXCLUDE),
+        pbi_path=json.dumps(pbi_path),
+        pbi_include=json.dumps(pbi_include if pbi_include is not None else DEFAULT_PBI_INCLUDE),
+        pbi_exclude=json.dumps(pbi_exclude if pbi_exclude is not None else []),
+        mappings_block=mappings_block,
+        output_dir=json.dumps(output_dir),
+        site_dir=json.dumps(site_dir),
+        sql_dialect=json.dumps(sql_dialect),
+    )

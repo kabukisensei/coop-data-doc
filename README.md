@@ -44,10 +44,14 @@ pipx install coop-data-doc        # or: uv tool install coop-data-doc
 
 ```bash
 cd your-docs-folder
-coop-data-doc init                # creates coop-data-doc.yml — edit the two repo paths
+coop-data-doc setup               # interactive wizard: repo paths, mappings, output dirs
 coop-data-doc build               # answers a few mapping questions the first time
 open data-docs-site/index.html
 ```
+
+Prefer editing a file by hand? `coop-data-doc init` writes a commented starter
+config instead. Re-run `coop-data-doc setup` anytime — it prefills your current
+values so you can change just one thing.
 
 ## How it works
 
@@ -86,7 +90,8 @@ so every later run (including CI) is fully automated.
 
 | Command | What it does |
 | --- | --- |
-| `coop-data-doc init` | scaffold a commented config |
+| `coop-data-doc setup` | interactive wizard — create or update the config (prefills current values) |
+| `coop-data-doc init` | scaffold a commented config to edit by hand |
 | `coop-data-doc scan` | crawl + parse + link; writes `graph.json` and a warning summary |
 | `coop-data-doc build` | scan + Markdown docs + offline HTML portal (`--skip-html`, `--serve`) |
 | `coop-data-doc check` | CI gate: fails if docs are stale or references unresolved |

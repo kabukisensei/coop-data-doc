@@ -21,7 +21,7 @@ If `.venv` is missing: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev
    output. `tests/test_determinism.py` byte-compares two full builds.
 2. **Offline** — no network/DB/LLM at runtime; built HTML must work over
    `file://` (vendored assets in `src/coop_data_doc/templates/assets/`).
-3. **Pure parsers** — no print/exit outside `cli.py` and
+3. **Pure parsers** — no print/exit outside `cli.py`, `wizard.py`, and
    `linker/interactive.py`; warnings are returned as `ParseWarning` values.
 4. **Never guess lineage** — un-provable things become warnings or
    `unresolved` markers, not edges.

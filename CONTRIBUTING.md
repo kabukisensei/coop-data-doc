@@ -22,8 +22,9 @@ The original builder briefs live in `tasks/` and double as interface documentati
 2. **Offline at runtime.** No network, no DB connections, no LLM calls.
    The built HTML must work over `file://` (vendored assets live in
    `src/coop_data_doc/templates/assets/`).
-3. **Parsers are pure.** No printing or exiting outside `cli.py` and
-   `linker/interactive.py`; warnings are returned as `ParseWarning` values.
+3. **Parsers are pure.** No printing or exiting outside `cli.py`,
+   `wizard.py`, and `linker/interactive.py`; warnings are returned as
+   `ParseWarning` values.
 4. **Never guess lineage.** Dynamic SQL, opaque pbix models, and
    unrecognized partition sources produce warnings/unresolved markers, not
    invented edges.
