@@ -9,6 +9,7 @@ regeneration verbatim.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from coop_data_doc.graph.model import LineageGraph, Node, NodeType
@@ -50,6 +51,7 @@ def _front_matter(graph: LineageGraph, node: Node) -> str:
     lines.append(f"name: {_quote(node.name)}")
     lines.append(f"schema: {_quote(node.schema_name)}")
     lines.append(f"source_file: {_quote(node.source_file)}")
+    lines.append(f"path: {_quote(f'{node.node_type.value}/{slug(node.id)}.md')}")
     for key, ids in (
         ("upstream_inputs", graph.upstream(node.id, depth=1)),
         ("downstream_dependents", graph.downstream(node.id, depth=1)),
@@ -205,15 +207,25 @@ def _index_page(graph: LineageGraph, project_name: str) -> str:
     return "\n".join(lines)
 
 
-def render_markdown(graph: LineageGraph, out_dir: Path, project_name: str) -> list[Path]:
+def render_markdown(
+    graph: LineageGraph,
+    out_dir: Path,
+    project_name: str,
+    *,
+    on_node: Callable[..., None] | None = None,
+) -> list[Path]:
     """Write one page per node plus index.md and manifest.json; returns
     the sorted list of written paths. Safe to re-run over existing output.
+
+    ``on_node`` (optional) is called once per node for progress reporting.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for node_id in sorted(graph.nodes):
         node = graph.nodes[node_id]
+        if on_node:
+            on_node(node_id)
         page_dir = out_dir / node.node_type.value
         page_dir.mkdir(parents=True, exist_ok=True)
         page_path = page_dir / f"{slug(node_id)}.md"

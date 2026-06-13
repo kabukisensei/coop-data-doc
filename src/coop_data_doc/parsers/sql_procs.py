@@ -10,6 +10,7 @@ Dynamic SQL is never guessed at — it produces a warning instead.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 from sqlglot import exp
 
@@ -159,13 +160,21 @@ def _apply_lineage(graph: LineageGraph, proc: Node, lineage: StatementLineage, e
 
 
 def parse_sql_procs(
-    entries: list[FileEntry], graph: LineageGraph, dialect: str = "tsql"
+    entries: list[FileEntry],
+    graph: LineageGraph,
+    dialect: str = "tsql",
+    *,
+    on_file: Callable[..., None] | None = None,
 ) -> list[ParseWarning]:
     """Extract stored_proc nodes and writes/reads/references/defines edges
     from CREATE PROCEDURE batches, statement by statement.
+
+    ``on_file`` (optional) is called once per entry for progress reporting.
     """
     warnings: list[ParseWarning] = []
     for entry in entries:
+        if on_file:
+            on_file(entry.path)
         text = read_sql_file(entry)
         for batch in split_batches(text):
             found = _find_proc(batch)

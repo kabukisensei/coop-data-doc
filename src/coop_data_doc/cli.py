@@ -35,6 +35,7 @@ from coop_data_doc.parsers.sql_procs import (
     resolve_stub_references,
 )
 from coop_data_doc.parsers.tmdl import parse_tmdl
+from coop_data_doc.progress import Progress, should_enable
 from coop_data_doc.render.markdown import render_markdown
 from coop_data_doc.render.site import build_site, write_mkdocs_config
 
@@ -43,32 +44,44 @@ DEFAULT_CONFIG = "coop-data-doc.yml"
 
 
 def run_pipeline(
-    config: Config, interactive: bool
+    config: Config,
+    interactive: bool,
+    progress: Progress | None = None,
 ) -> tuple[LineageGraph, ResolutionResult, list[ParseWarning]]:
     """Execute the full crawl -> parse -> link pipeline and return
     (graph, resolution result, warnings). Shared by scan/build/check.
+
+    ``progress`` (optional) drives stderr progress bars; defaults to a
+    disabled no-op so callers and tests that don't want output are silent.
     """
+    progress = progress or Progress(enabled=False)
     graph = LineageGraph()
     inventory, warnings = crawl(config)
+    progress.line(f"Crawling repos… {len(inventory.entries)} files found")
 
     sql_entries = inventory.by_kind(FileKind.SQL_FILE)
-    warnings += parse_sql_objects(sql_entries, graph, config.sql_dialect)
-    warnings += parse_sql_procs(sql_entries, graph, config.sql_dialect)
+    with progress.bar("Parsing SQL", total=2 * len(sql_entries)) as tick:
+        warnings += parse_sql_objects(sql_entries, graph, config.sql_dialect, on_file=tick)
+        warnings += parse_sql_procs(sql_entries, graph, config.sql_dialect, on_file=tick)
     resolve_stub_references(graph)
 
-    warnings += parse_tmdl(inventory.by_kind(FileKind.TMDL), graph)
-    warnings += parse_bim(inventory.by_kind(FileKind.BIM), graph)
-    warnings += parse_pbir(
-        inventory.by_kind(FileKind.PBIR_VISUAL),
-        inventory.by_kind(FileKind.PBIR_PAGE),
-        graph,
-    )
-    warnings += parse_legacy_reports(inventory.by_kind(FileKind.REPORT_JSON_LEGACY), graph)
-    warnings += parse_pbix(inventory.by_kind(FileKind.PBIX), graph)
+    tmdl = inventory.by_kind(FileKind.TMDL)
+    bim = inventory.by_kind(FileKind.BIM)
+    visuals = inventory.by_kind(FileKind.PBIR_VISUAL)
+    legacy = inventory.by_kind(FileKind.REPORT_JSON_LEGACY)
+    pbix = inventory.by_kind(FileKind.PBIX)
+    pbi_total = len(tmdl) + len(bim) + len(visuals) + len(legacy) + len(pbix)
+    with progress.bar("Parsing Power BI", total=pbi_total) as tick:
+        warnings += parse_tmdl(tmdl, graph, on_file=tick)
+        warnings += parse_bim(bim, graph, on_file=tick)
+        warnings += parse_pbir(visuals, inventory.by_kind(FileKind.PBIR_PAGE), graph, on_file=tick)
+        warnings += parse_legacy_reports(legacy, graph, on_file=tick)
+        warnings += parse_pbix(pbix, graph, on_file=tick)
     warnings += link_visual_bindings(graph)
 
     classify_silver(graph)
 
+    progress.line("Linking cross-repo references…")
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
     result, link_warnings = link_graph(graph, config, cache, interactive)
     warnings += link_warnings
@@ -101,8 +114,14 @@ def _strict_failures(result: ResolutionResult, warnings: list[ParseWarning]) -> 
     return failures
 
 
-def _scan(config: Config, non_interactive: bool, strict: bool, quiet: bool) -> LineageGraph:
-    graph, result, warnings = run_pipeline(config, interactive=not non_interactive)
+def _scan(
+    config: Config,
+    non_interactive: bool,
+    strict: bool,
+    quiet: bool,
+    progress: Progress | None = None,
+) -> LineageGraph:
+    graph, result, warnings = run_pipeline(config, interactive=not non_interactive, progress=progress)
     out_dir = config.output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     to_json_file(graph, out_dir / "graph.json")
@@ -287,7 +306,8 @@ def init(path: str, force: bool) -> None:
 def scan(ctx: click.Context, config_path: str, non_interactive: bool, strict: bool) -> None:
     """Crawl, parse, and link both repos; write graph.json."""
     config = _load_config(config_path)
-    _scan(config, non_interactive, strict, ctx.obj["quiet"])
+    progress = Progress(should_enable(ctx.obj["quiet"]))
+    _scan(config, non_interactive, strict, ctx.obj["quiet"], progress=progress)
 
 
 def _run_build(
@@ -300,9 +320,11 @@ def _run_build(
 ) -> None:
     """Shared implementation behind `build` and `update`."""
     config = _load_config(config_path)
-    graph = _scan(config, non_interactive, strict, ctx.obj["quiet"])
+    progress = Progress(should_enable(ctx.obj["quiet"]))
+    graph = _scan(config, non_interactive, strict, ctx.obj["quiet"], progress=progress)
     out_dir = config.output_dir()
-    render_markdown(graph, out_dir, config.project_name)
+    with progress.bar("Rendering pages", total=len(graph.nodes)) as tick:
+        render_markdown(graph, out_dir, config.project_name, on_node=tick)
     click.echo(f"Markdown docs: {out_dir}", err=True)
     if skip_html:
         return

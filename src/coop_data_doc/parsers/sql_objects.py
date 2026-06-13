@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from sqlglot import exp
@@ -197,14 +198,22 @@ def _handle_create_view(
 
 
 def parse_sql_objects(
-    entries: list[FileEntry], graph: LineageGraph, dialect: str = "tsql"
+    entries: list[FileEntry],
+    graph: LineageGraph,
+    dialect: str = "tsql",
+    *,
+    on_file: Callable[..., None] | None = None,
 ) -> list[ParseWarning]:
     """Extract gold_table/view nodes, column contracts, and reads edges
     from CREATE TABLE / CREATE VIEW batches; regex fallback when sqlglot
     can't parse, recorded as parse_quality metadata plus a warning.
+
+    ``on_file`` (optional) is called once per entry for progress reporting.
     """
     warnings: list[ParseWarning] = []
     for entry in entries:
+        if on_file:
+            on_file(entry.path)
         text = read_sql_file(entry)
         for batch in split_batches(text):
             if PROC_HEADER_RE.search(batch):

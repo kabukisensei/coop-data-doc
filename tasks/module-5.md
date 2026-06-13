@@ -15,23 +15,29 @@ golden files under `tests/golden/`.
 def render_markdown(graph: LineageGraph, out_dir: Path, project_name: str) -> list[Path]: ...
 ```
 
-One file per node at `{out_dir}/{node_type}/{slug}.md` where slug = the id's name part with
-`.`/spaces → `-` (filesystem-safe, deterministic). Exact layout:
+One file per node at `{out_dir}/{node_type}/{slug}.md`. **As built, `slug()` lives in
+`render/mermaid.py`**: it strips every filesystem-illegal character (`< > : " / \ | ? *`
++ control chars), replaces `.`/spaces, bounds the readable part to 80 chars, and appends
+`-<8-char sha1 of the id>` for guaranteed uniqueness — so the filename is *not* derivable
+from the id by hand. The page's location is published in the `path` front-matter field.
+Exact layout (every value double-quoted; `path` sits between `source_file` and
+`upstream_inputs`):
 
 ```markdown
 ---
-id: view:salespm.dim_customer
-type: view
-name: dim_customer
-schema: salespm
-source_file: views/salespm/dim_customer.sql
+id: "view:salespm.dim_customer"
+type: "view"
+name: "dim_customer"
+schema: "salespm"
+source_file: "views/salespm/dim_customer.sql"
+path: "view/salespm-dim_customer-<hash>.md"
 upstream_inputs:
-  - gold_table:dbo.customer
-  - silver_table:silver.crm_accounts
+  - "gold_table:dbo.customer"
+  - "silver_table:silver.crm_accounts"
 downstream_dependents:
-  - pbi_table:sales and project management.dim_customer
+  - "pbi_table:sales and project management.dim_customer"
 tags:
-  - salespm
+  - "salespm"
 ---
 
 # dim_customer `view`
@@ -48,7 +54,7 @@ tags:
 
 | Object | Type | Via | Evidence |
 | --- | --- | --- | --- |
-| [dbo.customer](../gold_table/dbo-customer.md) | gold_table | reads | views/salespm/dim_customer.sql |
+| [dbo.customer](../gold_table/dbo-customer-<hash>.md) | gold_table | reads | views/salespm/dim_customer.sql |
 
 ### Downstream
 
@@ -68,10 +74,11 @@ _Add a short description of what this object is for and who relies on it._
 ```
 
 Rules:
-- **Front-matter is strict YAML, keys in EXACTLY this order**, all lists sorted; `schema` key
-  maps from `node.schema_name`; `tags` = sorted unique of [schema_name, semantic-model name if
-  reachable]. `upstream_inputs`/`downstream_dependents` = `graph.upstream/downstream(id, depth=1)`.
-  Emit with a hand-rolled writer or `yaml.safe_dump(sort_keys=False)` — output must be stable.
+- **Front-matter is strict YAML, keys in EXACTLY this order** (`id`, `type`, `name`,
+  `schema`, `source_file`, `path`, `upstream_inputs`, `downstream_dependents`, `tags`),
+  all values double-quoted, lists sorted; `schema` key maps from `node.schema_name`;
+  `path` = `{node_type}/{slug}.md`. `upstream_inputs`/`downstream_dependents` =
+  `graph.upstream/downstream(id, depth=1)`. Output must be byte-stable.
 - **Business Intent preservation**: before writing, if the target file exists, extract the text
   between `<!-- intent:begin -->`/`<!-- intent:end -->` and carry it forward verbatim. This makes
   regeneration non-destructive — test this explicitly.

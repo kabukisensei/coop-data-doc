@@ -9,6 +9,7 @@ recognize. Malformed input warns; it never raises.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from coop_data_doc.config import ParseWarning
@@ -267,9 +268,16 @@ def parse_model_file(text: str, model_node: Node) -> None:
         model_node.metadata["relationships"] = [{"from": pair[0], "to": pair[1]} for pair in sorted(merged)]
 
 
-def parse_tmdl(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarning]:
+def parse_tmdl(
+    entries: list[FileEntry],
+    graph: LineageGraph,
+    *,
+    on_file: Callable[..., None] | None = None,
+) -> list[ParseWarning]:
     """Group TMDL files by semantic model, parse each, and resolve DAX
     measure dependencies per model.
+
+    ``on_file`` (optional) is called once per entry for progress reporting.
     """
     warnings: list[ParseWarning] = []
     groups: dict[tuple[str, str, str], list[FileEntry]] = {}
@@ -286,6 +294,8 @@ def parse_tmdl(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarni
             )
         )
         for entry in sorted(files, key=lambda e: e.path):
+            if on_file:
+                on_file(entry.path)
             try:
                 text = _read(entry)
             except OSError as exc:

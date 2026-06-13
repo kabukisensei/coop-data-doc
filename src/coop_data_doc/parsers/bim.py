@@ -6,6 +6,7 @@ Same outputs as the TMDL parser, sourced from the legacy JSON model format.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from coop_data_doc.config import ParseWarning
@@ -29,10 +30,20 @@ def _expression_text(expression) -> str:
     return str(expression or "")
 
 
-def parse_bim(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarning]:
-    """Extract semantic-model nodes/edges from model.bim JSON files."""
+def parse_bim(
+    entries: list[FileEntry],
+    graph: LineageGraph,
+    *,
+    on_file: Callable[..., None] | None = None,
+) -> list[ParseWarning]:
+    """Extract semantic-model nodes/edges from model.bim JSON files.
+
+    ``on_file`` (optional) is called once per entry for progress reporting.
+    """
     warnings: list[ParseWarning] = []
     for entry in entries:
+        if on_file:
+            on_file(entry.path)
         try:
             data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, json.JSONDecodeError) as exc:

@@ -106,10 +106,12 @@ interactive `questionary` prompt. Every interactive answer is written to
 nothing.
 
 **Two renderers, one graph.** `render/markdown.py` emits strict fixed-order
-YAML front-matter (`id`, `type`, `name`, `schema`, `source_file`,
+YAML front-matter (`id`, `type`, `name`, `schema`, `source_file`, `path`,
 `upstream_inputs`, `downstream_dependents`, `tags`) so agents can parse pages
 without heuristics; `manifest.json` is the whole serialized graph for
-programmatic consumers. `render/site.py` synthesizes a Material config and
+programmatic consumers. Page filenames come from `slug()` (filesystem-safe,
+length-bounded, hash-suffixed for uniqueness — not derivable from the id), so
+the `path` field is the source of truth for where a node's page lives. `render/site.py` synthesizes a Material config and
 post-processes the built HTML so the portal works over `file://` with zero
 network: vendored `mermaid.min.js` (Material skips its CDN fetch when
 `window.mermaid` exists), vendored iframe-worker shim (URL rewritten in the
@@ -122,9 +124,10 @@ re-rendering for the same reason.
 
 ## For agents: answering questions from the output
 
-- *"What breaks if I drop column X from view Y?"* — open
-  `data-docs/view/<slug>.md`, read `downstream_dependents`, follow each
-  page's front-matter transitively (or walk `manifest.json` edges with the
+- *"What breaks if I drop column X from view Y?"* — open the view's page
+  (find it via the `path` field, not by computing a filename), read
+  `downstream_dependents`, follow each page's front-matter transitively
+  (or walk `manifest.json` edges with the
   flow table above).
 - *"Where does this report number come from?"* — visual page →
   `visualizes` → measure (DAX shown on the measure page) → `references` →

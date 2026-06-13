@@ -4,8 +4,14 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from coop_data_doc.cli import cli
+from coop_data_doc.render.mermaid import slug
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def doc_page(docs: Path, node_id: str) -> Path:
+    """A node's generated page path (slug includes a hash suffix)."""
+    return docs / node_id.split(":", 1)[0] / f"{slug(node_id)}.md"
 
 
 def setup_workspace(tmp_path: Path) -> Path:
@@ -78,8 +84,8 @@ def test_build_skip_html(tmp_path: Path):
     docs = tmp_path / "data-docs"
     assert (docs / "index.md").is_file()
     assert (docs / "manifest.json").is_file()
-    assert (docs / "view" / "salespm-dim_customer.md").is_file()
-    assert (docs / "stored_proc" / "dbo-usp_load_fact_sales.md").is_file()
+    assert doc_page(docs, "view:salespm.dim_customer").is_file()
+    assert doc_page(docs, "stored_proc:dbo.usp_load_fact_sales").is_file()
 
 
 def test_check_passes_then_detects_staleness(tmp_path: Path):
@@ -109,7 +115,7 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
     assert result.exit_code == 0, result.output
 
     # human edits an intent block -> still up to date (preserved, not stale)
-    page = tmp_path / "data-docs" / "view" / "salespm-dim_customer.md"
+    page = doc_page(tmp_path / "data-docs", "view:salespm.dim_customer")
     page.write_text(  # newline="\n": mimic an editor that preserves LF
         page.read_text(encoding="utf-8").replace(
             "_Add a short description of what this object is for and who relies on it._",

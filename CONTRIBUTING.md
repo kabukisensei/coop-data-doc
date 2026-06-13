@@ -29,8 +29,14 @@ The original builder briefs live in `tasks/` and double as interface documentati
    nothing in the pipeline may import it.
 3. **Parsers are pure.** No printing or exiting outside `cli.py`,
    `wizard.py`, and `linker/interactive.py`; warnings are returned as
-   `ParseWarning` values.
-4. **Never guess lineage.** Dynamic SQL, opaque pbix models, and
+   `ParseWarning` values. Parsers/renderers may accept an optional
+   `on_file`/`on_node` callback for progress reporting (the CLI supplies
+   it) — that's a reporting hook, not printing; the parser never renders.
+4. **Page filenames go through `slug()`** (`render/mermaid.py`): always
+   filesystem-safe (Windows-illegal chars stripped), length-bounded, and
+   uniquified with a short id-hash. Never build a page path by hand; agents
+   read the `path` front-matter field.
+5. **Never guess lineage.** Dynamic SQL, opaque pbix models, and
    unrecognized partition sources produce warnings/unresolved markers, not
    invented edges.
 

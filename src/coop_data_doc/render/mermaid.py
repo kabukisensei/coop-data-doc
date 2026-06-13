@@ -1,13 +1,24 @@
 """Mermaid flowchart generation (Module 5).
 
 Mermaid node aliases are sequential (n0, n1, ...) assigned over sorted
-graph ids, so charts are deterministic and labels never need escaping
-beyond double quotes.
+graph ids, so charts are deterministic. Labels are wrapped in double
+quotes and additionally have mermaid-significant characters neutralised
+(``"`` ``<`` ``>`` ``|`` and backtick), since object names — especially
+DAX measure names — can contain anything.
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 from coop_data_doc.graph.model import LineageGraph, Node, NodeType
+
+# Characters illegal in Windows filenames (plus control chars). Names also
+# can't end in a dot/space on Windows, and must stay well under MAX_PATH.
+_UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_COLLAPSE_DASH = re.compile(r"-{2,}")
+_SLUG_MAX = 80  # readable portion; a short id-hash is always appended
 
 # (open, close) bracket pair per node type
 _SHAPES: dict[NodeType, tuple[str, str]] = {
@@ -36,11 +47,26 @@ ESTATE_CHART_NODE_CAP = 150
 
 
 def slug(node_id: str) -> str:
-    """Filesystem-safe page name derived from a node id."""
-    name_part = node_id.split(":", 1)[1]
-    for char in (".", " ", "/", "\\"):
-        name_part = name_part.replace(char, "-")
-    return name_part
+    """Filesystem-safe, length-bounded, collision-free page name for a node id.
+
+    A readable portion (the id's name, with every filesystem-illegal
+    character — ``< > : " / \\ | ? *`` and control chars — plus dots and
+    spaces replaced by ``-``) is followed by a short deterministic hash of
+    the full id. The hash guarantees uniqueness (two distinct ids never
+    collide to one filename) and keeps names safe on Windows, where the
+    original crashed on characters like ``|`` in DAX measure names. Pure
+    function of the id, so every link generator stays consistent.
+    """
+    name_part = node_id.split(":", 1)[1] if ":" in node_id else node_id
+    safe = _UNSAFE_CHARS.sub("-", name_part)
+    safe = safe.replace(".", "-").replace(" ", "-")
+    safe = _COLLAPSE_DASH.sub("-", safe).strip("-. ")
+    if len(safe) > _SLUG_MAX:
+        safe = safe[:_SLUG_MAX].strip("-. ")
+    if not safe:
+        safe = node_id.split(":", 1)[0]  # fall back to the node type
+    digest = hashlib.sha1(node_id.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}-{digest}"
 
 
 def doc_relpath(node: Node) -> str:
@@ -48,9 +74,14 @@ def doc_relpath(node: Node) -> str:
     return f"../{node.node_type.value}/{slug(node.id)}.md"
 
 
+# mermaid-significant characters → safe visual substitutes (keeps labels
+# readable while avoiding any chance of breaking node/edge syntax)
+_LABEL_SUBST = str.maketrans({'"': "'", "<": "(", ">": ")", "|": "/", "`": "'"})
+
+
 def _label(node: Node) -> str:
     text = f"{node.schema_name}.{node.name}" if node.schema_name else node.name
-    return text.replace('"', "'")
+    return text.translate(_LABEL_SUBST)
 
 
 def _node_line(alias: str, node: Node) -> str:

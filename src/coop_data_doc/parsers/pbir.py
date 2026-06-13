@@ -9,6 +9,7 @@ models once everything is parsed. Anything ambiguous is left as
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from coop_data_doc.config import ParseWarning
@@ -144,9 +145,13 @@ def parse_pbir(
     visual_entries: list[FileEntry],
     page_entries: list[FileEntry],
     graph: LineageGraph,
+    *,
+    on_file: Callable[..., None] | None = None,
 ) -> list[ParseWarning]:
     """Extract report/page/visual nodes and field bindings from PBIR
     visual.json + page.json files.
+
+    ``on_file`` (optional) is called once per visual entry for progress.
     """
     warnings: list[ParseWarning] = []
 
@@ -164,6 +169,8 @@ def parse_pbir(
             page_display[(root, parts[-2])] = data.get("displayName") or parts[-2]
 
     for entry in sorted(visual_entries, key=lambda e: e.path):
+        if on_file:
+            on_file(entry.path)
         try:
             data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -247,10 +254,20 @@ def parse_layout_json(
     return warnings
 
 
-def parse_legacy_reports(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarning]:
-    """Extract the same structure from standalone legacy report.json files."""
+def parse_legacy_reports(
+    entries: list[FileEntry],
+    graph: LineageGraph,
+    *,
+    on_file: Callable[..., None] | None = None,
+) -> list[ParseWarning]:
+    """Extract the same structure from standalone legacy report.json files.
+
+    ``on_file`` (optional) is called once per entry for progress reporting.
+    """
     warnings: list[ParseWarning] = []
     for entry in sorted(entries, key=lambda e: e.path):
+        if on_file:
+            on_file(entry.path)
         try:
             data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, json.JSONDecodeError) as exc:

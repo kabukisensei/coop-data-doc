@@ -15,6 +15,7 @@ import io
 import json
 import re
 import zipfile
+from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from coop_data_doc.config import ParseWarning
@@ -49,12 +50,21 @@ def _extract_mashup_m(blob: bytes) -> str | None:
     return None
 
 
-def parse_pbix(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarning]:
+def parse_pbix(
+    entries: list[FileEntry],
+    graph: LineageGraph,
+    *,
+    on_file: Callable[..., None] | None = None,
+) -> list[ParseWarning]:
     """Best-effort extraction from .pbix archives; warns instead of raising
     on anything malformed or proprietary.
+
+    ``on_file`` (optional) is called once per entry for progress reporting.
     """
     warnings: list[ParseWarning] = []
     for entry in sorted(entries, key=lambda e: e.path):
+        if on_file:
+            on_file(entry.path)
         stem = PurePosixPath(entry.path).stem
         try:
             archive = zipfile.ZipFile(entry.abs_path)

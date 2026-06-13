@@ -284,6 +284,10 @@ pipeline command accepts `--config PATH` (default: `./coop-data-doc.yml`). Globa
 go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet) —
 e.g. `coop-data-doc -q update`.
 
+`scan`/`build`/`update` show progress bars on stderr while they work, but only in an
+interactive terminal — they're suppressed by `-q` and absent in CI or piped output, and
+they never affect the generated files.
+
 ## Keeping the tool updated
 
 ```bash
@@ -327,8 +331,10 @@ contract:
 - `data-docs/manifest.json` — the entire lineage graph in one JSON file. Best for
   programmatic traversal and impact analysis. (`data-docs/graph.json` is a byte-identical
   copy written by every pipeline run; read `manifest.json`.)
-- `data-docs/<type>/<slug>.md` — one page per object. Best for reading context about a
-  specific object. `data-docs/index.md` lists object counts and unresolved items.
+- `data-docs/<type>/<slug>.md` — one page per object (its exact location is the `path`
+  field in each page's front-matter — see **Page paths** below). Best for reading
+  context about a specific object. `data-docs/index.md` lists object counts and
+  unresolved items.
 
 **Identifiers.** Node ids are stable, lowercase strings: `"<type>:<schema>.<name>"` —
 e.g. `view:salespm.dim_customer`. Caveats: the `<schema>.` part is **omitted** for
@@ -336,9 +342,11 @@ objects that have no schema (`report:salespm`, `semantic_model:salespm`), and na
 contain spaces (`measure:salespm.total sales`). Prefer reading the explicit
 `name`/`schema` fields over parsing ids.
 
-**Page paths.** A node's page lives at `<type>/<slug>.md`, where slug = **everything
-after the first `:` in the id**, with `.`, spaces, `/`, and `\` each replaced by `-`.
-Worked example: `view:salespm.dim_customer` → `view/salespm-dim_customer.md`.
+**Page paths.** Don't compute these — **read the `path` field** in a node's
+front-matter (and resolve ids to pages the same way). The on-disk slug is sanitised for
+cross-platform safety (Windows-illegal characters removed) and carries a short hash
+suffix to guarantee uniqueness, so it is *not* trivially derivable from the id. Every
+page is at `data-docs/<path>`.
 
 **Page front-matter** — strict YAML, fixed key order, all strings double-quoted,
 non-empty lists in block style (empty lists render as `[]`):
@@ -354,6 +362,7 @@ schema: "salespm"                         # SQL schema; for pbi_table/measure no
                                           # (lowercased) model name; for report_page/visual
                                           # it's the report name; "" for report/semantic_model
 source_file: "views/salespm/dim_customer.sql"   # repo-relative; cite this as evidence
+path: "view/salespm-dim_customer-<hash>.md"     # this page's location under data-docs/ (read it, don't compute it)
 upstream_inputs:                          # direct (depth-1) data sources, flow-normalized
   - "gold_table:dbo.fact_sales"
 downstream_dependents:                    # direct (depth-1) consumers
@@ -362,6 +371,10 @@ tags:
   - "salespm"
 ---
 ```
+
+To go from an id (e.g. one listed in `upstream_inputs`) to its page, open that node's
+page via its own `path` field — or scan `manifest.json` for the node and read its data
+directly. Avoid string-building the filename.
 
 **Manifest shape.** `manifest.json` has `nodes` (object keyed by id) and `edges`
 (list). Node fields use the internal names `node_type` and `schema_name` (the
