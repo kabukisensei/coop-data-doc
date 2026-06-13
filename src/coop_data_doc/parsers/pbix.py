@@ -30,9 +30,7 @@ from coop_data_doc.graph.model import (
 from coop_data_doc.parsers.pbir import parse_layout_json
 from coop_data_doc.parsers.tmdl import _attach_partition_source
 
-_SHARED_RE = re.compile(
-    r'\bshared\s+(?:#"([^"]+)"|([\w.]+))\s*=\s*(.*?);\s*(?=\bshared\b|\Z)', re.S
-)
+_SHARED_RE = re.compile(r'\bshared\s+(?:#"([^"]+)"|([\w.]+))\s*=\s*(.*?);\s*(?=\bshared\b|\Z)', re.S)
 
 PBIP_ADVICE = "open in Power BI Desktop and save as a .pbip project for full lineage"
 
@@ -74,11 +72,7 @@ def parse_pbix(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarni
 
             if "Report/Layout" in names:
                 try:
-                    raw = (
-                        archive.read("Report/Layout")
-                        .decode("utf-16-le", errors="replace")
-                        .lstrip("﻿")
-                    )
+                    raw = archive.read("Report/Layout").decode("utf-16-le", errors="replace").lstrip("﻿")
                     warnings += parse_layout_json(json.loads(raw), stem, entry.path, graph)
                 except (json.JSONDecodeError, KeyError, ValueError):
                     warnings.append(

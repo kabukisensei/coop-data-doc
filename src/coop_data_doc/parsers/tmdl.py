@@ -75,9 +75,7 @@ def _attach_partition_source(
         for sql in native_sql:
             for statement in parse_batch(sql):
                 tables |= collect_source_tables(statement)
-        table_node.metadata["native_query_tables"] = sorted(
-            f"{schema}.{name}" for schema, name in tables
-        )
+        table_node.metadata["native_query_tables"] = sorted(f"{schema}.{name}" for schema, name in tables)
         if len(tables) == 1:
             schema, name = next(iter(tables))
             table_node.metadata["partition_source"] = {
@@ -265,12 +263,8 @@ def parse_model_file(text: str, model_node: Node) -> None:
     )
     if complete:
         existing = model_node.metadata.get("relationships", [])
-        merged = {(r["from"], r["to"]) for r in existing} | {
-            (r["from"], r["to"]) for r in complete
-        }
-        model_node.metadata["relationships"] = [
-            {"from": pair[0], "to": pair[1]} for pair in sorted(merged)
-        ]
+        merged = {(r["from"], r["to"]) for r in existing} | {(r["from"], r["to"]) for r in complete}
+        model_node.metadata["relationships"] = [{"from": pair[0], "to": pair[1]} for pair in sorted(merged)]
 
 
 def parse_tmdl(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarning]:
@@ -295,9 +289,7 @@ def parse_tmdl(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarni
             try:
                 text = _read(entry)
             except OSError as exc:
-                warnings.append(
-                    ParseWarning(file=entry.path, message=str(exc), category="tmdl_parse")
-                )
+                warnings.append(ParseWarning(file=entry.path, message=str(exc), category="tmdl_parse"))
                 continue
             basename = PurePosixPath(entry.path).name.lower()
             if basename == "model.tmdl":

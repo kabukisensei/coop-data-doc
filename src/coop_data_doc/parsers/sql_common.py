@@ -16,9 +16,7 @@ from sqlglot import exp
 from coop_data_doc.graph.model import normalize_identifier
 
 GO_RE = re.compile(r"^\s*GO\s*;?\s*$", re.IGNORECASE | re.MULTILINE)
-PROC_HEADER_RE = re.compile(
-    r"\bCREATE\s+(?:OR\s+ALTER\s+)?PROC(?:EDURE)?\s+([\w\[\].]+)", re.IGNORECASE
-)
+PROC_HEADER_RE = re.compile(r"\bCREATE\s+(?:OR\s+ALTER\s+)?PROC(?:EDURE)?\s+([\w\[\].]+)", re.IGNORECASE)
 DYNAMIC_SQL_RE = re.compile(r"\bsp_executesql\b|\bEXEC(?:UTE)?\s*\(", re.IGNORECASE)
 EXEC_RE = re.compile(r"^\s*EXEC(?:UTE)?\s+([\w\[\].]+)", re.IGNORECASE)
 
@@ -197,6 +195,7 @@ def collect_source_tables(expression: exp.Expression) -> set[tuple[str, str]]:
 @dataclass
 class StatementLineage:
     """Tables one statement writes to and reads from."""
+
     writes: set[tuple[str, str]] = field(default_factory=set)
     reads: set[tuple[str, str]] = field(default_factory=set)
 

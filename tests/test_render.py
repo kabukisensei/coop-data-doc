@@ -21,9 +21,7 @@ def build_graph() -> LineageGraph:
     """silver -> proc -> gold -> view -> pbi_table -> model, + visual"""
     g = LineageGraph()
     silver = g.add_node(make_node(NodeType.SILVER_TABLE, "silver", "customers"))
-    proc = g.add_node(
-        make_node(NodeType.STORED_PROC, "dbo", "usp_load", source_file="procs/usp_load.sql")
-    )
+    proc = g.add_node(make_node(NodeType.STORED_PROC, "dbo", "usp_load", source_file="procs/usp_load.sql"))
     gold = g.add_node(
         make_node(
             NodeType.GOLD_TABLE,
@@ -36,20 +34,35 @@ def build_graph() -> LineageGraph:
             ],
         )
     )
-    view = g.add_node(
-        make_node(NodeType.VIEW, "salespm", "dim_customer", source_file="views/dim.sql")
-    )
+    view = g.add_node(make_node(NodeType.VIEW, "salespm", "dim_customer", source_file="views/dim.sql"))
     model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "salespm"))
     pbit = g.add_node(make_node(NodeType.PBI_TABLE, "salespm", "dim_customer"))
     vis = g.add_node(make_node(NodeType.VISUAL, "salespm", "abc123"))
-    g.add_edge(Edge(source_id=proc.id, target_id=silver.id, edge_type=EdgeType.READS,
-                    evidence="procs/usp_load.sql: reads silver.customers"))
-    g.add_edge(Edge(source_id=proc.id, target_id=gold.id, edge_type=EdgeType.WRITES,
-                    evidence="procs/usp_load.sql: writes dbo.fact_sales"))
-    g.add_edge(Edge(source_id=view.id, target_id=gold.id, edge_type=EdgeType.READS,
-                    evidence="views/dim.sql: FROM dbo.fact_sales"))
-    g.add_edge(Edge(source_id=view.id, target_id=pbit.id, edge_type=EdgeType.FEEDS,
-                    evidence="linker: exact"))
+    g.add_edge(
+        Edge(
+            source_id=proc.id,
+            target_id=silver.id,
+            edge_type=EdgeType.READS,
+            evidence="procs/usp_load.sql: reads silver.customers",
+        )
+    )
+    g.add_edge(
+        Edge(
+            source_id=proc.id,
+            target_id=gold.id,
+            edge_type=EdgeType.WRITES,
+            evidence="procs/usp_load.sql: writes dbo.fact_sales",
+        )
+    )
+    g.add_edge(
+        Edge(
+            source_id=view.id,
+            target_id=gold.id,
+            edge_type=EdgeType.READS,
+            evidence="views/dim.sql: FROM dbo.fact_sales",
+        )
+    )
+    g.add_edge(Edge(source_id=view.id, target_id=pbit.id, edge_type=EdgeType.FEEDS, evidence="linker: exact"))
     g.add_edge(Edge(source_id=pbit.id, target_id=model.id, edge_type=EdgeType.FEEDS))
     g.add_edge(Edge(source_id=vis.id, target_id=pbit.id, edge_type=EdgeType.VISUALIZES))
     return g
@@ -62,8 +75,14 @@ def test_front_matter_strict_yaml(tmp_path: Path):
     front = page.split("---")[1]
     data = yaml.safe_load(front)
     assert list(data) == [
-        "id", "type", "name", "schema", "source_file",
-        "upstream_inputs", "downstream_dependents", "tags",
+        "id",
+        "type",
+        "name",
+        "schema",
+        "source_file",
+        "upstream_inputs",
+        "downstream_dependents",
+        "tags",
     ]
     assert data["id"] == "view:salespm.dim_customer"
     assert data["upstream_inputs"] == ["gold_table:dbo.fact_sales"]
@@ -88,7 +107,7 @@ def test_intent_preserved_across_regeneration(tmp_path: Path):
         "_Add a short description of what this object is for and who relies on it._",
         custom,
     )
-    page_path.write_text(text, encoding="utf-8")
+    page_path.write_text(text, encoding="utf-8", newline="\n")
 
     render_markdown(graph, tmp_path, "Test Estate")
     regenerated = page_path.read_text(encoding="utf-8")
@@ -111,12 +130,10 @@ def test_local_flowchart_deterministic_and_linked():
     chart = local_flowchart(graph, "view:salespm.dim_customer")
     assert chart == local_flowchart(graph, "view:salespm.dim_customer")
     assert chart.startswith("flowchart LR")
-    assert 'click' in chart
+    assert "click" in chart
     assert "stroke-width:3px" in chart
     # the focus node itself must not get a click link
-    focus_alias = [
-        line.split()[1] for line in chart.splitlines() if "stroke-width" in line
-    ][0]
+    focus_alias = [line.split()[1] for line in chart.splitlines() if "stroke-width" in line][0]
     assert f"click {focus_alias} " not in chart
 
 
@@ -156,10 +173,7 @@ def test_orphaned_pages_pruned_on_rerender(tmp_path: Path):
 
     # the view disappears from the estate
     del graph.nodes["view:salespm.dim_customer"]
-    graph.edges = [
-        e for e in graph.edges
-        if "view:salespm.dim_customer" not in (e.source_id, e.target_id)
-    ]
+    graph.edges = [e for e in graph.edges if "view:salespm.dim_customer" not in (e.source_id, e.target_id)]
     render_markdown(graph, tmp_path, "Test Estate")
 
     assert not view_page.exists()  # orphan pruned

@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 class ParseWarning(BaseModel):
     """A structured, printable warning returned (never printed) by parsers."""
+
     file: str
     message: str
     category: str
@@ -27,6 +28,7 @@ class ConfigError(Exception):
 
 class RepoConfig(BaseModel):
     """One crawl root: path plus include/exclude globs (exclude wins)."""
+
     model_config = ConfigDict(extra="forbid")
 
     path: str
@@ -45,6 +47,7 @@ class SchemaMapping(BaseModel):
 
 class OutputConfig(BaseModel):
     """Where generated docs land: markdown dir and HTML site dir."""
+
     model_config = ConfigDict(extra="forbid")
 
     dir: str = "./data-docs"
@@ -55,6 +58,7 @@ class Config(BaseModel):
     """Validated coop-data-doc.yml. Relative paths resolve against the
     config file's directory, not the current working directory.
     """
+
     model_config = ConfigDict(extra="forbid")
 
     project_name: str = "Data Estate"
@@ -90,9 +94,7 @@ class Config(BaseModel):
         """
         path = Path(path)
         if not path.is_file():
-            raise ConfigError(
-                f"Config file not found: {path}. Run `coop-data-doc init` to create one."
-            )
+            raise ConfigError(f"Config file not found: {path}. Run `coop-data-doc init` to create one.")
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as exc:
@@ -105,17 +107,14 @@ class Config(BaseModel):
             config = cls.model_validate(data)
         except ValidationError as exc:
             issues = "; ".join(
-                f"'{'.'.join(str(part) for part in err['loc'])}': {err['msg']}"
-                for err in exc.errors()
+                f"'{'.'.join(str(part) for part in err['loc'])}': {err['msg']}" for err in exc.errors()
             )
             raise ConfigError(f"Invalid config in {path}: {issues}") from exc
         config._base_dir = path.resolve().parent
         for repo_key in sorted(config.repos):
             root = config.repo_root(repo_key)
             if not root.is_dir():
-                raise ConfigError(
-                    f"Repo '{repo_key}' path does not exist: {root} (configured in {path})"
-                )
+                raise ConfigError(f"Repo '{repo_key}' path does not exist: {root} (configured in {path})")
         return config
 
     @staticmethod

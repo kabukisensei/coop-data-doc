@@ -34,13 +34,9 @@ def parse_bim(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarnin
     warnings: list[ParseWarning] = []
     for entry in entries:
         try:
-            data = json.loads(
-                Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace")
-            )
+            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(
-                ParseWarning(file=entry.path, message=str(exc), category="bim_parse")
-            )
+            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="bim_parse"))
             continue
         model = data.get("model") or {}
         model_name = data.get("name") or PurePosixPath(entry.path).stem
@@ -115,9 +111,7 @@ def parse_bim(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarnin
         relationships = sorted(
             {
                 (
-                    normalize_identifier(
-                        f"{r.get('fromTable', '')}.{r.get('fromColumn', '')}"
-                    ),
+                    normalize_identifier(f"{r.get('fromTable', '')}.{r.get('fromColumn', '')}"),
                     normalize_identifier(f"{r.get('toTable', '')}.{r.get('toColumn', '')}"),
                 )
                 for r in model.get("relationships") or []
@@ -125,13 +119,8 @@ def parse_bim(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarnin
             }
         )
         if relationships:
-            existing = {
-                (r["from"], r["to"])
-                for r in model_node.metadata.get("relationships", [])
-            }
+            existing = {(r["from"], r["to"]) for r in model_node.metadata.get("relationships", [])}
             merged = sorted(existing | set(relationships))
-            model_node.metadata["relationships"] = [
-                {"from": pair[0], "to": pair[1]} for pair in merged
-            ]
+            model_node.metadata["relationships"] = [{"from": pair[0], "to": pair[1]} for pair in merged]
         link_measures(graph, model_name)
     return warnings

@@ -80,7 +80,7 @@ so install it from your git host or from a folder you already have:
 
 ```bash
 # from your git host — needs git installed (check with: git --version)
-pipx install git+https://github.com/jenningsapiaries/coop-data-doc.git
+pipx install git+https://github.com/kabukisensei/coop-data-doc.git
 
 # or from a local folder (drag the folder into the terminal to get its path)
 pipx install /path/to/coop-data-doc

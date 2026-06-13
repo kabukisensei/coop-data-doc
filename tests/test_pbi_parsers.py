@@ -78,7 +78,7 @@ def test_mcode_native_query():
 
 def test_mcode_lakehouse():
     ref, _ = extract_source(
-        'let Source = Lakehouse.Contents(), '
+        "let Source = Lakehouse.Contents(), "
         'w = Source{[Name="gold_lakehouse"]}[Data], '
         't = w{[Name="fact_sales"]}[Data] in t'
     )
@@ -122,9 +122,7 @@ def test_tmdl_model_structure():
     columns = {c.name: c.data_type for c in graph.nodes["pbi_table:salespm.dim_customer"].columns}
     assert columns == {"customer_id": "int64", "customer_name": "string"}
     relationships = graph.nodes["semantic_model:salespm"].metadata["relationships"]
-    assert relationships == [
-        {"from": "fact_sales.customer_id", "to": "dim_customer.customer_id"}
-    ]
+    assert relationships == [{"from": "fact_sales.customer_id", "to": "dim_customer.customer_id"}]
 
 
 def test_tmdl_partition_sources():
@@ -200,9 +198,7 @@ def make_pbix(path: Path, with_layout: bool = True, with_mashup: bool = True) ->
                                 "name": "vx",
                                 "singleVisual": {
                                     "visualType": "table",
-                                    "projections": {
-                                        "Values": [{"queryRef": "orders.order_id"}]
-                                    },
+                                    "projections": {"Values": [{"queryRef": "orders.order_id"}]},
                                 },
                             }
                         )

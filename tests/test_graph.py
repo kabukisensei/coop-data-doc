@@ -24,24 +24,25 @@ def make_node(node_type, schema, name, **kwargs):
 
 
 def test_make_id_normalizes_brackets_and_case():
-    assert (
-        Node.make_id(NodeType.GOLD_TABLE, "[dbo]", "[Fact Sales]")
-        == "gold_table:dbo.fact sales"
-    )
+    assert Node.make_id(NodeType.GOLD_TABLE, "[dbo]", "[Fact Sales]") == "gold_table:dbo.fact sales"
 
 
 def test_add_node_merges_columns_and_metadata():
     g = LineageGraph()
     g.add_node(
         make_node(
-            NodeType.GOLD_TABLE, "dbo", "t",
+            NodeType.GOLD_TABLE,
+            "dbo",
+            "t",
             columns=[Column(name="a", data_type="int")],
             metadata={"keep": 1},
         )
     )
     merged = g.add_node(
         make_node(
-            NodeType.GOLD_TABLE, "dbo", "t",
+            NodeType.GOLD_TABLE,
+            "dbo",
+            "t",
             source_file="x.sql",
             columns=[Column(name="A"), Column(name="b", data_type="varchar(10)")],
             metadata={"keep": 2, "new": 3},

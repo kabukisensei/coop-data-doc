@@ -22,12 +22,8 @@ from coop_data_doc.render.mermaid import (
 
 INTENT_BEGIN = "<!-- intent:begin -->"
 INTENT_END = "<!-- intent:end -->"
-_DEFAULT_INTENT = (
-    "_Add a short description of what this object is for and who relies on it._"
-)
-_INTENT_RE = re.compile(
-    re.escape(INTENT_BEGIN) + r"(.*?)" + re.escape(INTENT_END), re.S
-)
+_DEFAULT_INTENT = "_Add a short description of what this object is for and who relies on it._"
+_INTENT_RE = re.compile(re.escape(INTENT_BEGIN) + r"(.*?)" + re.escape(INTENT_END), re.S)
 
 _TYPE_TITLES: dict[NodeType, str] = {
     NodeType.SILVER_TABLE: "Source Tables (Silver)",
@@ -84,12 +80,8 @@ def _contract_section(node: Node) -> str:
                 nullable = "NOT NULL"
             elif column.nullable is True:
                 nullable = "NULL"
-            constraints = ", ".join(
-                part for part in [nullable, *column.constraints] if part
-            )
-            lines.append(
-                f"| {column.name} | {column.data_type} | {constraints} | {column.description} |"
-            )
+            constraints = ", ".join(part for part in [nullable, *column.constraints] if part)
+            lines.append(f"| {column.name} | {column.data_type} | {constraints} | {column.description} |")
     else:
         lines.append("_Columns not statically resolvable for this object._")
     if node.metadata.get("columns_unresolved"):
@@ -123,8 +115,7 @@ def _lineage_table(graph: LineageGraph, node: Node, ids: list[str], direction: s
         label = f"{other.schema_name}.{other.name}" if other.schema_name else other.name
         evidence_file = evidence.split(":", 1)[0] if evidence else ""
         lines.append(
-            f"| [{label}]({doc_relpath(other)}) | {other.node_type.value} "
-            f"| {via} | {evidence_file} |"
+            f"| [{label}]({doc_relpath(other)}) | {other.node_type.value} | {via} | {evidence_file} |"
         )
     return "\n".join(lines)
 
@@ -226,9 +217,7 @@ def render_markdown(graph: LineageGraph, out_dir: Path, project_name: str) -> li
         page_dir = out_dir / node.node_type.value
         page_dir.mkdir(parents=True, exist_ok=True)
         page_path = page_dir / f"{slug(node_id)}.md"
-        page_path.write_text(
-            render_node_page(graph, node, page_path), encoding="utf-8", newline="\n"
-        )
+        page_path.write_text(render_node_page(graph, node, page_path), encoding="utf-8", newline="\n")
         written.append(page_path)
 
     index_path = out_dir / "index.md"

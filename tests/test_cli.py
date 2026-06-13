@@ -90,7 +90,9 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
     # dynamic/dynamic-source fixtures and rebuild for a clean baseline
     (tmp_path / "sql-repo" / "procs" / "usp_dynamic_refresh.sql").unlink()
     (tmp_path / "sql-repo" / "procs" / "usp_cursor_legacy.sql").unlink()
-    (tmp_path / "pbi-repo" / "SalesPM.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl").unlink()
+    (
+        tmp_path / "pbi-repo" / "SalesPM.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl"
+    ).unlink()
     # the committed cache answers the one genuinely ambiguous mapping,
     # exactly as a real interactive session would have
     (tmp_path / ".lineage-cache.json").write_text(
@@ -108,20 +110,22 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
 
     # human edits an intent block -> still up to date (preserved, not stale)
     page = tmp_path / "data-docs" / "view" / "salespm-dim_customer.md"
-    page.write_text(
+    page.write_text(  # newline="\n": mimic an editor that preserves LF
         page.read_text(encoding="utf-8").replace(
             "_Add a short description of what this object is for and who relies on it._",
             "The canonical customer dimension.",
         ),
         encoding="utf-8",
+        newline="\n",
     )
     result = run(["check"], tmp_path)
     assert result.exit_code == 0, result.output
 
     # a structural hand-edit outside the intent block IS stale
-    page.write_text(
+    page.write_text(  # newline="\n": mimic an editor that preserves LF
         page.read_text(encoding="utf-8").replace("## Lineage", "## Lineage (edited)"),
         encoding="utf-8",
+        newline="\n",
     )
     result = run(["check"], tmp_path)
     assert result.exit_code == 1
@@ -231,7 +235,9 @@ def test_check_fails_on_orphaned_committed_page(tmp_path: Path):
     setup_workspace(tmp_path)
     (tmp_path / "sql-repo" / "procs" / "usp_dynamic_refresh.sql").unlink()
     (tmp_path / "sql-repo" / "procs" / "usp_cursor_legacy.sql").unlink()
-    (tmp_path / "pbi-repo" / "SalesPM.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl").unlink()
+    (
+        tmp_path / "pbi-repo" / "SalesPM.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl"
+    ).unlink()
     (tmp_path / ".lineage-cache.json").write_text(
         '{\n  "version": 1,\n  "mappings": {\n'
         '    "pbi_table:salespm.fact_sales": {\n'

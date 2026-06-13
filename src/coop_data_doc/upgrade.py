@@ -164,9 +164,7 @@ def _git_checkout_note(checkout: Path, runner=subprocess.run) -> str:
             "running from a git checkout with no upstream remote — upgrading "
             "reinstalls from the local working tree"
         )
-    fetched = runner(
-        ["git", "-C", str(checkout), "fetch", "--quiet"], capture_output=True, text=True
-    )
+    fetched = runner(["git", "-C", str(checkout), "fetch", "--quiet"], capture_output=True, text=True)
     if fetched.returncode != 0:
         return "running from a git checkout; `git fetch` failed (offline?)"
     behind = runner(
@@ -192,9 +190,7 @@ def build_plan(
     else:
         latest = fetch(PACKAGE_NAME)
         if latest is None:
-            tool_note = (
-                "could not determine the latest release (not on PyPI yet, or offline)"
-            )
+            tool_note = "could not determine the latest release (not on PyPI yet, or offline)"
         else:
             kind = classify_update(__version__, latest)
             tool_note = (
@@ -254,9 +250,7 @@ def apply_plan(plan: UpgradePlan, runner=subprocess.run) -> list[list[str]]:
     # pipx/uv-tool manage their own venv's dependencies on upgrade; only
     # plain-pip/checkout installs need explicit non-breaking dep bumps
     if plan.install_method in ("pip", "git-checkout") and plan.safe_updates:
-        specs = [
-            f"{dep.name}<{(_major(dep.latest) or 0) + 1}" for dep in plan.safe_updates
-        ]
+        specs = [f"{dep.name}<{(_major(dep.latest) or 0) + 1}" for dep in plan.safe_updates]
         dep_command = [sys.executable, "-m", "pip", "install", "-q", "-U", *specs]
         _run(dep_command, runner)
         executed.append(dep_command)

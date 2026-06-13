@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 class SourceRef(BaseModel):
     """A recognized partition source: schema, object, and how it was found."""
+
     schema_name: str
     object_name: str
     raw_kind: str  # "sql_database" | "native_query" | "lakehouse" | "fallback"

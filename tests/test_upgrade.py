@@ -118,8 +118,7 @@ def make_plan(method, checkout=None, tool_note="", safe=()):
         tool_installed="0.1.0",
         tool_note=tool_note,
         dependencies=[
-            DependencyStatus(name=name, installed="1.0.0", latest="1.2.0", kind="safe")
-            for name in safe
+            DependencyStatus(name=name, installed="1.0.0", latest="1.2.0", kind="safe") for name in safe
         ],
     )
 
@@ -139,13 +138,18 @@ def test_apply_uv_tool():
 def test_apply_pip_with_safe_deps_never_majors(tmp_path):
     runner = recording_runner()
     plan = make_plan("pip", safe=["alpha", "beta"])
-    plan.dependencies.append(
-        DependencyStatus(name="danger", installed="1.0.0", latest="2.0.0", kind="major")
-    )
+    plan.dependencies.append(DependencyStatus(name="danger", installed="1.0.0", latest="2.0.0", kind="major"))
     executed = apply_plan(plan, runner=runner)
     assert executed[0] == [sys.executable, "-m", "pip", "install", "-q", "-U", "coop-data-doc"]
     assert executed[1] == [
-        sys.executable, "-m", "pip", "install", "-q", "-U", "alpha<2", "beta<2",
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "-q",
+        "-U",
+        "alpha<2",
+        "beta<2",
     ]
     flat = " ".join(" ".join(c) for c in executed)
     assert "danger" not in flat  # major bumps are never auto-applied
@@ -153,13 +157,17 @@ def test_apply_pip_with_safe_deps_never_majors(tmp_path):
 
 def test_apply_git_checkout_pulls_when_behind(tmp_path):
     runner = recording_runner()
-    plan = make_plan(
-        "git-checkout", checkout=tmp_path, tool_note="3 new commit(s) available"
-    )
+    plan = make_plan("git-checkout", checkout=tmp_path, tool_note="3 new commit(s) available")
     executed = apply_plan(plan, runner=runner)
     assert executed[0] == ["git", "-C", str(tmp_path), "pull", "--ff-only"]
     assert executed[1] == [
-        sys.executable, "-m", "pip", "install", "-q", "-U", str(tmp_path),
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "-q",
+        "-U",
+        str(tmp_path),
     ]
 
 

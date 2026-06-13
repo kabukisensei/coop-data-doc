@@ -19,7 +19,14 @@ def fixture_config() -> Config:
             ),
             "powerbi": RepoConfig(
                 path=str(FIXTURES / "repo_pbi"),
-                include=["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"],
+                include=[
+                    "**/*.tmdl",
+                    "**/*.bim",
+                    "**/report.json",
+                    "**/visual.json",
+                    "**/page.json",
+                    "**/*.pbix",
+                ],
             ),
         },
         output=OutputConfig(),
@@ -34,10 +41,7 @@ def test_crawl_fixture_repos_classifies_everything():
     assert kinds["views/salespm/dim_customer.sql"] == FileKind.SQL_FILE
     assert kinds["SalesPM.SemanticModel/definition/model.tmdl"] == FileKind.TMDL
     assert kinds["SalesPM.SemanticModel/definition/tables/dim_customer.tmdl"] == FileKind.TMDL
-    assert (
-        kinds["SalesPM.Report/definition/pages/page1/visuals/abc123/visual.json"]
-        == FileKind.PBIR_VISUAL
-    )
+    assert kinds["SalesPM.Report/definition/pages/page1/visuals/abc123/visual.json"] == FileKind.PBIR_VISUAL
     assert kinds["SalesPM.Report/definition/pages/page1/page.json"] == FileKind.PBIR_PAGE
     assert kinds["LegacyThing/report.json"] == FileKind.REPORT_JSON_LEGACY
     assert warnings == []
@@ -85,9 +89,7 @@ def test_oversize_file_skipped_except_pbix(tmp_path: Path, monkeypatch: pytest.M
     (repo / "big.sql").write_text("SELECT 1;" * 10, encoding="utf-8")
     (repo / "big.pbix").write_bytes(b"PK\x03\x04" + b"\x00" * 100)
     monkeypatch.setattr(crawler, "MAX_FILE_BYTES", 10)
-    config = Config(
-        repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql", "**/*.pbix"])}
-    )
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql", "**/*.pbix"])})
     inventory, warnings = crawl(config)
     assert [entry.kind for entry in inventory.entries] == [FileKind.PBIX]
     assert [w.category for w in warnings] == ["file_too_large"]

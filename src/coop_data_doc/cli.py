@@ -96,9 +96,7 @@ def _warning_summary(warnings: list[ParseWarning], quiet: bool) -> None:
 def _strict_failures(result: ResolutionResult, warnings: list[ParseWarning]) -> list[str]:
     failures = [f"unresolved reference: {key}" for key in result.unresolved]
     failures += [
-        f"{warning.category}: {warning.file}"
-        for warning in warnings
-        if warning.category in STRICT_CATEGORIES
+        f"{warning.category}: {warning.file}" for warning in warnings if warning.category in STRICT_CATEGORIES
     ]
     return failures
 
@@ -388,8 +386,10 @@ def upgrade(check_only: bool, yes: bool) -> None:
             click.echo(f"  {dep.name:20} {dep.installed:12} {label}")
     if check_only:
         return
-    nothing_to_apply = not plan.safe_updates and "new commit(s)" not in plan.tool_note and (
-        "latest release is" not in plan.tool_note
+    nothing_to_apply = (
+        not plan.safe_updates
+        and "new commit(s)" not in plan.tool_note
+        and ("latest release is" not in plan.tool_note)
     )
     if nothing_to_apply and plan.install_method not in ("pip", "git-checkout"):
         click.echo("\nEverything is up to date.")
@@ -439,9 +439,7 @@ def check(ctx: click.Context, config_path: str, lenient: bool) -> None:
         sys.exit(2)
     committed = config.output_dir()
     if not committed.is_dir():
-        raise click.ClickException(
-            f"no committed docs at {committed}; run `coop-data-doc build` first"
-        )
+        raise click.ClickException(f"no committed docs at {committed}; run `coop-data-doc build` first")
     with tempfile.TemporaryDirectory() as tmp:
         fresh = Path(tmp) / "docs"
         # start from the committed tree so human-authored Business Intent
@@ -497,8 +495,7 @@ def main() -> None:
     except click.exceptions.Abort:
         # click converts EOFError/KeyboardInterrupt inside commands to Abort
         click.echo(
-            "\nInterrupted — any answers you gave are saved in "
-            ".lineage-cache.json; run again to continue.",
+            "\nInterrupted — any answers you gave are saved in .lineage-cache.json; run again to continue.",
             err=True,
         )
         sys.exit(130)

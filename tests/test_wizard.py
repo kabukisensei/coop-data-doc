@@ -48,15 +48,15 @@ def test_fresh_setup_writes_loadable_config(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
     fake = FakeQuestionary(
         [
-            "My Estate",          # project name
-            "./sql-repo",         # sql path (exists)
-            "./pbi-repo",         # pbi path (exists)
-            "./docs",             # markdown dir
-            "./site",             # site dir
-            True,                 # add a mapping?
-            "salespm",            # schema
-            "Sales and PM",       # model
-            False,                # add another?
+            "My Estate",  # project name
+            "./sql-repo",  # sql path (exists)
+            "./pbi-repo",  # pbi path (exists)
+            "./docs",  # markdown dir
+            "./site",  # site dir
+            True,  # add a mapping?
+            "salespm",  # schema
+            "Sales and PM",  # model
+            False,  # add another?
         ]
     )
     monkeypatch.setattr(wizard, "questionary", fake)
@@ -79,21 +79,20 @@ def test_rerun_prefills_existing_values(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
     config_path = tmp_path / "coop-data-doc.yml"
     first = FakeQuestionary(
-        ["My Estate", "./sql-repo", "./pbi-repo", "./docs", "./site",
-         True, "salespm", "Sales and PM", False]
+        ["My Estate", "./sql-repo", "./pbi-repo", "./docs", "./site", True, "salespm", "Sales and PM", False]
     )
     monkeypatch.setattr(wizard, "questionary", first)
     assert wizard.run_setup(config_path) is not None
 
     second = FakeQuestionary(
         [
-            "Renamed Estate",     # change the name
+            "Renamed Estate",  # change the name
             "./sql-repo",
             "./pbi-repo",
             "./docs",
             "./site",
-            True,                 # keep existing mappings?
-            False,                # add another?
+            True,  # keep existing mappings?
+            False,  # add another?
         ]
     )
     monkeypatch.setattr(wizard, "questionary", second)
@@ -114,12 +113,12 @@ def test_nonexistent_repo_use_anyway(tmp_path: Path, monkeypatch):
     fake = FakeQuestionary(
         [
             "Estate",
-            "./not-cloned-yet",   # sql path: missing
-            True,                 # use it anyway?
+            "./not-cloned-yet",  # sql path: missing
+            True,  # use it anyway?
             "./pbi-repo",
             "./docs",
             "./site",
-            False,                # add mapping?
+            False,  # add mapping?
         ]
     )
     monkeypatch.setattr(wizard, "questionary", fake)
@@ -150,10 +149,15 @@ def test_rerun_prefills_even_when_saved_config_not_runnable(tmp_path: Path, monk
     first = FakeQuestionary(
         [
             "Custom Name",
-            "./not-cloned-yet", True,   # missing repo, use anyway
+            "./not-cloned-yet",
+            True,  # missing repo, use anyway
             "./pbi-repo",
-            "./docs", "./site",
-            True, "salespm", "Sales and PM", False,
+            "./docs",
+            "./site",
+            True,
+            "salespm",
+            "Sales and PM",
+            False,
         ]
     )
     monkeypatch.setattr(wizard, "questionary", first)
@@ -161,8 +165,7 @@ def test_rerun_prefills_even_when_saved_config_not_runnable(tmp_path: Path, monk
 
     # re-running must prefill the saved answers, not start fresh
     second = FakeQuestionary(
-        ["Custom Name", "./not-cloned-yet", True, "./pbi-repo", "./docs", "./site",
-         True, False]
+        ["Custom Name", "./not-cloned-yet", True, "./pbi-repo", "./docs", "./site", True, False]
     )
     monkeypatch.setattr(wizard, "questionary", second)
     wizard.run_setup(config_path)

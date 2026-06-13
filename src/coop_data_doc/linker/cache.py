@@ -18,12 +18,14 @@ from coop_data_doc.graph.model import LineageGraph
 
 class CacheEntry(BaseModel):
     """One remembered answer: a target node id, or None for external/skip."""
+
     target: str | None  # node id, or None for external/skip
     method: str  # "interactive" | "external" | "skip"
 
 
 class LineageCache:
     """Read/write wrapper for .lineage-cache.json (commit that file!)."""
+
     VERSION = 1
 
     def __init__(self, path: Path, mappings: dict[str, CacheEntry] | None = None):
@@ -99,9 +101,7 @@ class LineageCache:
         """Persist with sorted keys and stable formatting for clean git diffs."""
         payload = {
             "version": self.VERSION,
-            "mappings": {
-                key: self.mappings[key].model_dump() for key in sorted(self.mappings)
-            },
+            "mappings": {key: self.mappings[key].model_dump() for key in sorted(self.mappings)},
         }
         self.path.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n",

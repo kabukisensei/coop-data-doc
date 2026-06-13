@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 class NodeType(str, Enum):
     """Every kind of object the lineage graph can hold."""
+
     SILVER_TABLE = "silver_table"
     GOLD_TABLE = "gold_table"
     VIEW = "view"
@@ -34,6 +35,7 @@ class NodeType(str, Enum):
 
 class EdgeType(str, Enum):
     """Relationship kinds; see module docstring for data-flow direction."""
+
     READS = "reads"
     WRITES = "writes"
     FEEDS = "feeds"
@@ -69,6 +71,7 @@ def normalize_identifier(raw: str) -> str:
 
 class Column(BaseModel):
     """A column contract: name, type, nullability, constraints."""
+
     name: str
     data_type: str = ""
     nullable: Optional[bool] = None
@@ -80,6 +83,7 @@ class Node(BaseModel):
     """One object in the estate. `schema_name` doubles as the semantic
     model name for Power BI nodes ('schema' shadows a pydantic attribute).
     """
+
     id: str
     node_type: NodeType
     name: str
@@ -99,6 +103,7 @@ class Node(BaseModel):
 
 class Edge(BaseModel):
     """A typed link between two nodes with human-readable evidence."""
+
     source_id: str
     target_id: str
     edge_type: EdgeType
@@ -119,6 +124,7 @@ class LineageGraph(BaseModel):
     """The single shared data structure: nodes by id plus typed edges,
     with merge-on-conflict adds and cycle-safe traversal.
     """
+
     nodes: dict[str, Node] = Field(default_factory=dict)
     edges: list[Edge] = Field(default_factory=list)
 

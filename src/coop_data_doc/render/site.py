@@ -25,6 +25,7 @@ from coop_data_doc.render.mermaid import slug
 
 class SiteBuildError(Exception):
     """mkdocs build failed; message carries the stderr tail."""
+
     pass
 
 
@@ -98,9 +99,7 @@ def _nav_section(graph: LineageGraph) -> str:
     return "\n".join(lines)
 
 
-def write_mkdocs_config(
-    docs_dir: Path, site_dir: Path, project_name: str, graph: LineageGraph
-) -> Path:
+def write_mkdocs_config(docs_dir: Path, site_dir: Path, project_name: str, graph: LineageGraph) -> Path:
     """Copy vendored assets into the docs tree and write the Material
     config as a sibling of the docs dir; returns the config path.
     """

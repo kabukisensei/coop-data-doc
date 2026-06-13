@@ -169,9 +169,7 @@ def test_non_interactive_leaves_unresolved(tmp_path: Path, fake_q):
     graph = build_graph()
     result, _ = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
     assert fake_q.calls == 0
-    assert result.unresolved == sorted(
-        [f"pbi_table:{MODEL_KEY}.dcust", f"pbi_table:{MODEL_KEY}.mystery"]
-    )
+    assert result.unresolved == sorted([f"pbi_table:{MODEL_KEY}.dcust", f"pbi_table:{MODEL_KEY}.mystery"])
 
 
 def test_cache_file_stable(tmp_path: Path):

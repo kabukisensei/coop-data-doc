@@ -28,12 +28,8 @@ from coop_data_doc.parsers.sql_common import (
     table_parts,
 )
 
-_TABLE_FALLBACK_RE = re.compile(
-    r"\bCREATE\s+TABLE\s+([\w\[\].]+)", re.IGNORECASE
-)
-_VIEW_FALLBACK_RE = re.compile(
-    r"\bCREATE\s+(?:OR\s+ALTER\s+)?VIEW\s+([\w\[\].]+)", re.IGNORECASE
-)
+_TABLE_FALLBACK_RE = re.compile(r"\bCREATE\s+TABLE\s+([\w\[\].]+)", re.IGNORECASE)
+_VIEW_FALLBACK_RE = re.compile(r"\bCREATE\s+(?:OR\s+ALTER\s+)?VIEW\s+([\w\[\].]+)", re.IGNORECASE)
 
 
 def read_sql_file(entry: FileEntry) -> str:
@@ -100,9 +96,7 @@ def columns_from_schema(schema_expr: exp.Schema, dialect: str) -> list[Column]:
         if name in table_level_pk and "PK" not in constraints:
             constraints.append("PK")
             nullable = False
-        columns.append(
-            Column(name=name, data_type=data_type, nullable=nullable, constraints=constraints)
-        )
+        columns.append(Column(name=name, data_type=data_type, nullable=nullable, constraints=constraints))
     return columns
 
 
@@ -136,9 +130,7 @@ def _add_reads(
         )
 
 
-def _handle_create_table(
-    create: exp.Create, graph: LineageGraph, entry: FileEntry, dialect: str
-) -> None:
+def _handle_create_table(create: exp.Create, graph: LineageGraph, entry: FileEntry, dialect: str) -> None:
     target = create.this
     schema_expr = None
     if isinstance(target, exp.Schema):
@@ -220,8 +212,7 @@ def parse_sql_objects(
             creates = [
                 expression
                 for expression in parse_batch(batch, dialect)
-                if isinstance(expression, exp.Create)
-                and (expression.kind or "").upper() in ("TABLE", "VIEW")
+                if isinstance(expression, exp.Create) and (expression.kind or "").upper() in ("TABLE", "VIEW")
             ]
             if creates:
                 for create in creates:

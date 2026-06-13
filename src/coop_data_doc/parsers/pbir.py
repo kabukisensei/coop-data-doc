@@ -73,9 +73,7 @@ def _ensure_report(graph: LineageGraph, report_name: str, source_file: str) -> N
     )
 
 
-def _ensure_page(
-    graph: LineageGraph, report: Node, page_name: str, source_file: str
-) -> Node:
+def _ensure_page(graph: LineageGraph, report: Node, page_name: str, source_file: str) -> Node:
     page = graph.add_node(
         Node(
             id=Node.make_id(NodeType.REPORT_PAGE, report.name, page_name),
@@ -114,9 +112,7 @@ def _add_visual(
             source_file=source_file,
             metadata={
                 "visual_type": visual_type,
-                "bindings": [
-                    {"entity": e, "property": p, "kind": k} for e, p, k in sorted(bindings)
-                ],
+                "bindings": [{"entity": e, "property": p, "kind": k} for e, p, k in sorted(bindings)],
             },
         )
     )
@@ -157,13 +153,9 @@ def parse_pbir(
     page_display: dict[tuple[str, str], str] = {}
     for entry in page_entries:
         try:
-            data = json.loads(
-                Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace")
-            )
+            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(
-                ParseWarning(file=entry.path, message=str(exc), category="pbir_parse")
-            )
+            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
             continue
         parts = PurePosixPath(entry.path).parts
         # .../definition/pages/<page_folder>/page.json
@@ -173,13 +165,9 @@ def parse_pbir(
 
     for entry in sorted(visual_entries, key=lambda e: e.path):
         try:
-            data = json.loads(
-                Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace")
-            )
+            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(
-                ParseWarning(file=entry.path, message=str(exc), category="pbir_parse")
-            )
+            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
             continue
         root, report_name = report_root(entry.path)
         parts = PurePosixPath(entry.path).parts
@@ -249,9 +237,7 @@ def parse_layout_json(
                     if not isinstance(payload, dict):
                         continue
                     prop = payload.get("Property")
-                    source_alias = (
-                        (payload.get("Expression") or {}).get("SourceRef") or {}
-                    ).get("Source")
+                    source_alias = ((payload.get("Expression") or {}).get("SourceRef") or {}).get("Source")
                     entity = alias_map.get(source_alias)
                     if isinstance(prop, str) and isinstance(entity, str):
                         kind = _KIND_KEYS.get(kind_key.lower(), "unknown")
@@ -261,20 +247,14 @@ def parse_layout_json(
     return warnings
 
 
-def parse_legacy_reports(
-    entries: list[FileEntry], graph: LineageGraph
-) -> list[ParseWarning]:
+def parse_legacy_reports(entries: list[FileEntry], graph: LineageGraph) -> list[ParseWarning]:
     """Extract the same structure from standalone legacy report.json files."""
     warnings: list[ParseWarning] = []
     for entry in sorted(entries, key=lambda e: e.path):
         try:
-            data = json.loads(
-                Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace")
-            )
+            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(
-                ParseWarning(file=entry.path, message=str(exc), category="report_json_parse")
-            )
+            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="report_json_parse"))
             continue
         parent = PurePosixPath(entry.path).parent.name or PurePosixPath(entry.path).stem
         warnings += parse_layout_json(data, parent, entry.path, graph)
@@ -315,9 +295,7 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
                     evidence=f"{visual.source_file}: {binding['entity']}.{binding['property']}",
                 )
             )
-            measure = measures.get(
-                (table.schema_name, normalize_identifier(binding["property"]))
-            )
+            measure = measures.get((table.schema_name, normalize_identifier(binding["property"])))
             if measure is not None and binding["kind"] in ("measure", "unknown"):
                 graph.add_edge(
                     Edge(

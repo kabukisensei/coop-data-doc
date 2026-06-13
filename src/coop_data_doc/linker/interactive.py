@@ -22,9 +22,7 @@ def print_group_header(model_name: str, count: int) -> None:
     print(f"\n── {model_name} — {count} unresolved table(s) ──", file=sys.stderr)
 
 
-def prompt_resolution(
-    pbi_node: Node, source_desc: str, candidates: list[tuple[str, float]]
-) -> CacheEntry:
+def prompt_resolution(pbi_node: Node, source_desc: str, candidates: list[tuple[str, float]]) -> CacheEntry:
     """Ask the user to map one Power BI table to a SQL object; returns
     the chosen CacheEntry. Raises KeyboardInterrupt on Ctrl-C/EOF.
     """
@@ -34,9 +32,7 @@ def prompt_resolution(
     ]
     choices.append(questionary.Separator())
     choices.append(
-        questionary.Choice(
-            title="🌐 Mark as external source (not in these repos)", value=EXTERNAL_CHOICE
-        )
+        questionary.Choice(title="🌐 Mark as external source (not in these repos)", value=EXTERNAL_CHOICE)
     )
     choices.append(questionary.Choice(title="⏭  Skip for now", value=SKIP_CHOICE))
 

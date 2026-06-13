@@ -60,7 +60,7 @@ def _find_proc(batch: str) -> tuple[str, str] | None:
     as_match = _AS_RE.search(batch, header.end())
     if not as_match:
         return None
-    return header.group(1), batch[as_match.end():]
+    return header.group(1), batch[as_match.end() :]
 
 
 def _alias_map(statement: exp.Expression) -> dict[str, tuple[str, str]]:
@@ -135,9 +135,7 @@ def _extract_statement(statement: exp.Expression) -> tuple[StatementLineage, lis
     return lineage, creates
 
 
-def _apply_lineage(
-    graph: LineageGraph, proc: Node, lineage: StatementLineage, evidence_file: str
-) -> None:
+def _apply_lineage(graph: LineageGraph, proc: Node, lineage: StatementLineage, evidence_file: str) -> None:
     for schema, name in sorted(lineage.writes):
         table = stub_table(graph, schema, name)
         graph.add_edge(
@@ -319,9 +317,7 @@ def resolve_stub_references(graph: LineageGraph) -> None:
 def classify_silver(graph: LineageGraph) -> None:
     """Retype read-only, definition-less tables as silver-layer sources."""
     written = {
-        edge.target_id
-        for edge in graph.edges
-        if edge.edge_type in (EdgeType.WRITES, EdgeType.DEFINES)
+        edge.target_id for edge in graph.edges if edge.edge_type in (EdgeType.WRITES, EdgeType.DEFINES)
     }
     for node_id in sorted(graph.nodes):
         node = graph.nodes.get(node_id)

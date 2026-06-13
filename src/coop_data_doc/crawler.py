@@ -21,6 +21,7 @@ MAX_FILE_BYTES = 10 * 1024 * 1024  # files above this are skipped, except .pbix
 
 class FileKind(str, Enum):
     """What a crawled file is, deciding which parser consumes it."""
+
     SQL_FILE = "sql_file"
     TMDL = "tmdl"
     BIM = "bim"
@@ -32,6 +33,7 @@ class FileKind(str, Enum):
 
 class FileEntry(BaseModel):
     """One crawled file; `path` is POSIX-style relative to its repo root."""
+
     path: str  # POSIX-style, relative to the repo root
     abs_path: str
     repo_key: str
@@ -41,6 +43,7 @@ class FileEntry(BaseModel):
 
 class FileInventory(BaseModel):
     """All crawled files, sorted by (repo_key, path) for determinism."""
+
     entries: list[FileEntry] = Field(default_factory=list)  # sorted (repo_key, path)
 
     def by_kind(self, kind: FileKind) -> list[FileEntry]:

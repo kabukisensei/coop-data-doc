@@ -67,9 +67,7 @@ def _flow_edges(graph: LineageGraph, ids: set[str]) -> list[tuple[str, str, str]
     return sorted(seen)
 
 
-def local_flowchart(
-    graph: LineageGraph, node_id: str, up_depth: int = 2, down_depth: int = 2
-) -> str:
+def local_flowchart(graph: LineageGraph, node_id: str, up_depth: int = 2, down_depth: int = 2) -> str:
     """Mermaid chart of a node's neighborhood (default 2 hops each way),
     with click-through links and the focus node highlighted.
     """

@@ -40,7 +40,7 @@ dev = ["pytest>=8.0", "ruff>=0.5"]
 coop-data-doc = "coop_data_doc.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jenningsapiaries/coop-data-doc"
+Homepage = "https://github.com/kabukisensei/coop-data-doc"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/coop_data_doc"]

@@ -30,9 +30,7 @@ schema_mappings:
 
 
 def test_load_valid_config(tmp_path: Path):
-    path = write_config(
-        tmp_path, minimal_yaml(str(FIXTURES / "repo_sql"), str(FIXTURES / "repo_pbi"))
-    )
+    path = write_config(tmp_path, minimal_yaml(str(FIXTURES / "repo_sql"), str(FIXTURES / "repo_pbi")))
     config = Config.load(path)
     assert config.project_name == "Test Estate"
     assert config.repo_root("sql") == (FIXTURES / "repo_sql").resolve()

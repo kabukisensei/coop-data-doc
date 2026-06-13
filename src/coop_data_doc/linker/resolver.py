@@ -34,6 +34,7 @@ _SQL_TYPES = (NodeType.VIEW, NodeType.GOLD_TABLE, NodeType.SILVER_TABLE)
 
 class ResolutionResult(BaseModel):
     """Outcome summary: totals per resolution method plus unresolved keys."""
+
     resolved: int = 0
     unresolved: list[str] = Field(default_factory=list)
     methods: dict[str, int] = Field(default_factory=dict)
@@ -87,11 +88,7 @@ def _collect_items(graph: LineageGraph) -> list[_Item]:
 
 
 def _candidate_ids(graph: LineageGraph) -> list[str]:
-    return sorted(
-        node_id
-        for node_id, node in graph.nodes.items()
-        if node.node_type in _SQL_TYPES
-    )
+    return sorted(node_id for node_id, node in graph.nodes.items() if node.node_type in _SQL_TYPES)
 
 
 def _qualified(node_id: str) -> str:
@@ -106,9 +103,7 @@ def _exact_match(graph: LineageGraph, schema: str, name: str) -> str | None:
     return None
 
 
-def _config_rule_match(
-    graph: LineageGraph, config: Config, model_key: str, name: str
-) -> str | None:
+def _config_rule_match(graph: LineageGraph, config: Config, model_key: str, name: str) -> str | None:
     schemas = [
         mapping.schema_name
         for mapping in config.schema_mappings
@@ -121,21 +116,16 @@ def _config_rule_match(
     return None
 
 
-def _fuzzy_candidates(
-    candidates: list[str], schema: str, name: str
-) -> list[tuple[str, float]]:
+def _fuzzy_candidates(candidates: list[str], schema: str, name: str) -> list[tuple[str, float]]:
     needle = f"{schema}.{name}" if schema else name
     scored = [
-        (candidate, SequenceMatcher(None, needle, _qualified(candidate)).ratio())
-        for candidate in candidates
+        (candidate, SequenceMatcher(None, needle, _qualified(candidate)).ratio()) for candidate in candidates
     ]
     scored.sort(key=lambda pair: (-pair[1], pair[0]))
     return scored
 
 
-def _apply(
-    graph: LineageGraph, item: _Item, target_id: str, method: str, result: ResolutionResult
-) -> None:
+def _apply(graph: LineageGraph, item: _Item, target_id: str, method: str, result: ResolutionResult) -> None:
     graph.add_edge(
         Edge(
             source_id=target_id,
@@ -229,9 +219,7 @@ def link_graph(
             interactive.print_group_header(model, len(group))
             for item, scored in group:
                 node = graph.nodes[item.node_id]
-                entry = interactive.prompt_resolution(
-                    node, f"{item.schema_name}.{item.object_name}", scored
-                )
+                entry = interactive.prompt_resolution(node, f"{item.schema_name}.{item.object_name}", scored)
                 cache.put(item.cache_key, entry)  # immediately — crash-safe
                 if entry.target is not None:
                     _apply(graph, item, entry.target, "interactive", result)
