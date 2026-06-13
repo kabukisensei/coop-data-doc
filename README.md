@@ -92,7 +92,7 @@ Check it worked:
 coop-data-doc --version
 ```
 
-You should see `coop-data-doc, version 0.1.0`. If the terminal says
+You should see `coop-data-doc, version 0.2.0` (or newer). If the terminal says
 *"command not found"* (macOS) or *"the term 'coop-data-doc' is not recognized…"*
 (Windows), see [Troubleshooting](#troubleshooting).
 
