@@ -183,7 +183,7 @@ def run_setup(config_path: Path) -> Config | None:
     )
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(rendered, encoding="utf-8")
+        config_path.write_text(rendered, encoding="utf-8", newline="\n")
     except OSError as exc:
         # distinct from questionary's no-TTY OSError: report as a config problem
         raise ConfigError(f"could not write {config_path}: {exc}") from exc

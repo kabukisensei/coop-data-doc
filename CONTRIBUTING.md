@@ -17,8 +17,10 @@ The original builder briefs live in `tasks/` and double as interface documentati
 ## Non-negotiable rules
 
 1. **Deterministic output.** Iterate everything in sorted order; never embed
-   timestamps or randomness. `tests/test_determinism.py` builds twice and
-   byte-compares.
+   timestamps or randomness; pass `newline="\n"` to every `write_text` of a
+   generated artifact (Windows would otherwise emit CRLF and break
+   cross-platform byte-identity). `tests/test_determinism.py` builds twice
+   and byte-compares.
 2. **Offline at runtime.** No network, no DB connections, no LLM calls
    anywhere in the documentation pipeline. The built HTML must work over
    `file://` (vendored assets live in `src/coop_data_doc/templates/assets/`).

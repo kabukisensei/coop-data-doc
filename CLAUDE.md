@@ -18,7 +18,8 @@ If `.venv` is missing: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev
 ## Hard rules
 
 1. **Determinism** (CI-enforced) — sorted iteration everywhere, no
-   timestamps/randomness in output. `tests/test_determinism.py`
+   timestamps/randomness in output, and `newline="\n"` on every generated
+   `write_text` (cross-OS byte-identity). `tests/test_determinism.py`
    byte-compares two full builds.
 2. **Offline pipeline** — no network/DB/LLM anywhere in doc generation;
    built HTML must work over `file://` (vendored assets in

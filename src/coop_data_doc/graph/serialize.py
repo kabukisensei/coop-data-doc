@@ -24,7 +24,7 @@ def to_json_str(graph: LineageGraph) -> str:
 
 def to_json_file(graph: LineageGraph, path: Path | str) -> None:
     """Write the canonical JSON artifact (graph.json / manifest.json)."""
-    Path(path).write_text(to_json_str(graph), encoding="utf-8")
+    Path(path).write_text(to_json_str(graph), encoding="utf-8", newline="\n")
 
 
 def from_json_file(path: Path | str) -> LineageGraph:

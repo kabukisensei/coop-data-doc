@@ -104,5 +104,7 @@ class LineageCache:
             },
         }
         self.path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
         )

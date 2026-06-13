@@ -118,6 +118,7 @@ def write_mkdocs_config(
             nav=_nav_section(graph),
         ),
         encoding="utf-8",
+        newline="\n",
     )
     return config_path
 
@@ -140,7 +141,7 @@ def localize_shim(site_dir: Path) -> int:
         local = "../" * depth + shim.relative_to(site_dir).as_posix()
         new_text = _SHIM_URL_RE.sub(f'src="{local}"', text)
         if new_text != text:
-            html_file.write_text(new_text, encoding="utf-8")
+            html_file.write_text(new_text, encoding="utf-8", newline="\n")
             rewritten += 1
     return rewritten
 

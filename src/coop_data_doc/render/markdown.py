@@ -226,15 +226,17 @@ def render_markdown(graph: LineageGraph, out_dir: Path, project_name: str) -> li
         page_dir = out_dir / node.node_type.value
         page_dir.mkdir(parents=True, exist_ok=True)
         page_path = page_dir / f"{slug(node_id)}.md"
-        page_path.write_text(render_node_page(graph, node, page_path), encoding="utf-8")
+        page_path.write_text(
+            render_node_page(graph, node, page_path), encoding="utf-8", newline="\n"
+        )
         written.append(page_path)
 
     index_path = out_dir / "index.md"
-    index_path.write_text(_index_page(graph, project_name), encoding="utf-8")
+    index_path.write_text(_index_page(graph, project_name), encoding="utf-8", newline="\n")
     written.append(index_path)
 
     manifest_path = out_dir / "manifest.json"
-    manifest_path.write_text(to_json_str(graph), encoding="utf-8")
+    manifest_path.write_text(to_json_str(graph), encoding="utf-8", newline="\n")
     written.append(manifest_path)
 
     # prune pages of objects that no longer exist (e.g. a dropped view) —

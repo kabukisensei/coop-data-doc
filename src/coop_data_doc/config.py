@@ -132,6 +132,7 @@ class Config(BaseModel):
                 mappings=[("salespm", "Sales and Project Management")],
             ),
             encoding="utf-8",
+            newline="\n",
         )
 
 

@@ -46,6 +46,7 @@ You'll need three things:
 1. **A terminal.** That's the text window where you type commands.
    - **macOS:** press `Cmd+Space`, type `Terminal`, press Enter.
    - **Windows:** press the Windows key, type `PowerShell`, press Enter.
+   - **Linux:** any terminal; the macOS commands apply as-is.
 2. **Python 3.10 or newer.** Check by typing `python3 --version` (macOS) or
    `python --version` (Windows) and pressing Enter. If that prints something like
    `Python 3.12.4`, you're set. Otherwise install Python from
@@ -160,6 +161,7 @@ bar — or:
 ```bash
 open data-docs-site/index.html        # macOS
 start data-docs-site\index.html       # Windows
+xdg-open data-docs-site/index.html    # Linux
 ```
 
 You'll get a searchable site with a page per table, view, stored procedure, semantic
