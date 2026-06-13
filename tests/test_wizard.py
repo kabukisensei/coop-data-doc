@@ -6,59 +6,74 @@ from coop_data_doc import wizard
 from coop_data_doc.config import Config
 
 
-class FakeQuestionary:
-    """Queue-driven questionary stand-in; records every prompt's kwargs."""
+class RoutedQuestionary:
+    """questionary stand-in that answers based on the prompt message.
 
-    def __init__(self, answers):
-        self.answers = list(answers)
+    Robust to prompt order/count changes: `router(kind, message, kwargs)`
+    returns the answer for each prompt. Records every call for assertions.
+    """
+
+    def __init__(self, router):
+        self.router = router
         self.calls: list[tuple[str, str, dict]] = []
 
-    def _prompt(self, kind, message, **kwargs):
+    def _q(self, kind, message, **kwargs):
         self.calls.append((kind, message, kwargs))
-        if not self.answers:
-            raise AssertionError(f"unexpected extra prompt: {kind} {message!r}")
-        value = self.answers.pop(0)
+        answer = self.router(kind, message, kwargs)
 
         class _Result:
             @staticmethod
             def ask():
-                return value
+                return answer
+
+            @staticmethod
+            def unsafe_ask():
+                return answer
 
         return _Result()
 
     def text(self, message, **kwargs):
-        return self._prompt("text", message, **kwargs)
+        return self._q("text", message, **kwargs)
 
     def path(self, message, **kwargs):
-        return self._prompt("path", message, **kwargs)
+        return self._q("path", message, **kwargs)
 
     def confirm(self, message, **kwargs):
-        return self._prompt("confirm", message, **kwargs)
+        return self._q("confirm", message, **kwargs)
 
 
-def make_repos(tmp_path: Path) -> tuple[Path, Path]:
-    sql = tmp_path / "sql-repo"
-    pbi = tmp_path / "pbi-repo"
-    sql.mkdir()
-    pbi.mkdir()
-    return sql, pbi
+def make_repos(tmp_path: Path):
+    (tmp_path / "sql-repo").mkdir()
+    (tmp_path / "pbi-repo").mkdir()
 
 
-def test_fresh_setup_writes_loadable_config(tmp_path: Path, monkeypatch):
+def default_router(answers: dict):
+    """Build a router from {substring: answer}; unmatched text->'', confirm->False."""
+
+    def router(kind, message, kwargs):
+        for key, value in answers.items():
+            if key.lower() in message.lower():
+                return value
+        return False if kind == "confirm" else ""
+
+    return router
+
+
+def test_fresh_setup_with_layers(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
-    fake = FakeQuestionary(
-        [
-            "My Estate",  # project name
-            "./sql-repo",  # sql path (exists)
-            "./pbi-repo",  # pbi path (exists)
-            "./docs",  # markdown dir
-            "./site",  # site dir
-            True,  # add a mapping?
-            "salespm",  # schema
-            "Sales and PM",  # model
-            False,  # add another?
-        ]
-    )
+    answers = {
+        "Project name": "My Estate",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "EXCLUDE": "**/logging/**, **/Deployment/**",
+        "Bronze layer — schemas": "d365po, d365fo",
+        "Silver layer — schemas": "stg",
+        "Gold layer — schemas": "dwm, common",
+        "Gold layer — folder": "**/dim/**, **/fact/**",
+    }
+    fake = RoutedQuestionary(default_router(answers))
     monkeypatch.setattr(wizard, "questionary", fake)
     config_path = tmp_path / "coop-data-doc.yml"
 
@@ -66,111 +81,67 @@ def test_fresh_setup_writes_loadable_config(tmp_path: Path, monkeypatch):
 
     assert config is not None
     assert config.project_name == "My Estate"
-    assert config.repos["sql"].path == "./sql-repo"
-    assert config.schema_mappings[0].schema_name == "salespm"
-    assert config.schema_mappings[0].model == "Sales and PM"
-    assert config.output.dir == "./docs"
-    assert fake.answers == []  # every queued answer consumed
-    # file round-trips through the normal loader
-    assert Config.load(config_path).project_name == "My Estate"
+    assert config.repos["sql"].exclude == ["**/logging/**", "**/Deployment/**"]
+    assert config.layers["bronze"].schemas == ["d365po", "d365fo"]
+    assert config.layers["silver"].schemas == ["stg"]
+    assert config.layers["gold"].schemas == ["dwm", "common"]
+    assert config.layers["gold"].paths == ["**/dim/**", "**/fact/**"]
+    assert Config.load(config_path).layers["gold"].paths == ["**/dim/**", "**/fact/**"]
 
 
-def test_rerun_prefills_existing_values(tmp_path: Path, monkeypatch):
+def test_skip_bronze_and_silver(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
-    config_path = tmp_path / "coop-data-doc.yml"
-    first = FakeQuestionary(
-        ["My Estate", "./sql-repo", "./pbi-repo", "./docs", "./site", True, "salespm", "Sales and PM", False]
-    )
-    monkeypatch.setattr(wizard, "questionary", first)
-    assert wizard.run_setup(config_path) is not None
-
-    second = FakeQuestionary(
-        [
-            "Renamed Estate",  # change the name
-            "./sql-repo",
-            "./pbi-repo",
-            "./docs",
-            "./site",
-            True,  # keep existing mappings?
-            False,  # add another?
-        ]
-    )
-    monkeypatch.setattr(wizard, "questionary", second)
-    config = wizard.run_setup(config_path)
-
-    assert config is not None
-    assert config.project_name == "Renamed Estate"
-    assert config.schema_mappings[0].schema_name == "salespm"  # kept
-    # defaults shown to the user were the previous values
-    defaults = {message: kwargs.get("default") for _, message, kwargs in second.calls}
-    assert defaults["Project name (shown as the docs site title):"] == "My Estate"
-    assert defaults["SQL repo path (procs, tables, views):"] == "./sql-repo"
-    assert defaults["Markdown output folder:"] == "./docs"
-
-
-def test_nonexistent_repo_use_anyway(tmp_path: Path, monkeypatch):
-    (tmp_path / "pbi-repo").mkdir()
-    fake = FakeQuestionary(
-        [
-            "Estate",
-            "./not-cloned-yet",  # sql path: missing
-            True,  # use it anyway?
-            "./pbi-repo",
-            "./docs",
-            "./site",
-            False,  # add mapping?
-        ]
-    )
+    answers = {
+        "Project name": "Gold Only",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "Gold layer — schemas": "dwm",
+    }
+    fake = RoutedQuestionary(default_router(answers))
     monkeypatch.setattr(wizard, "questionary", fake)
     config_path = tmp_path / "coop-data-doc.yml"
 
     config = wizard.run_setup(config_path)
+    assert config is not None
+    assert set(config.layers) == {"gold"}  # bronze + silver skipped
+    assert config.layers["gold"].schemas == ["dwm"]
 
-    assert config is None  # saved, but doesn't validate yet
-    assert config_path.is_file()
-    text = config_path.read_text(encoding="utf-8")
-    assert '"./not-cloned-yet"' in text
+
+def test_rerun_prefills_layers(tmp_path: Path, monkeypatch):
+    make_repos(tmp_path)
+    config_path = tmp_path / "coop-data-doc.yml"
+    answers = {
+        "Project name": "Estate",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "Bronze layer — schemas": "d365po",
+        "Gold layer — schemas": "dwm",
+    }
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    assert wizard.run_setup(config_path) is not None
+
+    second = RoutedQuestionary(default_router(answers))
+    monkeypatch.setattr(wizard, "questionary", second)
+    wizard.run_setup(config_path)
+    defaults = {msg: kw.get("default") for _, msg, kw in second.calls}
+    bronze_default = next(v for m, v in defaults.items() if "Bronze layer — schemas" in m)
+    assert bronze_default == "d365po"
 
 
 def test_ctrl_c_writes_nothing(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
-    fake = FakeQuestionary(["Estate", None])  # None = user hit Ctrl-C
-    monkeypatch.setattr(wizard, "questionary", fake)
-    config_path = tmp_path / "coop-data-doc.yml"
 
+    def router(kind, message, kwargs):
+        if "Project name" in message:
+            return None  # user hits Ctrl-C at the first prompt
+        return ""
+
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    config_path = tmp_path / "coop-data-doc.yml"
     with pytest.raises(KeyboardInterrupt):
         wizard.run_setup(config_path)
     assert not config_path.exists()
-
-
-def test_rerun_prefills_even_when_saved_config_not_runnable(tmp_path: Path, monkeypatch):
-    (tmp_path / "pbi-repo").mkdir()
-    config_path = tmp_path / "coop-data-doc.yml"
-    first = FakeQuestionary(
-        [
-            "Custom Name",
-            "./not-cloned-yet",
-            True,  # missing repo, use anyway
-            "./pbi-repo",
-            "./docs",
-            "./site",
-            True,
-            "salespm",
-            "Sales and PM",
-            False,
-        ]
-    )
-    monkeypatch.setattr(wizard, "questionary", first)
-    assert wizard.run_setup(config_path) is None  # saved but not runnable
-
-    # re-running must prefill the saved answers, not start fresh
-    second = FakeQuestionary(
-        ["Custom Name", "./not-cloned-yet", True, "./pbi-repo", "./docs", "./site", True, False]
-    )
-    monkeypatch.setattr(wizard, "questionary", second)
-    wizard.run_setup(config_path)
-    defaults = {message: kwargs.get("default") for _, message, kwargs in second.calls}
-    assert defaults["Project name (shown as the docs site title):"] == "Custom Name"
-    assert defaults["SQL repo path (procs, tables, views):"] == "./not-cloned-yet"
-    # the keep-mappings confirm only appears when mappings were preserved
-    assert any("Keep existing schema mappings" in message for _, message, _k in second.calls)

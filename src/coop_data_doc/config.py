@@ -11,7 +11,9 @@ import json
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
+
+VALID_LAYERS = ("bronze", "silver", "gold")
 
 
 class ParseWarning(BaseModel):
@@ -54,6 +56,21 @@ class OutputConfig(BaseModel):
     site_dir: str = "./data-docs-site"
 
 
+class LayerRule(BaseModel):
+    """Which objects belong to a medallion layer.
+
+    A table or view is assigned this layer if its schema is in ``schemas``
+    OR its source-file path matches one of the ``paths`` globs. Both lists
+    are optional; an omitted layer simply isn't declared (so bronze/silver
+    can each be skipped).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schemas: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     """Validated coop-data-doc.yml. Relative paths resolve against the
     config file's directory, not the current working directory.
@@ -64,8 +81,17 @@ class Config(BaseModel):
     project_name: str = "Data Estate"
     repos: dict[str, RepoConfig]
     schema_mappings: list[SchemaMapping] = Field(default_factory=list)
+    layers: dict[str, LayerRule] = Field(default_factory=dict)
     output: OutputConfig = Field(default_factory=OutputConfig)
     sql_dialect: str = "tsql"
+
+    @field_validator("layers")
+    @classmethod
+    def _check_layer_names(cls, value: dict[str, LayerRule]) -> dict[str, LayerRule]:
+        bad = sorted(set(value) - set(VALID_LAYERS))
+        if bad:
+            raise ValueError(f"unknown layer(s) {bad}; valid layers are {list(VALID_LAYERS)}")
+        return value
 
     # directory of the loaded config file; relative paths resolve against it
     _base_dir: Path = PrivateAttr(default=Path("."))
@@ -129,6 +155,11 @@ class Config(BaseModel):
                 sql_path="../sql-repo",
                 pbi_path="../pbi-repo",
                 mappings=[("salespm", "Sales and Project Management")],
+                layers={
+                    "bronze": {"schemas": ["d365po", "d365fo"], "paths": []},
+                    "silver": {"schemas": ["stg"], "paths": []},
+                    "gold": {"schemas": ["dwm", "common"], "paths": ["**/dim/**", "**/fact/**"]},
+                },
             ),
             encoding="utf-8",
             newline="\n",
@@ -170,6 +201,12 @@ repos:
 # remembered in .lineage-cache.json (commit that file!).
 {mappings_block}
 
+# Medallion layers. A table/view is assigned a layer if its schema is in
+# 'schemas' OR its file path matches a 'paths' glob (precedence gold >
+# silver > bronze). Omit a layer to skip it; anything unmatched falls back
+# to a read/write heuristic (read-only source -> silver, else gold).
+{layers_block}
+
 output:
   dir: {output_dir}        # markdown docs (for agents)
   site_dir: {site_dir}     # html portal (for humans)
@@ -186,6 +223,7 @@ def render_config_yaml(
     sql_path: str,
     pbi_path: str,
     mappings: list[tuple[str, str]],
+    layers: dict[str, dict[str, list[str]]] | None = None,
     sql_include: list[str] | None = None,
     sql_exclude: list[str] | None = None,
     pbi_include: list[str] | None = None,
@@ -207,6 +245,22 @@ def render_config_yaml(
         mappings_block = "\n".join(lines)
     else:
         mappings_block = "schema_mappings: []"
+
+    declared = {
+        name: rule for name, rule in (layers or {}).items() if rule.get("schemas") or rule.get("paths")
+    }
+    if declared:
+        lines = ["layers:"]
+        for name in VALID_LAYERS:  # stable order: bronze, silver, gold
+            rule = declared.get(name)
+            if not rule:
+                continue
+            lines.append(f"  {name}:")
+            lines.append(f"    schemas: {json.dumps(rule.get('schemas', []))}")
+            lines.append(f"    paths: {json.dumps(rule.get('paths', []))}")
+        layers_block = "\n".join(lines)
+    else:
+        layers_block = "layers: {}"
     return _CONFIG_TEMPLATE.format(
         project_name=json.dumps(project_name),
         sql_path=json.dumps(sql_path),
@@ -216,6 +270,7 @@ def render_config_yaml(
         pbi_include=json.dumps(pbi_include if pbi_include is not None else DEFAULT_PBI_INCLUDE),
         pbi_exclude=json.dumps(pbi_exclude if pbi_exclude is not None else []),
         mappings_block=mappings_block,
+        layers_block=layers_block,
         output_dir=json.dumps(output_dir),
         site_dir=json.dumps(site_dir),
         sql_dialect=json.dumps(sql_dialect),

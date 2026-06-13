@@ -27,7 +27,8 @@ _DEFAULT_INTENT = "_Add a short description of what this object is for and who r
 _INTENT_RE = re.compile(re.escape(INTENT_BEGIN) + r"(.*?)" + re.escape(INTENT_END), re.S)
 
 _TYPE_TITLES: dict[NodeType, str] = {
-    NodeType.SILVER_TABLE: "Source Tables (Silver)",
+    NodeType.BRONZE_TABLE: "Source Tables (Bronze)",
+    NodeType.SILVER_TABLE: "Tables (Silver)",
     NodeType.GOLD_TABLE: "Tables (Gold)",
     NodeType.VIEW: "Views",
     NodeType.STORED_PROC: "Stored Procedures",
@@ -50,6 +51,7 @@ def _front_matter(graph: LineageGraph, node: Node) -> str:
     lines.append(f"type: {_quote(node.node_type.value)}")
     lines.append(f"name: {_quote(node.name)}")
     lines.append(f"schema: {_quote(node.schema_name)}")
+    lines.append(f"layer: {_quote(node.metadata.get('layer', ''))}")
     lines.append(f"source_file: {_quote(node.source_file)}")
     lines.append(f"path: {_quote(f'{node.node_type.value}/{slug(node.id)}.md')}")
     for key, ids in (

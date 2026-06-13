@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 class NodeType(str, Enum):
     """Every kind of object the lineage graph can hold."""
 
+    BRONZE_TABLE = "bronze_table"
     SILVER_TABLE = "silver_table"
     GOLD_TABLE = "gold_table"
     VIEW = "view"

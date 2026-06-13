@@ -9,6 +9,7 @@
 | M2 SQL parser | `parsers/sql_common.py`, `sql_objects.py`, `sql_procs.py` | sqlglot (tsql) AST lineage with a regex fallback ladder |
 | M3 Power BI extractor | `parsers/tmdl.py`, `bim.py`, `mcode.py`, `dax.py`, `pbir.py`, `pbix.py` | semantic models, measures, reports, best-effort pbix |
 | M4 linker | `linker/resolver.py`, `cache.py`, `interactive.py` | joins SQL ↔ PBI: cache → exact → config rule → fuzzy → prompt |
+| M4½ layering | `layering.py` | medallion layer (bronze/silver/gold) from `config.layers` rules (schema/path), heuristic fallback; object *type* stays parser-detected |
 | M5 renderers | `render/markdown.py`, `mermaid.py`, `site.py` | agent Markdown + offline MkDocs Material portal |
 | M6 CLI | `cli.py`, `wizard.py`, `upgrade.py` | interactive menu (bare invocation), `setup` / `init` / `scan` / `build` / `update` / `check` / `help` / `upgrade` |
 

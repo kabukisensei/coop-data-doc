@@ -22,6 +22,7 @@ _SLUG_MAX = 80  # readable portion; a short id-hash is always appended
 
 # (open, close) bracket pair per node type
 _SHAPES: dict[NodeType, tuple[str, str]] = {
+    NodeType.BRONZE_TABLE: ("[(", ")]"),
     NodeType.SILVER_TABLE: ("[(", ")]"),
     NodeType.GOLD_TABLE: ("[(", ")]"),
     NodeType.VIEW: ("[/", "/]"),
@@ -35,6 +36,7 @@ _SHAPES: dict[NodeType, tuple[str, str]] = {
 }
 
 _ESTATE_LAYERS: list[tuple[str, tuple[NodeType, ...]]] = [
+    ("Bronze", (NodeType.BRONZE_TABLE,)),
     ("Silver", (NodeType.SILVER_TABLE,)),
     ("Gold", (NodeType.STORED_PROC, NodeType.GOLD_TABLE)),
     ("Views", (NodeType.VIEW,)),

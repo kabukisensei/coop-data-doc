@@ -95,7 +95,7 @@ Check it worked:
 coop-data-doc --version
 ```
 
-You should see `coop-data-doc, version 0.2.0` (or newer). If the terminal says
+You should see `coop-data-doc, version 0.3.0` (or newer). If the terminal says
 *"command not found"* (macOS) or *"the term 'coop-data-doc' is not recognized…"*
 (Windows), see [Troubleshooting](#troubleshooting).
 
@@ -221,6 +221,17 @@ schema_mappings:                    # hint: which view schema feeds which model
   - schema: salespm
     model: "Sales and Project Management"
 
+layers:                             # medallion layers (all optional)
+  bronze:
+    schemas: [d365po, d365fo]       # source schemas
+    paths: []
+  silver:
+    schemas: [stg]
+    paths: []
+  gold:
+    schemas: [dwm, common]          # the proc schema + shared/common schema
+    paths: ["**/dim/**", "**/fact/**"]   # gold table folders
+
 output:
   dir: ./data-docs                  # the markdown (agents read this)
   site_dir: ./data-docs-site        # the website (humans read this)
@@ -231,6 +242,22 @@ sql_dialect: tsql                   # covers SQL Server, Azure SQL, Fabric wareh
 `schema_mappings` matters because view schemas and semantic-model names are often
 *similar but not identical* — e.g. the `salespm` schema feeds the "Sales and Project
 Management" model. Each hint you add means fewer questions on the next run.
+
+### Medallion layers (bronze / silver / gold)
+
+The object *type* (table / view / stored proc) is detected automatically from the SQL.
+The *layer* can't be — a `CREATE TABLE` doesn't say "I'm silver" — so you declare it.
+A table or view is assigned the **first** layer (precedence gold → silver → bronze) whose:
+
+- `schemas` list contains its schema, **or**
+- `paths` globs match its file.
+
+So you can mix both: gold = "the `dwm` and `common` schemas **plus** the `dim`/`fact`
+folders," while bronze = "the `d365po`/`d365fo` source schemas." Each layer is optional —
+**omit `bronze` or `silver` entirely to skip it.** Anything no rule matches falls back to
+a read/write heuristic (a table that's only ever read → silver; one that's created here →
+gold), and the scan warns which objects fell back so you can add rules. Bronze only ever
+appears when you declare it. The setup wizard walks you through these layer-by-layer.
 
 ## When it asks you questions
 

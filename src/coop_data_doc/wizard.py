@@ -22,8 +22,8 @@ from coop_data_doc.config import (
     ConfigError,
     render_config_yaml,
     DEFAULT_PBI_INCLUDE,
-    DEFAULT_SQL_EXCLUDE,
     DEFAULT_SQL_INCLUDE,
+    VALID_LAYERS,
 )
 
 
@@ -33,6 +33,12 @@ def _ask(prompt) -> object:
     if answer is None:
         raise KeyboardInterrupt
     return answer
+
+
+def _ask_csv(message: str, default: list[str]) -> list[str]:
+    """Prompt for a comma-separated list; blank returns []."""
+    raw = str(_ask(questionary.text(message, default=", ".join(default)))).strip()
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def _ask_repo_path(label: str, default: str, base_dir: Path) -> str:
@@ -142,6 +148,38 @@ def run_setup(config_path: Path) -> Config | None:
         or "./data-docs-site"
     )
 
+    # --- junk filtering: folders/patterns to skip ---
+    sql_repo = existing.repos.get("sql") if existing else None
+    pbi_repo = existing.repos.get("powerbi") if existing else None
+    print("\n── What to skip (junk filtering) ──", file=sys.stderr)
+    sql_exclude = _ask_csv(
+        "SQL folders/patterns to EXCLUDE (comma-separated globs, e.g. **/logging/**, "
+        "**/Deployment/** — blank for none):",
+        sql_repo.exclude if sql_repo else ["**/archive/**"],
+    )
+
+    # --- medallion layers: bronze → silver → gold (each skippable) ---
+    print("\n── Medallion layers (leave both blank to skip a layer) ──", file=sys.stderr)
+    layers: dict[str, dict[str, list[str]]] = {}
+    for layer in VALID_LAYERS:  # bronze, silver, gold
+        existing_rule = existing.layers.get(layer) if existing else None
+        schemas = _ask_csv(
+            f"{layer.capitalize()} layer — schemas (comma-separated, e.g. "
+            + ("d365po, d365fo" if layer == "bronze" else "dwm, common" if layer == "gold" else "stg")
+            + ", or blank):",
+            existing_rule.schemas if existing_rule else [],
+        )
+        paths = _ask_csv(
+            f"{layer.capitalize()} layer — folder globs (comma-separated, e.g. "
+            + ("**/dim/**, **/fact/**" if layer == "gold" else "**/Bronze/**")
+            + ", or blank):",
+            existing_rule.paths if existing_rule else [],
+        )
+        if schemas or paths:
+            layers[layer] = {"schemas": schemas, "paths": paths}
+
+    # --- schema → semantic-model hints ---
+    print("\n── Power BI: which view schema feeds which model ──", file=sys.stderr)
     mappings: list[tuple[str, str]] = []
     if existing is not None and existing.schema_mappings:
         current = ", ".join(f"{m.schema_name} → {m.model}" for m in existing.schema_mappings)
@@ -157,16 +195,14 @@ def run_setup(config_path: Path) -> Config | None:
         if schema and model:
             mappings.append((schema, model))
 
-    # preserve any hand-tuned globs/dialect from the existing config
-    sql_repo = existing.repos.get("sql") if existing else None
-    pbi_repo = existing.repos.get("powerbi") if existing else None
     rendered = render_config_yaml(
         project_name=project_name,
         sql_path=sql_path,
         pbi_path=pbi_path,
         mappings=mappings,
+        layers=layers,
         sql_include=sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
-        sql_exclude=sql_repo.exclude if sql_repo else DEFAULT_SQL_EXCLUDE,
+        sql_exclude=sql_exclude,
         pbi_include=pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
         pbi_exclude=pbi_repo.exclude if pbi_repo else [],
         output_dir=output_dir,

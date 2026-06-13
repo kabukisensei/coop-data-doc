@@ -85,6 +85,7 @@ def test_front_matter_strict_yaml(tmp_path: Path):
         "type",
         "name",
         "schema",
+        "layer",
         "source_file",
         "path",
         "upstream_inputs",
