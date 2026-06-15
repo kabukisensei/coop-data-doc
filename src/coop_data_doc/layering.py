@@ -28,6 +28,47 @@ _LAYER_TABLE_TYPE = {
 }
 _TABLE_TYPES = (NodeType.BRONZE_TABLE, NodeType.SILVER_TABLE, NodeType.GOLD_TABLE)
 
+# SQL node types whose schema is a real database schema (prunable). PBI
+# nodes use the model/report name as schema_name and are never pruned here.
+_SQL_NODE_TYPES = (
+    NodeType.BRONZE_TABLE,
+    NodeType.SILVER_TABLE,
+    NodeType.GOLD_TABLE,
+    NodeType.VIEW,
+    NodeType.STORED_PROC,
+)
+
+# system catalog schemas — never user data lineage, always dropped
+SYSTEM_SCHEMAS = frozenset({"sys", "information_schema", "tempdb", "guest"})
+
+
+def prune_schemas(graph: LineageGraph, ignore_schemas: list[str]) -> int:
+    """Remove SQL nodes whose schema is a system schema or in the user's
+    ignore list (and any edges touching them). Returns the count dropped.
+
+    System schemas (sys, information_schema, tempdb, db_*) are phantom nodes
+    from procs that query the catalog — never real lineage — so they go
+    automatically; ignore_schemas drops client-specific noise on top.
+    """
+    ignored = SYSTEM_SCHEMAS | {s.lower() for s in ignore_schemas}
+
+    def is_ignored(schema: str) -> bool:
+        schema = (schema or "").lower()
+        return schema in ignored or schema.startswith("db_")
+
+    drop = {
+        node_id
+        for node_id, node in graph.nodes.items()
+        if node.node_type in _SQL_NODE_TYPES and is_ignored(node.schema_name)
+    }
+    for node_id in drop:
+        del graph.nodes[node_id]
+    if drop:
+        graph.edges = [
+            edge for edge in graph.edges if edge.source_id not in drop and edge.target_id not in drop
+        ]
+    return len(drop)
+
 
 def _path_matches(globs: list[str], source_file: str) -> bool:
     posix = source_file.replace("\\", "/")

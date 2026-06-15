@@ -29,7 +29,7 @@ from coop_data_doc.parsers.bim import parse_bim
 from coop_data_doc.parsers.pbir import link_visual_bindings, parse_legacy_reports, parse_pbir
 from coop_data_doc.parsers.pbix import parse_pbix
 from coop_data_doc.parsers.sql_objects import parse_sql_objects
-from coop_data_doc.layering import assign_layers
+from coop_data_doc.layering import assign_layers, prune_schemas
 from coop_data_doc.parsers.sql_procs import (
     parse_sql_procs,
     resolve_stub_references,
@@ -79,6 +79,9 @@ def run_pipeline(
         warnings += parse_pbix(pbix, graph, on_file=tick)
     warnings += link_visual_bindings(graph)
 
+    dropped = prune_schemas(graph, config.ignore_schemas)
+    if dropped:
+        progress.line(f"Dropped {dropped} objects in ignored/system schemas")
     warnings += assign_layers(graph, config)
 
     progress.line("Linking cross-repo references…")

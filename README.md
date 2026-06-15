@@ -232,6 +232,8 @@ layers:                             # medallion layers (all optional)
     schemas: [dwm, common]          # the proc schema + shared/common schema
     paths: ["**/dim/**", "**/fact/**"]   # gold table folders
 
+ignore_schemas: [staging, sm]       # schemas to drop entirely (never documented)
+
 output:
   dir: ./data-docs                  # the markdown (agents read this)
   site_dir: ./data-docs-site        # the website (humans read this)
@@ -258,6 +260,12 @@ folders," while bronze = "the `d365po`/`d365fo` source schemas." Each layer is o
 a read/write heuristic (a table that's only ever read → silver; one that's created here →
 gold), and the scan warns which objects fell back so you can add rules. Bronze only ever
 appears when you declare it. The setup wizard walks you through these layer-by-layer.
+
+**Dropping schemas you don't want documented:** list them in `ignore_schemas` (the wizard
+asks for these too). System schemas — `sys`, `information_schema`, `tempdb`, `db_*` — are
+**always** dropped automatically, since they're catalog references, not real data. Note
+that ignoring a schema removes it from lineage entirely, so anything downstream loses that
+upstream link.
 
 ## When it asks you questions
 

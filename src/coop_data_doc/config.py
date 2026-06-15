@@ -82,6 +82,7 @@ class Config(BaseModel):
     repos: dict[str, RepoConfig]
     schema_mappings: list[SchemaMapping] = Field(default_factory=list)
     layers: dict[str, LayerRule] = Field(default_factory=dict)
+    ignore_schemas: list[str] = Field(default_factory=list)
     output: OutputConfig = Field(default_factory=OutputConfig)
     sql_dialect: str = "tsql"
 
@@ -207,6 +208,10 @@ repos:
 # to a read/write heuristic (read-only source -> silver, else gold).
 {layers_block}
 
+# Schemas to drop entirely (never documented). System schemas (sys,
+# information_schema, tempdb, db_*) are always dropped automatically.
+ignore_schemas: {ignore_schemas}
+
 output:
   dir: {output_dir}        # markdown docs (for agents)
   site_dir: {site_dir}     # html portal (for humans)
@@ -224,6 +229,7 @@ def render_config_yaml(
     pbi_path: str,
     mappings: list[tuple[str, str]],
     layers: dict[str, dict[str, list[str]]] | None = None,
+    ignore_schemas: list[str] | None = None,
     sql_include: list[str] | None = None,
     sql_exclude: list[str] | None = None,
     pbi_include: list[str] | None = None,
@@ -271,6 +277,7 @@ def render_config_yaml(
         pbi_exclude=json.dumps(pbi_exclude if pbi_exclude is not None else []),
         mappings_block=mappings_block,
         layers_block=layers_block,
+        ignore_schemas=json.dumps(ignore_schemas or []),
         output_dir=json.dumps(output_dir),
         site_dir=json.dumps(site_dir),
         sql_dialect=json.dumps(sql_dialect),

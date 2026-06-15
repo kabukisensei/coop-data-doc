@@ -1,6 +1,6 @@
 from coop_data_doc.config import Config, LayerRule, RepoConfig
 from coop_data_doc.graph import Edge, EdgeType, LineageGraph, Node, NodeType
-from coop_data_doc.layering import assign_layers
+from coop_data_doc.layering import assign_layers, prune_schemas
 
 
 def node(graph, node_type, schema, name, source_file=""):
@@ -104,3 +104,29 @@ def test_skipping_silver_layer():
     g.add_edge(Edge(source_id="p", target_id="gold_table:d365fo.ledger", edge_type=EdgeType.READS))
     assign_layers(g, cfg({"bronze": LayerRule(schemas=["d365fo"]), "gold": LayerRule(schemas=["dwm"])}))
     assert "bronze_table:d365fo.ledger" in g.nodes
+
+
+def test_prune_system_and_ignored_schemas():
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "dbo", "fact_sales")
+    node(g, NodeType.GOLD_TABLE, "sys", "objects")  # system → always dropped
+    node(g, NodeType.VIEW, "information_schema", "columns")  # system → dropped
+    node(g, NodeType.SILVER_TABLE, "staging", "raw")  # ignored by config
+    node(g, NodeType.GOLD_TABLE, "db_owner", "x")  # db_* prefix → dropped
+    g.add_edge(Edge(source_id="view:dbo.v", target_id="silver_table:staging.raw", edge_type=EdgeType.READS))
+    dropped = prune_schemas(g, ["staging"])
+    assert dropped == 4
+    assert set(g.nodes) == {"gold_table:dbo.fact_sales"}
+    # edges touching dropped nodes are gone too
+    assert all("staging" not in e.source_id and "staging" not in e.target_id for e in g.edges)
+
+
+def test_prune_leaves_pbi_nodes_alone():
+    # a semantic model whose name happens to collide with a schema word must
+    # not be pruned (pbi nodes carry the model name in schema_name)
+    g = LineageGraph()
+    node(g, NodeType.PBI_TABLE, "sys", "metrics")  # schema_name == model name "sys"
+    node(g, NodeType.SEMANTIC_MODEL, "", "sys")
+    dropped = prune_schemas(g, [])
+    assert dropped == 0
+    assert "pbi_table:sys.metrics" in g.nodes

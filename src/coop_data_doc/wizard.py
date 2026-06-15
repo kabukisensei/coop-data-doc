@@ -178,6 +178,12 @@ def run_setup(config_path: Path) -> Config | None:
         if schemas or paths:
             layers[layer] = {"schemas": schemas, "paths": paths}
 
+    ignore_schemas = _ask_csv(
+        "Schemas to IGNORE entirely / skip (comma-separated, e.g. staging, sm — blank "
+        "for none; system schemas like sys/information_schema are always dropped):",
+        existing.ignore_schemas if existing else [],
+    )
+
     # --- schema → semantic-model hints ---
     print("\n── Power BI: which view schema feeds which model ──", file=sys.stderr)
     mappings: list[tuple[str, str]] = []
@@ -201,6 +207,7 @@ def run_setup(config_path: Path) -> Config | None:
         pbi_path=pbi_path,
         mappings=mappings,
         layers=layers,
+        ignore_schemas=ignore_schemas,
         sql_include=sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
         sql_exclude=sql_exclude,
         pbi_include=pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
