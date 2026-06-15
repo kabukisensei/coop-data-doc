@@ -91,9 +91,22 @@ class Node(BaseModel):
     # 'schema' shadows a pydantic BaseModel attribute, hence schema_name.
     # Renderers emit it under the front-matter key 'schema'.
     schema_name: str = ""
+    # original-case object name for display (name/id stay normalized for
+    # matching). Empty -> fall back to `name`. See `display`.
+    display_name: str = ""
     source_file: str = ""
     columns: list[Column] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
+
+    @property
+    def display(self) -> str:
+        """Original-case name for rendering; falls back to the normalized name."""
+        return self.display_name or self.name
+
+    @property
+    def qualified_display(self) -> str:
+        """`schema.Name` (original case) for page titles and labels."""
+        return f"{self.schema_name}.{self.display}" if self.schema_name else self.display
 
     @staticmethod
     def make_id(node_type: NodeType, schema: str, name: str) -> str:
@@ -146,6 +159,8 @@ class LineageGraph(BaseModel):
             existing.name = node.name
         if not existing.schema_name:
             existing.schema_name = node.schema_name
+        if not existing.display_name:
+            existing.display_name = node.display_name
         if not existing.source_file:
             existing.source_file = node.source_file
         known = {c.name.lower() for c in existing.columns}

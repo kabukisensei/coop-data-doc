@@ -257,3 +257,32 @@ def test_site_nav_grouped_by_layer():
     gold_idx = nav.index("Gold Layer:")
     assert "Tables:" in nav[gold_idx:]
     assert "Views:" in nav[gold_idx:]
+
+
+def test_display_name_schema_qualified_original_case(tmp_path: Path):
+    g = LineageGraph()
+    # node id/name normalized (lowercase) but display_name keeps original case
+    g.add_node(
+        Node(
+            id=Node.make_id(NodeType.GOLD_TABLE, "dim", "Practice"),
+            node_type=NodeType.GOLD_TABLE,
+            name="practice",
+            schema_name="dim",
+            display_name="Practice",
+            source_file="dim/Practice.sql",
+            metadata={"layer": "gold"},
+        )
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "gold_table:dim.practice").read_text(encoding="utf-8")
+    assert "# dim.Practice `gold_table`" in page  # schema-qualified, original case
+    # mermaid label uses the same display
+    from coop_data_doc.render.mermaid import local_flowchart
+
+    assert "dim.Practice" in local_flowchart(g, "gold_table:dim.practice")
+
+
+def test_display_falls_back_to_name_when_absent():
+    n = Node(id="view:s.x", node_type=NodeType.VIEW, name="x", schema_name="s")
+    assert n.display == "x"
+    assert n.qualified_display == "s.x"

@@ -22,6 +22,7 @@ from coop_data_doc.graph.model import (
 from coop_data_doc.parsers.sql_common import (
     PROC_HEADER_RE,
     collect_source_tables,
+    original_name,
     parse_batch,
     qualify,
     regex_extract,
@@ -145,6 +146,7 @@ def _handle_create_table(create: exp.Create, graph: LineageGraph, entry: FileEnt
             node_type=NodeType.GOLD_TABLE,
             name=name,
             schema_name=schema,
+            display_name=original_name(target.name),
             source_file=entry.path,
             columns=columns,
         )
@@ -175,6 +177,7 @@ def _handle_create_view(
             node_type=NodeType.VIEW,
             name=name,
             schema_name=schema,
+            display_name=original_name(create.this.name),
             source_file=entry.path,
         )
     )
@@ -237,17 +240,19 @@ def parse_sql_objects(
                 continue
             lineage = regex_extract(batch)
             if view_match:
-                schema, name = qualify(view_match.group(1))
+                raw = view_match.group(1)
                 node_type = NodeType.VIEW
             else:
-                schema, name = qualify(table_match.group(1))
+                raw = table_match.group(1)
                 node_type = NodeType.GOLD_TABLE
+            schema, name = qualify(raw)
             node = graph.add_node(
                 Node(
                     id=Node.make_id(node_type, schema, name),
                     node_type=node_type,
                     name=name,
                     schema_name=schema,
+                    display_name=original_name(raw),
                     source_file=entry.path,
                     metadata={"parse_quality": "regex_fallback"},
                 )

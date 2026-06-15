@@ -154,6 +154,19 @@ def is_temp_table(table: exp.Table) -> bool:
     return False
 
 
+_QUOTE_JUNK = re.compile(r'[\[\]"`]')
+
+
+def original_name(raw: str) -> str:
+    """The object's name with original case, brackets/quotes stripped.
+
+    Unlike normalize_identifier (which lowercases for stable ids), this keeps
+    the source casing for display, e.g. '[dim].[Practice]' -> 'Practice'.
+    """
+    cleaned = _QUOTE_JUNK.sub("", str(raw)).strip()
+    return cleaned.rsplit(".", 1)[-1] if "." in cleaned else cleaned
+
+
 def qualify(raw: str) -> tuple[str, str]:
     """'[dbo].[Foo]' -> ('dbo', 'foo'); unqualified names default to dbo."""
     cleaned = normalize_identifier(raw)

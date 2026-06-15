@@ -31,6 +31,7 @@ from coop_data_doc.parsers.sql_common import (
     StatementLineage,
     collect_source_tables,
     is_temp_table,
+    original_name,
     parse_batch,
     qualify,
     regex_extract,
@@ -188,6 +189,7 @@ def parse_sql_procs(
                     node_type=NodeType.STORED_PROC,
                     name=name,
                     schema_name=schema,
+                    display_name=original_name(raw_name),
                     source_file=entry.path,
                     metadata={"parse_quality": "ast"},
                 )
@@ -225,6 +227,7 @@ def parse_sql_procs(
                             node_type=NodeType.STORED_PROC,
                             name=callee_name,
                             schema_name=callee_schema,
+                            display_name=original_name(exec_match.group(1)),
                         )
                     )
                     graph.add_edge(
@@ -259,6 +262,7 @@ def parse_sql_procs(
                                     node_type=NodeType.GOLD_TABLE,
                                     name=t_name,
                                     schema_name=t_schema,
+                                    display_name=original_name(table_expr.name),
                                     source_file=entry.path,
                                     columns=(
                                         columns_from_schema(schema_expr, dialect)

@@ -82,8 +82,7 @@ _LABEL_SUBST = str.maketrans({'"': "'", "<": "(", ">": ")", "|": "/", "`": "'"})
 
 
 def _label(node: Node) -> str:
-    text = f"{node.schema_name}.{node.name}" if node.schema_name else node.name
-    return text.translate(_LABEL_SUBST)
+    return node.qualified_display.translate(_LABEL_SUBST)
 
 
 def _node_line(alias: str, node: Node) -> str:

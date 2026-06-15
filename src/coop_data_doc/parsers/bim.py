@@ -57,6 +57,7 @@ def parse_bim(
                 id=Node.make_id(NodeType.SEMANTIC_MODEL, "", model_name),
                 node_type=NodeType.SEMANTIC_MODEL,
                 name=model_key,
+                display_name=model_name,
                 source_file=entry.path,
             )
         )
@@ -79,6 +80,7 @@ def parse_bim(
                     node_type=NodeType.PBI_TABLE,
                     name=normalize_identifier(table_name),
                     schema_name=model_key,
+                    display_name=table_name,
                     source_file=entry.path,
                     columns=columns,
                 )
@@ -106,6 +108,7 @@ def parse_bim(
                         node_type=NodeType.MEASURE,
                         name=normalize_identifier(measure_name),
                         schema_name=model_key,
+                        display_name=measure_name,
                         source_file=entry.path,
                         metadata={"dax": _expression_text(measure.get("expression"))},
                     )

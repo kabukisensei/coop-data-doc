@@ -116,7 +116,7 @@ def _lineage_table(graph: LineageGraph, node: Node, ids: list[str], direction: s
         if other is None:
             continue
         via, evidence = edge_info.get(other_id, ("", ""))
-        label = f"{other.schema_name}.{other.name}" if other.schema_name else other.name
+        label = other.qualified_display
         evidence_file = evidence.split(":", 1)[0] if evidence else ""
         lines.append(
             f"| [{label}]({doc_relpath(other)}) | {other.node_type.value} | {via} | {evidence_file} |"
@@ -140,7 +140,7 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     parts = [
         _front_matter(graph, node),
         "",
-        f"# {node.name} `{node.node_type.value}`",
+        f"# {node.qualified_display} `{node.node_type.value}`",
         "",
         _contract_section(node),
         "",
