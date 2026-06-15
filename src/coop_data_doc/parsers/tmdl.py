@@ -119,11 +119,24 @@ def parse_table_file(
     lines = text.splitlines()
     table_node: Node | None = None
     current_column: Column | None = None
+    pending_doc: list[str] = []  # accumulates `///` doc-comment lines
+
+    def take_doc() -> str:
+        """Cleaned description from the doc-comment lines above an object,
+        skipping the 'TODO: Add description' placeholder. Resets the buffer."""
+        text_ = " ".join(pending_doc).strip()
+        pending_doc.clear()
+        return "" if text_.upper().startswith("TODO") else text_
+
     i = 0
     while i < len(lines):
         raw = lines[i]
         stripped = raw.strip()
         if not stripped:
+            i += 1
+            continue
+        if stripped.startswith("///"):
+            pending_doc.append(stripped[3:].strip())
             i += 1
             continue
         indent = _indent(raw)
@@ -132,6 +145,7 @@ def parse_table_file(
             table_match = _TABLE_RE.match(stripped)
             if table_match:
                 name = _unquote(table_match.group(1))
+                table_desc = take_doc()
                 table_node = graph.add_node(
                     Node(
                         id=Node.make_id(NodeType.PBI_TABLE, model_name, name),
@@ -140,6 +154,7 @@ def parse_table_file(
                         schema_name=model_key,
                         display_name=name,
                         source_file=entry.path,
+                        metadata={"description": table_desc} if table_desc else {},
                     )
                 )
                 graph.add_edge(
@@ -162,6 +177,7 @@ def parse_table_file(
         if measure_match:
             current_column = None
             measure_name = _unquote(measure_match.group(1))
+            measure_desc = take_doc()
             dax_parts = [measure_match.group(2)] if measure_match.group(2) else []
             i += 1
             while i < len(lines):
@@ -180,7 +196,11 @@ def parse_table_file(
                     schema_name=model_key,
                     display_name=measure_name,
                     source_file=entry.path,
-                    metadata={"dax": "\n".join(dax_parts).strip()},
+                    metadata=(
+                        {"dax": "\n".join(dax_parts).strip(), "description": measure_desc}
+                        if measure_desc
+                        else {"dax": "\n".join(dax_parts).strip()}
+                    ),
                 )
             )
             graph.add_edge(
@@ -196,7 +216,7 @@ def parse_table_file(
         column_match = _COLUMN_RE.match(stripped)
         if column_match:
             name = normalize_identifier(_unquote(column_match.group(1)))
-            current_column = Column(name=name)
+            current_column = Column(name=name, description=take_doc())
             known = {c.name for c in table_node.columns}
             if name not in known:
                 table_node.columns.append(current_column)

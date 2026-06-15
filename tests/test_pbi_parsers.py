@@ -299,3 +299,31 @@ def test_determinism():
     first, _ = parse_all()
     second, _ = parse_all()
     assert to_json_str(first) == to_json_str(second)
+
+
+def test_tmdl_imports_doc_comment_descriptions(tmp_path):
+    from coop_data_doc.parsers.tmdl import parse_table_file
+
+    tmdl = (
+        "table Sales\n"
+        "\t/// All booked sales orders.\n"
+        "\tmeasure 'Total' = SUM(Sales[amt])\n"
+        "\t/// TODO: Add description\n"
+        "\tcolumn amt\n"
+        "\t\tdataType: decimal\n"
+        "\t/// The customer key.\n"
+        "\tcolumn cust_id\n"
+        "\t\tdataType: int64\n"
+    )
+    g = LineageGraph()
+
+    class _E:
+        path = "Sales.tmdl"
+        repo_key = "powerbi"
+
+    parse_table_file(tmdl, "Model", "semantic_model:model", _E(), g)
+    measure = g.nodes["measure:model.total"]
+    assert measure.metadata.get("description") == "All booked sales orders."
+    cols = {c.name: c.description for c in g.nodes["pbi_table:model.sales"].columns}
+    assert cols["amt"] == ""  # 'TODO: Add description' placeholder skipped
+    assert cols["cust_id"] == "The customer key."

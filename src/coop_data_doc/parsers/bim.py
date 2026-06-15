@@ -70,10 +70,12 @@ def parse_bim(
                 Column(
                     name=normalize_identifier(column.get("name") or ""),
                     data_type=str(column.get("dataType") or ""),
+                    description=str(column.get("description") or ""),
                 )
                 for column in table.get("columns") or []
                 if column.get("name")
             ]
+            table_desc = str(table.get("description") or "")
             table_node = graph.add_node(
                 Node(
                     id=Node.make_id(NodeType.PBI_TABLE, model_name, table_name),
@@ -83,6 +85,7 @@ def parse_bim(
                     display_name=table_name,
                     source_file=entry.path,
                     columns=columns,
+                    metadata={"description": table_desc} if table_desc else {},
                 )
             )
             graph.add_edge(
@@ -110,7 +113,14 @@ def parse_bim(
                         schema_name=model_key,
                         display_name=measure_name,
                         source_file=entry.path,
-                        metadata={"dax": _expression_text(measure.get("expression"))},
+                        metadata=(
+                            {
+                                "dax": _expression_text(measure.get("expression")),
+                                "description": str(measure.get("description") or ""),
+                            }
+                            if measure.get("description")
+                            else {"dax": _expression_text(measure.get("expression"))}
+                        ),
                     )
                 )
                 graph.add_edge(

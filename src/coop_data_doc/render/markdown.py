@@ -142,6 +142,8 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
         "",
         f"# {node.qualified_display}",
         "",
+        # description imported from the source model (TMDL/BIM), if any
+        *([f"_{node.metadata['description']}_", ""] if node.metadata.get("description") else []),
         _contract_section(node),
         "",
         "## Lineage",
@@ -205,6 +207,25 @@ def _index_page(graph: LineageGraph, project_name: str) -> str:
         lines.append("```mermaid")
         lines.append(chart)
         lines.append("```")
+    lines.extend(
+        [
+            "",
+            "## Adding your own notes",
+            "",
+            "Each object page has two kinds of description:",
+            "",
+            "- **Description** (italic, under the title) is imported automatically from the "
+            "Power BI model — the `///` doc comment on a TMDL table/column/measure (or the "
+            "`description` field in a `.bim`). Fill those in inside Power BI and they appear "
+            "here on the next build.",
+            "- **Business Intent** (the section at the bottom of every page) is for *your* "
+            "notes — ownership, gotchas, why an object exists. Edit the text between the "
+            "`<!-- intent:begin -->` / `<!-- intent:end -->` markers in the matching "
+            "`.md` file under the docs folder; it is preserved verbatim across rebuilds.",
+            "",
+            "After editing, rerun `coop-data-doc build` (or `update`) to regenerate the site.",
+        ]
+    )
     lines.append("")
     return "\n".join(lines)
 
