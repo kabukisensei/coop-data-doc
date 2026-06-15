@@ -209,6 +209,15 @@ def _index_page(graph: LineageGraph, project_name: str) -> str:
     return "\n".join(lines)
 
 
+def write_diagnostics(out_dir: Path, diagnostics, project_name: str) -> Path:
+    """Write the human-readable diagnostics page (diagnostics.md) for the
+    HTML portal. The machine-readable diagnostics.json is written by the CLI.
+    """
+    path = Path(out_dir) / "diagnostics.md"
+    path.write_text(diagnostics.to_markdown(project_name), encoding="utf-8", newline="\n")
+    return path
+
+
 def render_markdown(
     graph: LineageGraph,
     out_dir: Path,

@@ -8,6 +8,7 @@ with -v.
 from __future__ import annotations
 
 import filecmp
+import json
 import logging
 import os
 import shutil
@@ -20,6 +21,7 @@ import questionary
 
 from coop_data_doc import __version__
 from coop_data_doc.config import Config, ConfigError, ParseWarning
+from coop_data_doc.diagnostics import Diagnostics
 from coop_data_doc.crawler import FileKind, crawl
 from coop_data_doc.graph.model import LineageGraph
 from coop_data_doc.graph.serialize import to_json_file
@@ -36,11 +38,12 @@ from coop_data_doc.parsers.sql_procs import (
 )
 from coop_data_doc.parsers.tmdl import parse_tmdl
 from coop_data_doc.progress import Progress, should_enable
-from coop_data_doc.render.markdown import render_markdown
+from coop_data_doc.render.markdown import render_markdown, write_diagnostics
 from coop_data_doc.render.site import build_site, write_mkdocs_config
 
 STRICT_CATEGORIES = ("regex_fallback", "dynamic_sql")
 DEFAULT_CONFIG = "coop-data-doc.yml"
+_log = logging.getLogger("coop_data_doc")
 
 
 def run_pipeline(
@@ -58,8 +61,10 @@ def run_pipeline(
     graph = LineageGraph()
     inventory, warnings = crawl(config)
     progress.line(f"Crawling repos… {len(inventory.entries)} files found")
+    _log.debug("crawled %d files across %d repos", len(inventory.entries), len(config.repos))
 
     sql_entries = inventory.by_kind(FileKind.SQL_FILE)
+    _log.debug("parsing %d SQL files (dialect=%s)", len(sql_entries), config.sql_dialect)
     with progress.bar("Parsing SQL", total=2 * len(sql_entries)) as tick:
         warnings += parse_sql_objects(sql_entries, graph, config.sql_dialect, on_file=tick)
         warnings += parse_sql_procs(sql_entries, graph, config.sql_dialect, on_file=tick)
@@ -84,29 +89,21 @@ def run_pipeline(
         progress.line(f"Dropped {dropped} objects in ignored/system schemas")
     warnings += assign_layers(graph, config)
 
+    if dropped:
+        _log.debug("pruned %d nodes in system/ignored schemas", dropped)
     progress.line("Linking cross-repo references…")
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
     result, link_warnings = link_graph(graph, config, cache, interactive)
     warnings += link_warnings
+    _log.debug(
+        "done: %d nodes, %d edges, %d cross-repo links, %d unresolved, %d warnings",
+        len(graph.nodes),
+        len(graph.edges),
+        result.resolved,
+        len(result.unresolved),
+        len(warnings),
+    )
     return graph, result, warnings
-
-
-def _warning_summary(warnings: list[ParseWarning], quiet: bool) -> None:
-    if quiet or not warnings:
-        return
-    by_category: dict[str, int] = {}
-    by_file: dict[str, int] = {}
-    for warning in warnings:
-        by_category[warning.category] = by_category.get(warning.category, 0) + 1
-        by_file[warning.file] = by_file.get(warning.file, 0) + 1
-    click.echo("\nWarnings:", err=True)
-    for category in sorted(by_category):
-        click.echo(f"  {category:30} {by_category[category]}", err=True)
-    top = sorted(by_file.items(), key=lambda pair: (-pair[1], pair[0]))[:5]
-    if top:
-        click.echo("  most affected files:", err=True)
-        for file, count in top:
-            click.echo(f"    {file} ({count})", err=True)
 
 
 def _strict_failures(result: ResolutionResult, warnings: list[ParseWarning]) -> list[str]:
@@ -123,13 +120,22 @@ def _scan(
     strict: bool,
     quiet: bool,
     progress: Progress | None = None,
-) -> LineageGraph:
+) -> tuple[LineageGraph, Diagnostics]:
     graph, result, warnings = run_pipeline(config, interactive=not non_interactive, progress=progress)
     out_dir = config.output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     to_json_file(graph, out_dir / "graph.json")
-    _warning_summary(warnings, quiet)
+
+    diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
+    (out_dir / "diagnostics.json").write_text(
+        json.dumps(diagnostics.to_json(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     if not quiet:
+        click.echo("", err=True)
+        for line in diagnostics.console_lines():
+            click.echo(line, err=True)
         click.echo(
             f"\n{len(graph.nodes)} objects, {len(graph.edges)} lineage edges "
             f"({result.resolved} cross-repo links; {len(result.unresolved)} unresolved)",
@@ -141,7 +147,7 @@ def _scan(
             for failure in failures:
                 click.echo(f"strict: {failure}", err=True)
             sys.exit(2)
-    return graph
+    return graph, diagnostics
 
 
 def _load_config(config_path: str) -> Config:
@@ -159,8 +165,9 @@ def _stdio_is_interactive() -> bool:
 @click.version_option(version=__version__, prog_name="coop-data-doc")
 @click.option("-v", "--verbose", is_flag=True, help="Debug logging and full tracebacks.")
 @click.option("-q", "--quiet", is_flag=True, help="Suppress warning summaries.")
+@click.option("--log-file", type=click.Path(), default=None, help="Write a verbose debug log to this file.")
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, quiet: bool) -> None:
+def cli(ctx: click.Context, verbose: bool, quiet: bool, log_file: str | None) -> None:
     """Offline data-lineage documentation for SQL + Power BI estates.
 
     Run with no arguments in a terminal to get an interactive menu.
@@ -169,9 +176,17 @@ def cli(ctx: click.Context, verbose: bool, quiet: bool) -> None:
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING)
-    if not verbose:
+    if log_file:
+        # full DEBUG trace to a file, regardless of console verbosity
+        handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(logging.DEBUG)
+    elif not verbose:
         # sqlglot logs every unsupported-syntax fallback; those parse issues
-        # are already surfaced (deduplicated) via the ParseWarning summary
+        # are already surfaced (deduplicated) via the diagnostics summary
         logging.getLogger("sqlglot").setLevel(logging.ERROR)
     if ctx.invoked_subcommand is None:
         if _stdio_is_interactive():
@@ -324,10 +339,11 @@ def _run_build(
     """Shared implementation behind `build` and `update`."""
     config = _load_config(config_path)
     progress = Progress(should_enable(ctx.obj["quiet"]))
-    graph = _scan(config, non_interactive, strict, ctx.obj["quiet"], progress=progress)
+    graph, diagnostics = _scan(config, non_interactive, strict, ctx.obj["quiet"], progress=progress)
     out_dir = config.output_dir()
     with progress.bar("Rendering pages", total=len(graph.nodes)) as tick:
         render_markdown(graph, out_dir, config.project_name, on_node=tick)
+    write_diagnostics(out_dir, diagnostics, config.project_name)
     click.echo(f"Markdown docs: {out_dir}", err=True)
     if skip_html:
         return
@@ -471,6 +487,9 @@ def check(ctx: click.Context, config_path: str, lenient: bool) -> None:
         # blocks are preserved in the regenerated pages
         shutil.copytree(committed, fresh)
         render_markdown(graph, fresh, config.project_name)
+        write_diagnostics(
+            fresh, Diagnostics(warnings=warnings, unresolved=list(result.unresolved)), config.project_name
+        )
         to_json_file(graph, fresh / "graph.json")
         stale = _tree_diff(committed, fresh)
         if stale:

@@ -137,7 +137,7 @@ def _nav_section(graph: LineageGraph) -> str:
     """Build a nav tree grouped by layer (Bronze/Silver/Gold) then object
     type, with Power BI and any unlayered objects as their own sections."""
     nodes = graph.nodes
-    lines = ["  - Overview: index.md"]
+    lines = ["  - Overview: index.md", "  - Diagnostics: diagnostics.md"]
 
     # layered SQL objects: Layer -> object type -> pages
     for layer, layer_title in _LAYER_NAV:
