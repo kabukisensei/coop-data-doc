@@ -73,9 +73,9 @@ def test_fresh_setup_with_layers(tmp_path: Path, monkeypatch):
         "SQL — files/patterns to INCLUDE": "**/*.sql",
         "SQL — folders to SKIP": "**/logging/**, **/Deployment/**",
         "Power BI — folders to SKIP": "**/BACKUP/**",
-        "Bronze layer — schemas": "d365po, d365fo",
+        "Bronze layer — schemas": "erp_orders, erp_finance",
         "Silver layer — schemas": "stg",
-        "Gold layer — schemas": "dwm, common, silver",
+        "Gold layer — schemas": "mart, common, silver",
         "FOLDER instead of a schema": True,  # opt into the advanced folder step
         "Gold layer — folder": "**/dim/**, **/fact/**",
     }
@@ -90,9 +90,9 @@ def test_fresh_setup_with_layers(tmp_path: Path, monkeypatch):
     assert config.repos["sql"].include == ["**/*.sql"]
     assert config.repos["sql"].exclude == ["**/logging/**", "**/Deployment/**"]
     assert config.repos["powerbi"].exclude == ["**/BACKUP/**"]
-    assert config.layers["bronze"].schemas == ["d365po", "d365fo"]
+    assert config.layers["bronze"].schemas == ["erp_orders", "erp_finance"]
     assert config.layers["silver"].schemas == ["stg"]
-    assert config.layers["gold"].schemas == ["dwm", "common", "silver"]
+    assert config.layers["gold"].schemas == ["mart", "common", "silver"]
     assert config.layers["gold"].paths == ["**/dim/**", "**/fact/**"]
     assert Config.load(config_path).layers["gold"].paths == ["**/dim/**", "**/fact/**"]
 
@@ -106,12 +106,12 @@ def test_folder_layering_skipped_by_default(tmp_path: Path, monkeypatch):
         "Power BI repo path": "./pbi-repo",
         "Markdown output": "./docs",
         "HTML site": "./site",
-        "Gold layer — schemas": "dwm, common, silver",
+        "Gold layer — schemas": "mart, common, silver",
     }
     monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
-    assert config.layers["gold"].schemas == ["dwm", "common", "silver"]
+    assert config.layers["gold"].schemas == ["mart", "common", "silver"]
     assert config.layers["gold"].paths == []  # no folder prompts were shown
 
 
@@ -152,7 +152,7 @@ def test_skip_bronze_and_silver(tmp_path: Path, monkeypatch):
         "Power BI repo path": "./pbi-repo",
         "Markdown output": "./docs",
         "HTML site": "./site",
-        "Gold layer — schemas": "dwm",
+        "Gold layer — schemas": "mart",
     }
     fake = RoutedQuestionary(default_router(answers))
     monkeypatch.setattr(wizard, "questionary", fake)
@@ -161,7 +161,7 @@ def test_skip_bronze_and_silver(tmp_path: Path, monkeypatch):
     config = wizard.run_setup(config_path)
     assert config is not None
     assert set(config.layers) == {"gold"}  # bronze + silver skipped
-    assert config.layers["gold"].schemas == ["dwm"]
+    assert config.layers["gold"].schemas == ["mart"]
 
 
 def test_rerun_prefills_layers(tmp_path: Path, monkeypatch):
@@ -173,8 +173,8 @@ def test_rerun_prefills_layers(tmp_path: Path, monkeypatch):
         "Power BI repo path": "./pbi-repo",
         "Markdown output": "./docs",
         "HTML site": "./site",
-        "Bronze layer — schemas": "d365po",
-        "Gold layer — schemas": "dwm",
+        "Bronze layer — schemas": "erp_orders",
+        "Gold layer — schemas": "mart",
     }
     monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
     assert wizard.run_setup(config_path) is not None
@@ -184,7 +184,7 @@ def test_rerun_prefills_layers(tmp_path: Path, monkeypatch):
     wizard.run_setup(config_path)
     defaults = {msg: kw.get("default") for _, msg, kw in second.calls}
     bronze_default = next(v for m, v in defaults.items() if "Bronze layer — schemas" in m)
-    assert bronze_default == "d365po"
+    assert bronze_default == "erp_orders"
 
 
 def test_ctrl_c_writes_nothing(tmp_path: Path, monkeypatch):

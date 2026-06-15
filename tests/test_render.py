@@ -40,10 +40,10 @@ def build_graph() -> LineageGraph:
             ],
         )
     )
-    view = g.add_node(make_node(NodeType.VIEW, "salespm", "dim_customer", source_file="views/dim.sql"))
-    model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "salespm"))
-    pbit = g.add_node(make_node(NodeType.PBI_TABLE, "salespm", "dim_customer"))
-    vis = g.add_node(make_node(NodeType.VISUAL, "salespm", "abc123"))
+    view = g.add_node(make_node(NodeType.VIEW, "sales", "dim_customer", source_file="views/dim.sql"))
+    model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales"))
+    pbit = g.add_node(make_node(NodeType.PBI_TABLE, "sales", "dim_customer"))
+    vis = g.add_node(make_node(NodeType.VISUAL, "sales", "abc123"))
     g.add_edge(
         Edge(
             source_id=proc.id,
@@ -77,7 +77,7 @@ def build_graph() -> LineageGraph:
 def test_front_matter_strict_yaml(tmp_path: Path):
     graph = build_graph()
     render_markdown(graph, tmp_path, "Test Estate")
-    page = page_path(tmp_path, "view:salespm.dim_customer").read_text(encoding="utf-8")
+    page = page_path(tmp_path, "view:sales.dim_customer").read_text(encoding="utf-8")
     front = page.split("---")[1]
     data = yaml.safe_load(front)
     assert list(data) == [
@@ -92,10 +92,10 @@ def test_front_matter_strict_yaml(tmp_path: Path):
         "downstream_dependents",
         "tags",
     ]
-    assert data["id"] == "view:salespm.dim_customer"
-    assert data["path"] == f"view/{slug('view:salespm.dim_customer')}.md"
+    assert data["id"] == "view:sales.dim_customer"
+    assert data["path"] == f"view/{slug('view:sales.dim_customer')}.md"
     assert data["upstream_inputs"] == ["gold_table:dbo.fact_sales"]
-    assert data["downstream_dependents"] == ["pbi_table:salespm.dim_customer"]
+    assert data["downstream_dependents"] == ["pbi_table:sales.dim_customer"]
 
 
 def test_contract_table(tmp_path: Path):
@@ -109,7 +109,7 @@ def test_contract_table(tmp_path: Path):
 def test_intent_preserved_across_regeneration(tmp_path: Path):
     graph = build_graph()
     render_markdown(graph, tmp_path, "Test Estate")
-    page = page_path(tmp_path, "view:salespm.dim_customer")
+    page = page_path(tmp_path, "view:sales.dim_customer")
     text = page.read_text(encoding="utf-8")
     custom = "Feeds the Sales & PM model. Owned by the analytics coop."
     text = text.replace(
@@ -136,8 +136,8 @@ def test_index_and_manifest(tmp_path: Path):
 
 def test_local_flowchart_deterministic_and_linked():
     graph = build_graph()
-    chart = local_flowchart(graph, "view:salespm.dim_customer")
-    assert chart == local_flowchart(graph, "view:salespm.dim_customer")
+    chart = local_flowchart(graph, "view:sales.dim_customer")
+    assert chart == local_flowchart(graph, "view:sales.dim_customer")
     assert chart.startswith("flowchart LR")
     assert "click" in chart
     assert "stroke-width:3px" in chart
@@ -185,8 +185,8 @@ def test_slug_is_filesystem_safe():
     import re
 
     # readable prefix + 8-hex id hash; no filesystem-illegal characters
-    s = slug("pbi_table:sales and project management.dim_customer")
-    assert s.startswith("sales-and-project-management-dim_customer-")
+    s = slug("pbi_table:sales analytics.dim_customer")
+    assert s.startswith("sales-analytics-dim_customer-")
     assert re.search(r"-[0-9a-f]{8}$", s)
     assert not re.search(r'[<>:"/\\|?*]', s)
 
@@ -225,14 +225,14 @@ def test_render_does_not_crash_on_illegal_measure_name(tmp_path: Path):
 def test_orphaned_pages_pruned_on_rerender(tmp_path: Path):
     graph = build_graph()
     render_markdown(graph, tmp_path, "Test Estate")
-    view_page = page_path(tmp_path, "view:salespm.dim_customer")
+    view_page = page_path(tmp_path, "view:sales.dim_customer")
     hand_authored = tmp_path / "view" / "notes-from-a-human.txt"
     hand_authored.write_text("keep me", encoding="utf-8")
     assert view_page.is_file()
 
     # the view disappears from the estate
-    del graph.nodes["view:salespm.dim_customer"]
-    graph.edges = [e for e in graph.edges if "view:salespm.dim_customer" not in (e.source_id, e.target_id)]
+    del graph.nodes["view:sales.dim_customer"]
+    graph.edges = [e for e in graph.edges if "view:sales.dim_customer" not in (e.source_id, e.target_id)]
     render_markdown(graph, tmp_path, "Test Estate")
 
     assert not view_page.exists()  # orphan pruned
@@ -244,10 +244,10 @@ def test_site_nav_grouped_by_layer():
 
     g = LineageGraph()
     g.add_node(make_node(NodeType.BRONZE_TABLE, "d365", "src", metadata={"layer": "bronze"}))
-    gold_tbl = make_node(NodeType.GOLD_TABLE, "dwm", "fact", metadata={"layer": "gold"})
+    gold_tbl = make_node(NodeType.GOLD_TABLE, "mart", "fact", metadata={"layer": "gold"})
     g.add_node(gold_tbl)
-    g.add_node(make_node(NodeType.VIEW, "salespm", "v_fact", source_file="v.sql", metadata={"layer": "gold"}))
-    g.add_node(make_node(NodeType.MEASURE, "salespm", "total", metadata={"dax": "1"}))
+    g.add_node(make_node(NodeType.VIEW, "sales", "v_fact", source_file="v.sql", metadata={"layer": "gold"}))
+    g.add_node(make_node(NodeType.MEASURE, "sales", "total", metadata={"dax": "1"}))
     nav = _nav_section(g)
     assert "- Overview: index.md" in nav
     assert "- Bronze Layer:" in nav
@@ -283,7 +283,7 @@ def test_site_nav_nests_tables_and_measures_under_each_model():
 
 def test_mermaid_click_targets_html():
     g = build_graph()
-    chart = local_flowchart(g, "view:salespm.dim_customer")
+    chart = local_flowchart(g, "view:sales.dim_customer")
     clicks = [ln for ln in chart.splitlines() if ln.strip().startswith("click")]
     assert clicks
     assert all(".html" in ln and ".md" not in ln for ln in clicks)

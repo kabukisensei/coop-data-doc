@@ -51,8 +51,8 @@ def test_expected_nodes():
         "gold_table:dbo.fact_sales",
         "gold_table:dbo.agg_sales_daily",
         "gold_table:dbo.audit_log",  # written but never defined: stays gold
-        "view:salespm.dim_customer",
-        "view:salespm.v_orders_star",
+        "view:sales.dim_customer",
+        "view:sales.v_orders_star",
         "silver_table:silver.sales_orders",
         "silver_table:silver.customers",
         "silver_table:silver.events",
@@ -76,7 +76,7 @@ def test_main_proc_edges():
 def test_view_edges_and_columns():
     graph, _ = parse_all()
     keys = edge_keys(graph)
-    view = "view:salespm.dim_customer"
+    view = "view:sales.dim_customer"
     assert (view, "silver_table:silver.customers", "reads") in keys
     assert (view, "gold_table:dbo.fact_sales", "reads") in keys
     names = [column.name for column in graph.nodes[view].columns]
@@ -85,10 +85,10 @@ def test_view_edges_and_columns():
 
 def test_select_star_view_flagged():
     graph, warnings = parse_all()
-    node = graph.nodes["view:salespm.v_orders_star"]
+    node = graph.nodes["view:sales.v_orders_star"]
     assert node.metadata.get("columns_unresolved") is True
     assert (
-        "view:salespm.v_orders_star",
+        "view:sales.v_orders_star",
         "gold_table:dbo.fact_sales",
         "reads",
     ) in edge_keys(graph)
@@ -181,11 +181,11 @@ def test_view_reading_view_resolves_stub(tmp_path: Path):
 
 def test_end_to_end_lineage_chain():
     graph, _ = parse_all()
-    upstream = graph.upstream("view:salespm.dim_customer")
+    upstream = graph.upstream("view:sales.dim_customer")
     assert "silver_table:silver.sales_orders" in upstream  # via proc -> fact_sales
     assert "stored_proc:dbo.usp_load_fact_sales" in upstream
     downstream = graph.downstream("silver_table:silver.sales_orders")
-    assert "view:salespm.dim_customer" in downstream
+    assert "view:sales.dim_customer" in downstream
 
 
 def test_determinism():

@@ -23,8 +23,8 @@ repos:
     include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/*.pbix"]
     exclude: []
 schema_mappings:            # view schema -> semantic model name hints (used by Module 4)
-  - schema: salespm
-    model: "Sales and Project Management"
+  - schema: sales
+    model: "Sales Analytics"
 output:
   dir: ./data-docs          # markdown output
   site_dir: ./data-docs-site  # mkdocs html output
@@ -84,13 +84,13 @@ Rules:
 - `procs/usp_load_fact_sales.sql` — proc with MERGE into `dbo.fact_sales` reading
   `silver.sales_orders` and `silver.customers`, a CTE, and a `#temp` table
 - `tables/dbo.fact_sales.sql` — CREATE TABLE with 5+ typed columns, PK, NOT NULLs
-- `views/salespm/dim_customer.sql` — CREATE VIEW with a JOIN
+- `views/sales/dim_customer.sql` — CREATE VIEW with a JOIN
 - `archive/old_proc.sql` — must be excluded by the default exclude glob
 
 `tests/fixtures/repo_pbi/`:
-- `SalesPM.SemanticModel/definition/model.tmdl`, `.../definition/tables/dim_customer.tmdl`
+- `Sales.SemanticModel/definition/model.tmdl`, `.../definition/tables/dim_customer.tmdl`
   (table + columns + one measure + an M partition with `Sql.Database` source)
-- `SalesPM.Report/definition/pages/page1/visuals/abc123/visual.json`
+- `Sales.Report/definition/pages/page1/visuals/abc123/visual.json`
 - `LegacyThing/report.json`
 
 ## Acceptance criteria

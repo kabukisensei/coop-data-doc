@@ -105,8 +105,8 @@ the original-case name for rendering while ids stay normalized.
 phantom nodes from catalog references.
 
 **Name gaps are a first-class problem.** View schemas and semantic-model
-names are similar but not identical (e.g. schema `salespm` feeds the
-"Sales and Project Management" model). The linker ladder
+names are similar but not identical (e.g. schema `sales` feeds the
+"Sales Analytics" model). The linker ladder
 (`linker/resolver.py`) goes: cache → exact id match → `schema_mappings`
 config rule → fuzzy (`difflib`, auto-accept ≥ 0.92, prompt 0.60–0.92) →
 interactive `questionary` prompt. Every interactive answer is written to

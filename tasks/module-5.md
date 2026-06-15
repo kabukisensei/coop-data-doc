@@ -25,19 +25,19 @@ Exact layout (every value double-quoted; `path` sits between `source_file` and
 
 ```markdown
 ---
-id: "view:salespm.dim_customer"
+id: "view:sales.dim_customer"
 type: "view"
 name: "dim_customer"
-schema: "salespm"
-source_file: "views/salespm/dim_customer.sql"
-path: "view/salespm-dim_customer-<hash>.md"
+schema: "sales"
+source_file: "views/sales/dim_customer.sql"
+path: "view/sales-dim_customer-<hash>.md"
 upstream_inputs:
   - "gold_table:dbo.customer"
   - "silver_table:silver.crm_accounts"
 downstream_dependents:
-  - "pbi_table:sales and project management.dim_customer"
+  - "pbi_table:sales analytics.dim_customer"
 tags:
-  - "salespm"
+  - "sales"
 ---
 
 # dim_customer `view`
@@ -54,7 +54,7 @@ tags:
 
 | Object | Type | Via | Evidence |
 | --- | --- | --- | --- |
-| [dbo.customer](../gold_table/dbo-customer-<hash>.md) | gold_table | reads | views/salespm/dim_customer.sql |
+| [dbo.customer](../gold_table/dbo-customer-<hash>.md) | gold_table | reads | views/sales/dim_customer.sql |
 
 ### Downstream
 

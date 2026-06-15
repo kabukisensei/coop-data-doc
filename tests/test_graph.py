@@ -72,7 +72,7 @@ def build_chain():
     silver = g.add_node(make_node(NodeType.SILVER_TABLE, "silver", "src"))
     proc = g.add_node(make_node(NodeType.STORED_PROC, "dbo", "usp_load"))
     gold = g.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "fact"))
-    view = g.add_node(make_node(NodeType.VIEW, "salespm", "v_fact"))
+    view = g.add_node(make_node(NodeType.VIEW, "sales", "v_fact"))
     pbit = g.add_node(make_node(NodeType.PBI_TABLE, "salesmodel", "fact"))
     vis = g.add_node(make_node(NodeType.VISUAL, "report1", "chart1"))
     g.add_edge(Edge(source_id=proc.id, target_id=silver.id, edge_type=EdgeType.READS))

@@ -22,6 +22,6 @@ table dim_customer
 		source =
 				let
 				    Source = Sql.Database("myserver.database.windows.net", "gold"),
-				    salespm_dim_customer = Source{[Schema="salespm",Item="dim_customer"]}[Data]
+				    sales_dim_customer = Source{[Schema="sales",Item="dim_customer"]}[Data]
 				in
-				    salespm_dim_customer
+				    sales_dim_customer

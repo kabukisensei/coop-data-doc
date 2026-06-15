@@ -1,4 +1,4 @@
-CREATE OR ALTER VIEW salespm.dim_customer
+CREATE OR ALTER VIEW sales.dim_customer
 AS
 SELECT
     c.customer_id,

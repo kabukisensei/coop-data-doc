@@ -13,7 +13,7 @@ all PBI nodes (M3); `Config.schema_mappings` (`[{schema, model}]`); pbi_table no
 
 ## Purpose
 Join the SQL half of the graph to the Power BI half. View schemas and semantic-model names are
-*similar but not identical* (schema `salespm` ↔ model "Sales and Project Management"), so
+*similar but not identical* (schema `sales` ↔ model "Sales Analytics"), so
 resolution is a ladder ending in an interactive prompt whose answers persist to
 `.lineage-cache.json` — second run asks nothing.
 
@@ -38,8 +38,8 @@ File format (keys sorted on every write, `indent=2`, trailing newline — clean 
 {
   "version": 1,
   "mappings": {
-    "pbi_table:sales and project management.dim_customer": {
-      "target": "view:salespm.dim_customer",
+    "pbi_table:sales analytics.dim_customer": {
+      "target": "view:sales.dim_customer",
       "method": "interactive"
     }
   }
@@ -88,7 +88,7 @@ def run_interactive_session(pending: list[...], cache: LineageCache) -> ...: ...
 ```
 
 - Group pending items by semantic model; print a header per model
-  (`"── Sales and Project Management — 3 unresolved tables ──"`).
+  (`"── Sales Analytics — 3 unresolved tables ──"`).
 - `questionary.select` per item: message shows the PBI table and its raw partition source;
   choices = top-10 candidates as `f"{id}   ({score:.2f})"`, then separator, then
   `"🌐 Mark as external source (not in these repos)"` and `"⏭  Skip for now"`.
@@ -97,7 +97,7 @@ def run_interactive_session(pending: list[...], cache: LineageCache) -> ...: ...
   for the CLI to exit cleanly with a notice.
 
 ## Tests (mock questionary; never prompt in CI)
-Build a fake graph with: a view `salespm.dim_customer`, gold `dbo.fact_sales`, pbi tables whose
+Build a fake graph with: a view `sales.dim_customer`, gold `dbo.fact_sales`, pbi tables whose
 sources are (a) exact match, (b) config-rule match, (c) fuzzy 0.95 match (slightly different
 name), (d) ambiguous 0.7 match, (e) garbage. Assert: ladder order honored, methods counted,
 ambiguous prompts exactly once (questionary mocked via monkeypatch), cache file written after

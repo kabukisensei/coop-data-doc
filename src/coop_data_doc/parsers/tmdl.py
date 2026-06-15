@@ -53,8 +53,8 @@ def _indent(line: str) -> int:
 def model_root(path: str) -> tuple[str, str]:
     """(root_prefix, model_name) for a TMDL file path.
 
-    'SalesPM.SemanticModel/definition/tables/x.tmdl' -> root is the
-    .SemanticModel folder, model name 'SalesPM'.
+    'Sales.SemanticModel/definition/tables/x.tmdl' -> root is the
+    .SemanticModel folder, model name 'Sales'.
     """
     parts = PurePosixPath(path).parts
     for index, part in enumerate(parts):

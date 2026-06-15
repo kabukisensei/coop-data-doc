@@ -24,8 +24,8 @@ repos:
   powerbi:
     path: {pbi_path}
 schema_mappings:
-  - schema: salespm
-    model: "Sales and Project Management"
+  - schema: sales
+    model: "Sales Analytics"
 """
 
 
@@ -34,8 +34,8 @@ def test_load_valid_config(tmp_path: Path):
     config = Config.load(path)
     assert config.project_name == "Test Estate"
     assert config.repo_root("sql") == (FIXTURES / "repo_sql").resolve()
-    assert config.schema_mappings[0].schema_name == "salespm"
-    assert config.schema_mappings[0].model == "Sales and Project Management"
+    assert config.schema_mappings[0].schema_name == "sales"
+    assert config.schema_mappings[0].model == "Sales Analytics"
     assert config.sql_dialect == "tsql"
     assert config.output_dir() == (tmp_path / "data-docs").resolve()
 
@@ -111,7 +111,7 @@ def test_scaffold_round_trips(tmp_path: Path):
     config = Config.load(target)
     assert config.project_name == "Coop BI Estate"
     assert set(config.repos) == {"sql", "powerbi"}
-    assert config.schema_mappings[0].schema_name == "salespm"
+    assert config.schema_mappings[0].schema_name == "sales"
 
 
 def test_scaffold_refuses_overwrite(tmp_path: Path):

@@ -11,6 +11,6 @@ table orders_native
 		source =
 				let
 				    Source = Sql.Database("myserver.database.windows.net", "gold"),
-				    q = Value.NativeQuery(Source, "SELECT order_id FROM salespm.v_orders_star")
+				    q = Value.NativeQuery(Source, "SELECT order_id FROM sales.v_orders_star")
 				in
 				    q

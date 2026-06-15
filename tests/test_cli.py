@@ -31,8 +31,8 @@ repos:
     path: ./pbi-repo
     include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
 schema_mappings:
-  - schema: salespm
-    model: SalesPM
+  - schema: sales
+    model: Sales
 output:
   dir: ./data-docs
   site_dir: ./site
@@ -84,7 +84,7 @@ def test_build_skip_html(tmp_path: Path):
     docs = tmp_path / "data-docs"
     assert (docs / "index.md").is_file()
     assert (docs / "manifest.json").is_file()
-    assert doc_page(docs, "view:salespm.dim_customer").is_file()
+    assert doc_page(docs, "view:sales.dim_customer").is_file()
     assert doc_page(docs, "stored_proc:dbo.usp_load_fact_sales").is_file()
 
 
@@ -96,14 +96,12 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
     # dynamic/dynamic-source fixtures and rebuild for a clean baseline
     (tmp_path / "sql-repo" / "procs" / "usp_dynamic_refresh.sql").unlink()
     (tmp_path / "sql-repo" / "procs" / "usp_cursor_legacy.sql").unlink()
-    (
-        tmp_path / "pbi-repo" / "SalesPM.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl"
-    ).unlink()
+    (tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl").unlink()
     # the committed cache answers the one genuinely ambiguous mapping,
     # exactly as a real interactive session would have
     (tmp_path / ".lineage-cache.json").write_text(
         '{\n  "version": 1,\n  "mappings": {\n'
-        '    "pbi_table:salespm.fact_sales": {\n'
+        '    "pbi_table:sales.fact_sales": {\n'
         '      "target": "gold_table:dbo.fact_sales",\n'
         '      "method": "interactive"\n    }\n  }\n}\n',
         encoding="utf-8",
@@ -115,7 +113,7 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
     assert result.exit_code == 0, result.output
 
     # human edits an intent block -> still up to date (preserved, not stale)
-    page = doc_page(tmp_path / "data-docs", "view:salespm.dim_customer")
+    page = doc_page(tmp_path / "data-docs", "view:sales.dim_customer")
     page.write_text(  # newline="\n": mimic an editor that preserves LF
         page.read_text(encoding="utf-8").replace(
             "_Add a short description of what this object is for and who relies on it._",
@@ -241,12 +239,10 @@ def test_check_fails_on_orphaned_committed_page(tmp_path: Path):
     setup_workspace(tmp_path)
     (tmp_path / "sql-repo" / "procs" / "usp_dynamic_refresh.sql").unlink()
     (tmp_path / "sql-repo" / "procs" / "usp_cursor_legacy.sql").unlink()
-    (
-        tmp_path / "pbi-repo" / "SalesPM.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl"
-    ).unlink()
+    (tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl").unlink()
     (tmp_path / ".lineage-cache.json").write_text(
         '{\n  "version": 1,\n  "mappings": {\n'
-        '    "pbi_table:salespm.fact_sales": {\n'
+        '    "pbi_table:sales.fact_sales": {\n'
         '      "target": "gold_table:dbo.fact_sales",\n'
         '      "method": "interactive"\n    }\n  }\n}\n',
         encoding="utf-8",
@@ -271,10 +267,10 @@ def test_check_lenient_tolerates_risky_parses(tmp_path: Path):
     setup_workspace(tmp_path)
     (tmp_path / ".lineage-cache.json").write_text(
         '{\n  "version": 1,\n  "mappings": {\n'
-        '    "pbi_table:salespm.fact_sales": {\n'
+        '    "pbi_table:sales.fact_sales": {\n'
         '      "target": "gold_table:dbo.fact_sales",\n'
         '      "method": "interactive"\n    },\n'
-        '    "pbi_table:salespm.ext_unresolved": {\n'
+        '    "pbi_table:sales.ext_unresolved": {\n'
         '      "target": null,\n'
         '      "method": "external"\n    }\n  }\n}\n',
         encoding="utf-8",

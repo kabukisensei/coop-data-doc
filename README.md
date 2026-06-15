@@ -135,7 +135,7 @@ Because there's no configuration here yet, it offers to walk you through setup. 
   wizard checks they exist and lets you re-type a typo.
 - **Output folders** — press Enter to accept the defaults.
 - **"Add a view-schema → semantic-model mapping?"** — this is a hint like *"the
-  `salespm` schema feeds the Sales and Project Management model"*. If you know one,
+  `sales` schema feeds the Sales Analytics model"*. If you know one,
   add it; **if you're not sure, answer No (type `n`)** — you can always add hints
   later, and the tool will simply ask you about specific tables during the build.
 
@@ -218,21 +218,21 @@ repos:
     exclude: []
 
 schema_mappings:                    # hint: which view schema feeds which model
-  - schema: salespm
-    model: "Sales and Project Management"
+  - schema: sales
+    model: "Sales Analytics"
 
 layers:                             # medallion layers (all optional)
   bronze:
-    schemas: [d365po, d365fo]       # source schemas
+    schemas: [erp_orders, erp_finance]   # source schemas
     paths: []
   silver:
     schemas: [stg]
     paths: []
   gold:
-    schemas: [dwm, common]          # the proc schema + shared/common schema
+    schemas: [mart, common]         # the proc schema + shared/common schema
     paths: ["**/dim/**", "**/fact/**"]   # gold table folders
 
-ignore_schemas: [staging, sm]       # schemas to drop entirely (never documented)
+ignore_schemas: [staging, scratch]  # schemas to drop entirely (never documented)
 
 output:
   dir: ./data-docs                  # the markdown (agents read this)
@@ -243,8 +243,8 @@ sql_dialect: tsql                   # covers SQL Server, Azure SQL, Fabric wareh
 ```
 
 `schema_mappings` matters because view schemas and semantic-model names are often
-*similar but not identical* — e.g. the `salespm` schema feeds the "Sales and Project
-Management" model. Each hint you add means fewer questions on the next run.
+*similar but not identical* — e.g. the `sales` schema feeds the "Sales Analytics"
+model. Each hint you add means fewer questions on the next run.
 
 ### Medallion layers (bronze / silver / gold)
 
@@ -311,7 +311,7 @@ up with no config change.
 
 ### Worked example: a large multi-schema warehouse
 
-A real config for a Fabric warehouse + Power BI estate with medallion schemas, D365 source
+A config for a Fabric warehouse + Power BI estate with medallion schemas, ERP source
 schemas, model-named gold schemas, a `common` schema feeding every model, and editor/backup
 noise to drop:
 
@@ -330,11 +330,11 @@ layers:
   bronze:
     schemas: [dbo]                    # lakehouse landing tables
   silver:
-    schemas: [d365po, d365fo]         # D365 source schemas
+    schemas: [erp_orders, erp_finance]   # ERP source schemas
   gold:
-    schemas: [silver, dwm, common, salespm, finance, forecast, resource]  # 'silver' schema is gold here!
+    schemas: [silver, mart, common, sales, ops]  # 'silver' schema is gold here!
     paths: ["**/dim/**", "**/fact/**"]
-ignore_schemas: [staging, sm, snp, syn, accocomment, config]
+ignore_schemas: [staging, scratch, sandbox, legacy]
 ```
 
 The standout: a schema *named* `silver` can sit in the **gold** layer — assignment follows
@@ -453,9 +453,9 @@ contract:
   unresolved items.
 
 **Identifiers.** Node ids are stable, lowercase strings: `"<type>:<schema>.<name>"` —
-e.g. `view:salespm.dim_customer`. Caveats: the `<schema>.` part is **omitted** for
-objects that have no schema (`report:salespm`, `semantic_model:salespm`), and names may
-contain spaces (`measure:salespm.total sales`). Prefer reading the explicit
+e.g. `view:sales.dim_customer`. Caveats: the `<schema>.` part is **omitted** for
+objects that have no schema (`report:sales`, `semantic_model:sales`), and names may
+contain spaces (`measure:sales.total sales`). Prefer reading the explicit
 `name`/`schema` fields over parsing ids.
 
 **Page paths.** Don't compute these — **read the `path` field** in a node's
@@ -469,22 +469,22 @@ non-empty lists in block style (empty lists render as `[]`):
 
 ```yaml
 ---
-id: "view:salespm.dim_customer"
+id: "view:sales.dim_customer"
 type: "view"                              # silver_table | gold_table | view | stored_proc |
                                           # semantic_model | pbi_table | measure | report |
                                           # report_page | visual
 name: "dim_customer"
-schema: "salespm"                         # SQL schema; for pbi_table/measure nodes it's the
+schema: "sales"                         # SQL schema; for pbi_table/measure nodes it's the
                                           # (lowercased) model name; for report_page/visual
                                           # it's the report name; "" for report/semantic_model
-source_file: "views/salespm/dim_customer.sql"   # repo-relative; cite this as evidence
-path: "view/salespm-dim_customer-<hash>.md"     # this page's location under data-docs/ (read it, don't compute it)
+source_file: "views/sales/dim_customer.sql"   # repo-relative; cite this as evidence
+path: "view/sales-dim_customer-<hash>.md"     # this page's location under data-docs/ (read it, don't compute it)
 upstream_inputs:                          # direct (depth-1) data sources, flow-normalized
   - "gold_table:dbo.fact_sales"
 downstream_dependents:                    # direct (depth-1) consumers
-  - "pbi_table:salespm.dim_customer"
+  - "pbi_table:sales.dim_customer"
 tags:
-  - "salespm"
+  - "sales"
 ---
 ```
 

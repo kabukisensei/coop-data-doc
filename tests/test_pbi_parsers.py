@@ -59,10 +59,10 @@ def edge_keys(graph: LineageGraph) -> set[tuple[str, str, str]]:
 def test_mcode_sql_database():
     ref, sqls = extract_source(
         'let Source = Sql.Database("srv", "gold"), '
-        'd = Source{[Schema="salespm",Item="dim_customer"]}[Data] in d'
+        'd = Source{[Schema="sales",Item="dim_customer"]}[Data] in d'
     )
     assert sqls == []
-    assert ref.schema_name == "salespm"
+    assert ref.schema_name == "sales"
     assert ref.object_name == "dim_customer"
     assert ref.raw_kind == "sql_database"
 
@@ -70,10 +70,10 @@ def test_mcode_sql_database():
 def test_mcode_native_query():
     ref, sqls = extract_source(
         'let Source = Sql.Database("srv", "gold"), '
-        'q = Value.NativeQuery(Source, "SELECT a FROM salespm.v_orders_star") in q'
+        'q = Value.NativeQuery(Source, "SELECT a FROM sales.v_orders_star") in q'
     )
     assert ref.raw_kind == "native_query"
-    assert sqls == ["SELECT a FROM salespm.v_orders_star"]
+    assert sqls == ["SELECT a FROM sales.v_orders_star"]
 
 
 def test_mcode_lakehouse():
@@ -138,29 +138,29 @@ def test_dax_quoted_table_and_strings_ignored():
 
 def test_tmdl_model_structure():
     graph, _ = parse_all()
-    assert "semantic_model:salespm" in graph.nodes
+    assert "semantic_model:sales" in graph.nodes
     for table in ("dim_customer", "fact_sales", "orders_native", "ext_unresolved"):
-        node_id = f"pbi_table:salespm.{table}"
+        node_id = f"pbi_table:sales.{table}"
         assert node_id in graph.nodes
-        assert (node_id, "semantic_model:salespm", "feeds") in edge_keys(graph)
-    columns = {c.name: c.data_type for c in graph.nodes["pbi_table:salespm.dim_customer"].columns}
+        assert (node_id, "semantic_model:sales", "feeds") in edge_keys(graph)
+    columns = {c.name: c.data_type for c in graph.nodes["pbi_table:sales.dim_customer"].columns}
     assert columns == {"customer_id": "int64", "customer_name": "string"}
-    relationships = graph.nodes["semantic_model:salespm"].metadata["relationships"]
+    relationships = graph.nodes["semantic_model:sales"].metadata["relationships"]
     assert relationships == [{"from": "fact_sales.customer_id", "to": "dim_customer.customer_id"}]
 
 
 def test_tmdl_partition_sources():
     graph, warnings = parse_all()
-    dim = graph.nodes["pbi_table:salespm.dim_customer"]
+    dim = graph.nodes["pbi_table:sales.dim_customer"]
     assert dim.metadata["partition_source"] == {
-        "schema": "salespm",
+        "schema": "sales",
         "object": "dim_customer",
         "raw_kind": "sql_database",
     }
-    native = graph.nodes["pbi_table:salespm.orders_native"]
-    assert native.metadata["native_query_tables"] == ["salespm.v_orders_star"]
+    native = graph.nodes["pbi_table:sales.orders_native"]
+    assert native.metadata["native_query_tables"] == ["sales.v_orders_star"]
     assert native.metadata["partition_source"]["raw_kind"] == "native_query"
-    unresolved = graph.nodes["pbi_table:salespm.ext_unresolved"]
+    unresolved = graph.nodes["pbi_table:sales.ext_unresolved"]
     assert unresolved.metadata.get("partition_source_unresolved") is True
     assert any(w.category == "unresolved_partition_source" for w in warnings)
 
@@ -168,12 +168,12 @@ def test_tmdl_partition_sources():
 def test_measure_dependencies():
     graph, _ = parse_all()
     keys = edge_keys(graph)
-    spc = "measure:salespm.sales per customer"
-    assert (spc, "measure:salespm.total sales", "references") in keys
-    assert (spc, "measure:salespm.customer count", "references") in keys
+    spc = "measure:sales.sales per customer"
+    assert (spc, "measure:sales.total sales", "references") in keys
+    assert (spc, "measure:sales.customer count", "references") in keys
     assert (
-        "measure:salespm.total sales",
-        "pbi_table:salespm.fact_sales",
+        "measure:sales.total sales",
+        "pbi_table:sales.fact_sales",
         "references",
     ) in keys
     assert graph.nodes[spc].metadata["dax_refs_heuristic"] is True
@@ -185,14 +185,14 @@ def test_measure_dependencies():
 def test_pbir_report_structure():
     graph, _ = parse_all()
     keys = edge_keys(graph)
-    assert "report:salespm" in graph.nodes
-    page = "report_page:salespm.customer overview"
-    visual = "visual:salespm.abc123"
-    assert (page, "report:salespm", "feeds") in keys
+    assert "report:sales" in graph.nodes
+    page = "report_page:sales.customer overview"
+    visual = "visual:sales.abc123"
+    assert (page, "report:sales", "feeds") in keys
     assert (visual, page, "feeds") in keys
     assert graph.nodes[visual].metadata["visual_type"] == "card"
-    assert (visual, "pbi_table:salespm.dim_customer", "visualizes") in keys
-    assert (visual, "measure:salespm.customer count", "visualizes") in keys
+    assert (visual, "pbi_table:sales.dim_customer", "visualizes") in keys
+    assert (visual, "measure:sales.customer count", "visualizes") in keys
     assert "pending_model_resolution" not in graph.nodes[visual].metadata
 
 
@@ -202,8 +202,8 @@ def test_legacy_report_structure():
     assert "report:legacything" in graph.nodes
     visual = "visual:legacything.v1"
     assert (visual, "report_page:legacything.overview", "feeds") in keys
-    assert (visual, "pbi_table:salespm.dim_customer", "visualizes") in keys
-    assert (visual, "measure:salespm.customer count", "visualizes") in keys
+    assert (visual, "pbi_table:sales.dim_customer", "visualizes") in keys
+    assert (visual, "measure:sales.customer count", "visualizes") in keys
 
 
 # ---- pbix ------------------------------------------------------------------
@@ -362,7 +362,7 @@ def test_mcode_navigation_anchored_not_poisoned_by_let_step():
         '    Schema = "junk",\n'
         '    Item = "junk",\n'
         "    Source = Sql.Database(S, D),\n"
-        '    Data = Source{[Schema="salespm", Item="dim_customer"]}[Data]\n'
+        '    Data = Source{[Schema="sales", Item="dim_customer"]}[Data]\n'
         "in Data"
     )
-    assert ref is not None and ref.schema_name == "salespm" and ref.object_name == "dim_customer"
+    assert ref is not None and ref.schema_name == "sales" and ref.object_name == "dim_customer"

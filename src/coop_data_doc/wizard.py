@@ -223,7 +223,13 @@ def run_setup(config_path: Path) -> Config | None:
         existing_rule = existing.layers.get(layer) if existing else None
         layer_schemas[layer] = _ask_csv(
             f"{layer.capitalize()} layer — schemas (comma-separated, e.g. "
-            + ("d365po, d365fo" if layer == "bronze" else "dwm, common, silver" if layer == "gold" else "stg")
+            + (
+                "erp_orders, erp_finance"
+                if layer == "bronze"
+                else "mart, common, silver"
+                if layer == "gold"
+                else "stg"
+            )
             + ", or blank to skip):",
             existing_rule.schemas if existing_rule else [],
         )
@@ -319,10 +325,8 @@ def run_setup(config_path: Path) -> Config | None:
             "Add a view-schema → semantic-model mapping?", default=not mappings, auto_enter=False
         )
     ):
-        schema = str(_ask(questionary.text("View schema (e.g. salespm):"))).strip()
-        model = str(
-            _ask(questionary.text("Semantic model it feeds (e.g. Sales and Project Management):"))
-        ).strip()
+        schema = str(_ask(questionary.text("View schema (e.g. sales):"))).strip()
+        model = str(_ask(questionary.text("Semantic model it feeds (e.g. Sales Analytics):"))).strip()
         if schema and model:
             mappings.append((schema, model))
 

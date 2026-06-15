@@ -67,7 +67,7 @@ tests/  (fixtures/repo_sql, fixtures/repo_pbi, golden/)
 
 ## Domain naming context (real-world)
 View schemas in the SQL repo feed semantic models with *similar but not identical* names —
-e.g. schema `salespm` feeds the "Sales and Project Management" semantic model. Never assume
+e.g. schema `sales` feeds the "Sales Analytics" semantic model. Never assume
 exact name matches across the repo boundary; that resolution is Module 4's job. Your module
 should emit unresolved references as structured data, not guesses.
 

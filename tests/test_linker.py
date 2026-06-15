@@ -8,8 +8,8 @@ from coop_data_doc.linker import interactive
 from coop_data_doc.linker.cache import CacheEntry, LineageCache
 from coop_data_doc.linker.resolver import link_graph
 
-MODEL = "Sales and Project Management"
-MODEL_KEY = "sales and project management"
+MODEL = "Sales Analytics"
+MODEL_KEY = "sales analytics"
 
 
 def make_node(node_type, schema, name, **kwargs):
@@ -41,14 +41,14 @@ def pbi_table(graph, name, source_schema, source_object):
 
 def build_graph() -> LineageGraph:
     graph = LineageGraph()
-    graph.add_node(make_node(NodeType.VIEW, "salespm", "dim_customer"))
-    graph.add_node(make_node(NodeType.VIEW, "salespm", "fact_sales"))
+    graph.add_node(make_node(NodeType.VIEW, "sales", "dim_customer"))
+    graph.add_node(make_node(NodeType.VIEW, "sales", "fact_sales"))
     graph.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "fact_sales"))
     graph.add_node(make_node(NodeType.SILVER_TABLE, "silver", "events"))
-    pbi_table(graph, "dim_customer", "salespm", "dim_customer")  # exact
+    pbi_table(graph, "dim_customer", "sales", "dim_customer")  # exact
     pbi_table(graph, "fact_sales", "gold", "fact_sales")  # config rule
-    pbi_table(graph, "dim_customerz", "salespm", "dim_customerz")  # fuzzy auto
-    pbi_table(graph, "dcust", "salespm", "dcust")  # ambiguous -> prompt
+    pbi_table(graph, "dim_customerz", "sales", "dim_customerz")  # fuzzy auto
+    pbi_table(graph, "dcust", "sales", "dcust")  # ambiguous -> prompt
     pbi_table(graph, "mystery", "zzz", "qqq")  # garbage -> unresolved
     return graph
 
@@ -56,7 +56,7 @@ def build_graph() -> LineageGraph:
 def make_config() -> Config:
     return Config(
         repos={"sql": RepoConfig(path=".")},
-        schema_mappings=[SchemaMapping(schema="salespm", model=MODEL)],
+        schema_mappings=[SchemaMapping(schema="sales", model=MODEL)],
     )
 
 
@@ -89,7 +89,7 @@ class FakeQuestionary:
 
 @pytest.fixture
 def fake_q(monkeypatch):
-    fake = FakeQuestionary("view:salespm.dim_customer")
+    fake = FakeQuestionary("view:sales.dim_customer")
     monkeypatch.setattr(interactive, "questionary", fake)
     return fake
 
@@ -110,10 +110,10 @@ def test_resolution_ladder(tmp_path: Path, fake_q):
     assert result.methods == {"exact": 1, "config_rule": 1, "fuzzy": 1, "interactive": 1}
     assert fake_q.calls == 1
     keys = edge_keys(graph)
-    assert ("view:salespm.dim_customer", f"pbi_table:{MODEL_KEY}.dim_customer", "feeds") in keys
-    assert ("view:salespm.fact_sales", f"pbi_table:{MODEL_KEY}.fact_sales", "feeds") in keys
-    assert ("view:salespm.dim_customer", f"pbi_table:{MODEL_KEY}.dim_customerz", "feeds") in keys
-    assert ("view:salespm.dim_customer", f"pbi_table:{MODEL_KEY}.dcust", "feeds") in keys
+    assert ("view:sales.dim_customer", f"pbi_table:{MODEL_KEY}.dim_customer", "feeds") in keys
+    assert ("view:sales.fact_sales", f"pbi_table:{MODEL_KEY}.fact_sales", "feeds") in keys
+    assert ("view:sales.dim_customer", f"pbi_table:{MODEL_KEY}.dim_customerz", "feeds") in keys
+    assert ("view:sales.dim_customer", f"pbi_table:{MODEL_KEY}.dcust", "feeds") in keys
     assert result.unresolved == [f"pbi_table:{MODEL_KEY}.mystery"]
     assert graph.nodes[f"pbi_table:{MODEL_KEY}.mystery"].metadata["unresolved"] is True
     assert any(w.category == "fuzzy_auto" for w in warnings)
@@ -132,7 +132,7 @@ def test_second_run_asks_nothing(tmp_path: Path, fake_q):
     assert fake_q.calls == 1  # ZERO additional prompts
     assert result2.methods["cache"] == 1
     assert (
-        "view:salespm.dim_customer",
+        "view:sales.dim_customer",
         f"pbi_table:{MODEL_KEY}.dcust",
         "feeds",
     ) in edge_keys(graph2)
@@ -142,12 +142,12 @@ def test_prune_invalid_reprompts(tmp_path: Path, fake_q):
     cache = cache_at(tmp_path)
     cache.put(
         f"pbi_table:{MODEL_KEY}.dcust",
-        CacheEntry(target="view:salespm.does_not_exist", method="interactive"),
+        CacheEntry(target="view:sales.does_not_exist", method="interactive"),
     )
     result, warnings = link_graph(build_graph(), make_config(), cache, interactive_mode=True)
     assert any(w.category == "cache_pruned" for w in warnings)
     assert fake_q.calls == 1  # re-prompted after prune
-    assert cache.get(f"pbi_table:{MODEL_KEY}.dcust").target == "view:salespm.dim_customer"
+    assert cache.get(f"pbi_table:{MODEL_KEY}.dcust").target == "view:sales.dim_customer"
 
 
 def test_external_choice_cached(tmp_path: Path, monkeypatch):

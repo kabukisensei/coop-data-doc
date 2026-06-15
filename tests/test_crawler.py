@@ -38,11 +38,11 @@ def test_crawl_fixture_repos_classifies_everything():
     kinds = {entry.path: entry.kind for entry in inventory.entries}
     assert kinds["procs/usp_load_fact_sales.sql"] == FileKind.SQL_FILE
     assert kinds["tables/dbo.fact_sales.sql"] == FileKind.SQL_FILE
-    assert kinds["views/salespm/dim_customer.sql"] == FileKind.SQL_FILE
-    assert kinds["SalesPM.SemanticModel/definition/model.tmdl"] == FileKind.TMDL
-    assert kinds["SalesPM.SemanticModel/definition/tables/dim_customer.tmdl"] == FileKind.TMDL
-    assert kinds["SalesPM.Report/definition/pages/page1/visuals/abc123/visual.json"] == FileKind.PBIR_VISUAL
-    assert kinds["SalesPM.Report/definition/pages/page1/page.json"] == FileKind.PBIR_PAGE
+    assert kinds["views/sales/dim_customer.sql"] == FileKind.SQL_FILE
+    assert kinds["Sales.SemanticModel/definition/model.tmdl"] == FileKind.TMDL
+    assert kinds["Sales.SemanticModel/definition/tables/dim_customer.tmdl"] == FileKind.TMDL
+    assert kinds["Sales.Report/definition/pages/page1/visuals/abc123/visual.json"] == FileKind.PBIR_VISUAL
+    assert kinds["Sales.Report/definition/pages/page1/page.json"] == FileKind.PBIR_PAGE
     assert kinds["LegacyThing/report.json"] == FileKind.REPORT_JSON_LEGACY
     assert warnings == []
 
