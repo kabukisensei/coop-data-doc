@@ -309,9 +309,7 @@ def run_setup(config_path: Path) -> Config | None:
     if existing is not None and existing.schema_mappings:
         current = ", ".join(f"{m.schema_name} → {m.model}" for m in existing.schema_mappings)
         keep = _ask(
-            questionary.confirm(
-                f"Keep existing schema mappings ({current})?", default=True, auto_enter=False
-            )
+            questionary.confirm(f"Keep existing schema mappings ({current})?", default=True, auto_enter=False)
         )
         if keep:
             mappings = [(m.schema_name, m.model) for m in existing.schema_mappings]
