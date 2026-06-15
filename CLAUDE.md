@@ -10,6 +10,7 @@ interface in depth.
 ```bash
 .venv/bin/python -m pytest -q          # full suite (fast, <1s)
 .venv/bin/ruff check src tests        # lint
+.venv/bin/ruff format --check src tests   # formatting (CI enforces this too)
 .venv/bin/coop-data-doc build --non-interactive   # run the tool itself
 ```
 
