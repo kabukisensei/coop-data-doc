@@ -237,3 +237,23 @@ def test_orphaned_pages_pruned_on_rerender(tmp_path: Path):
 
     assert not view_page.exists()  # orphan pruned
     assert hand_authored.is_file()  # non-.md files untouched
+
+
+def test_site_nav_grouped_by_layer():
+    from coop_data_doc.render.site import _nav_section
+
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.BRONZE_TABLE, "d365", "src", metadata={"layer": "bronze"}))
+    gold_tbl = make_node(NodeType.GOLD_TABLE, "dwm", "fact", metadata={"layer": "gold"})
+    g.add_node(gold_tbl)
+    g.add_node(make_node(NodeType.VIEW, "salespm", "v_fact", source_file="v.sql", metadata={"layer": "gold"}))
+    g.add_node(make_node(NodeType.MEASURE, "salespm", "total", metadata={"dax": "1"}))
+    nav = _nav_section(g)
+    assert "- Overview: index.md" in nav
+    assert "- Bronze Layer:" in nav
+    assert "- Gold Layer:" in nav
+    assert "- Semantic Models:" in nav
+    # within a layer, grouped by object type
+    gold_idx = nav.index("Gold Layer:")
+    assert "Tables:" in nav[gold_idx:]
+    assert "Views:" in nav[gold_idx:]

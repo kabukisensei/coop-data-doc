@@ -18,9 +18,47 @@ import subprocess
 import sys
 from pathlib import Path
 
-from coop_data_doc.graph.model import LineageGraph, NodeType
-from coop_data_doc.render.markdown import _TYPE_TITLES
+from coop_data_doc.graph.model import LineageGraph, Node, NodeType
 from coop_data_doc.render.mermaid import slug
+
+_TABLE_TYPES = (NodeType.BRONZE_TABLE, NodeType.SILVER_TABLE, NodeType.GOLD_TABLE)
+_TABLE_LAYER = {
+    NodeType.BRONZE_TABLE: "bronze",
+    NodeType.SILVER_TABLE: "silver",
+    NodeType.GOLD_TABLE: "gold",
+}
+# left-nav top sections, in order
+_LAYER_NAV = [("bronze", "Bronze Layer"), ("silver", "Silver Layer"), ("gold", "Gold Layer")]
+# object-type subgroups within a layer, in order
+_SUBGROUPS = (
+    ("Stored Procedures", (NodeType.STORED_PROC,)),
+    ("Tables", _TABLE_TYPES),
+    ("Views", (NodeType.VIEW,)),
+)
+# Power BI top sections (not layered)
+_PBI_NAV = [
+    (
+        "Semantic Models",
+        [
+            ("Models", NodeType.SEMANTIC_MODEL),
+            ("Model Tables", NodeType.PBI_TABLE),
+            ("Measures", NodeType.MEASURE),
+        ],
+    ),
+    (
+        "Reports",
+        [("Reports", NodeType.REPORT), ("Pages", NodeType.REPORT_PAGE), ("Visuals", NodeType.VISUAL)],
+    ),
+]
+
+
+def _node_layer(node: Node) -> str | None:
+    """The medallion layer of a node for nav grouping, or None if unlayered."""
+    if node.node_type in _TABLE_LAYER:
+        return _TABLE_LAYER[node.node_type]
+    if node.node_type in (NodeType.VIEW, NodeType.STORED_PROC):
+        return node.metadata.get("layer")
+    return None
 
 
 class SiteBuildError(Exception):
@@ -53,6 +91,8 @@ theme:
     - navigation.sections
     - navigation.indexes
     - navigation.top
+    - navigation.tracking
+    - toc.follow
     - search.suggest
     - search.highlight
     - content.code.copy
@@ -73,29 +113,67 @@ markdown_extensions:
 extra_javascript:
   - assets/javascripts/vendor/mermaid.min.js
 
+extra_css:
+  - assets/stylesheets/custom.css
+
 nav:
 {nav}
 """
 
 _VENDOR_SRC = Path(__file__).resolve().parent.parent / "templates" / "assets"
 _VENDOR_REL = Path("assets") / "javascripts" / "vendor"
+_CSS_REL = Path("assets") / "stylesheets"
 _SHIM_URL_RE = re.compile(r'src="https://unpkg\.com/iframe-worker/shim"')
 
 # sibling of the docs dir — mkdocs refuses a config inside docs_dir
 CONFIG_NAME = ".coop-mkdocs.yml"
 
 
+def _page(node: Node, node_id: str) -> str:
+    return f"{node.node_type.value}/{slug(node_id)}.md"
+
+
 def _nav_section(graph: LineageGraph) -> str:
+    """Build a nav tree grouped by layer (Bronze/Silver/Gold) then object
+    type, with Power BI and any unlayered objects as their own sections."""
+    nodes = graph.nodes
     lines = ["  - Overview: index.md"]
-    for node_type in NodeType:
-        nodes = sorted(
-            (node_id for node_id, n in graph.nodes.items() if n.node_type is node_type),
-        )
-        if not nodes:
+
+    # layered SQL objects: Layer -> object type -> pages
+    for layer, layer_title in _LAYER_NAV:
+        members = sorted(nid for nid, n in nodes.items() if _node_layer(n) == layer)
+        if not members:
             continue
-        lines.append(f"  - {_TYPE_TITLES[node_type]}:")
-        for node_id in nodes:
-            lines.append(f"      - {node_type.value}/{slug(node_id)}.md")
+        lines.append(f"  - {layer_title}:")
+        for sub_title, types in _SUBGROUPS:
+            sub = [nid for nid in members if nodes[nid].node_type in types]
+            if not sub:
+                continue
+            lines.append(f"      - {sub_title}:")
+            lines.extend(f"          - {_page(nodes[nid], nid)}" for nid in sub)
+
+    # Power BI sections (not layered)
+    for group_title, subgroups in _PBI_NAV:
+        rendered: list[str] = []
+        for sub_title, node_type in subgroups:
+            ids = sorted(nid for nid, n in nodes.items() if n.node_type is node_type)
+            if not ids:
+                continue
+            rendered.append(f"      - {sub_title}:")
+            rendered.extend(f"          - {_page(nodes[nid], nid)}" for nid in ids)
+        if rendered:
+            lines.append(f"  - {group_title}:")
+            lines.extend(rendered)
+
+    # anything unlayered (views/procs no rule covered) — don't lose them
+    other = sorted(
+        nid
+        for nid, n in nodes.items()
+        if n.node_type in (NodeType.VIEW, NodeType.STORED_PROC) and _node_layer(n) is None
+    )
+    if other:
+        lines.append("  - Other:")
+        lines.extend(f"      - {_page(nodes[nid], nid)}" for nid in other)
     return "\n".join(lines)
 
 
@@ -108,6 +186,9 @@ def write_mkdocs_config(docs_dir: Path, site_dir: Path, project_name: str, graph
     vendor_dir.mkdir(parents=True, exist_ok=True)
     for asset in ("mermaid.min.js", "iframe-worker-shim.js"):
         shutil.copyfile(_VENDOR_SRC / asset, vendor_dir / asset)
+    css_dir = docs_dir / _CSS_REL
+    css_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_VENDOR_SRC / "custom.css", css_dir / "custom.css")
     config_path = docs_dir.parent / CONFIG_NAME
     config_path.write_text(
         _MKDOCS_TEMPLATE.format(

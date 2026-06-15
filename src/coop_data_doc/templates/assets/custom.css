@@ -1,0 +1,22 @@
+/* coop-data-doc custom styles.
+   Shipped with the tool and copied into every generated site at build time.
+   Safe to extend here for visual tweaks — the site is rebuilt each `build`. */
+
+/* slightly wider content column for the wide lineage tables */
+.md-grid {
+  max-width: 70rem;
+}
+
+/* bolder left-nav section headers so the Bronze/Silver/Gold grouping reads clearly */
+.md-nav__item--section > .md-nav__link {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+/* keep wide mermaid lineage diagrams scrollable rather than overflowing on mobile */
+.mermaid {
+  overflow-x: auto;
+}
