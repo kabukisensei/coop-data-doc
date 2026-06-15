@@ -21,6 +21,26 @@ _COLOR_RE = re.compile(
 )
 
 
+def _within_or_equal(inner: Path, outer: Path) -> bool:
+    """True when ``inner`` is the same path as ``outer`` or sits inside it."""
+    try:
+        inner.relative_to(outer)
+        return True
+    except ValueError:
+        return False
+
+
+def output_dirs_conflict(output_dir: Path, site_dir: Path) -> bool:
+    """Whether the markdown and HTML output dirs collide.
+
+    mkdocs rebuilds the HTML site by wiping ``site_dir`` and filling it, so it
+    must not be the markdown dir nor nested either way — otherwise the build
+    clobbers the markdown or copies the build into itself. Expects already
+    resolved absolute paths; True when they conflict.
+    """
+    return _within_or_equal(site_dir, output_dir) or _within_or_equal(output_dir, site_dir)
+
+
 class ParseWarning(BaseModel):
     """A structured, printable warning returned (never printed) by parsers."""
 
@@ -168,6 +188,17 @@ class Config(BaseModel):
             )
             raise ConfigError(f"Invalid config in {path}: {issues}") from exc
         config._base_dir = path.resolve().parent
+        out_dir, site = config.output_dir(), config.site_dir()
+        if output_dirs_conflict(out_dir, site):
+            raise ConfigError(
+                "output.dir and output.site_dir must be separate folders — neither can be "
+                "inside the other. mkdocs rebuilds the HTML site by wiping site_dir, which "
+                "would clobber or duplicate your markdown.\n"
+                f"  dir:      {config.output.dir}  ->  {out_dir}\n"
+                f"  site_dir: {config.output.site_dir}  ->  {site}\n"
+                "Fix: put them side by side, e.g. dir: ./data-docs and site_dir: "
+                f"./data-docs-site (configured in {path})."
+            )
         for repo_key in sorted(config.repos):
             root = config.repo_root(repo_key)
             if not root.is_dir():

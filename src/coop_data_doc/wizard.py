@@ -20,11 +20,19 @@ import yaml
 from coop_data_doc.config import (
     Config,
     ConfigError,
+    output_dirs_conflict,
     render_config_yaml,
     DEFAULT_PBI_INCLUDE,
     DEFAULT_SQL_INCLUDE,
     VALID_LAYERS,
 )
+
+
+def _sibling_site(output_dir: str) -> str:
+    """A sensible HTML-site default that sits NEXT TO the markdown dir, never
+    inside it (mkdocs refuses a site_dir nested in docs_dir)."""
+    trimmed = output_dir.rstrip("/\\") or "./data-docs"
+    return f"{trimmed}-site"
 
 
 def _ask(prompt) -> object:
@@ -57,7 +65,13 @@ def _ask_repo_path(label: str, default: str, base_dir: Path) -> str:
         resolved = (base_dir / Path(raw).expanduser()).resolve()
         if resolved.is_dir():
             return raw
-        keep = _ask(questionary.confirm(f"'{resolved}' doesn't exist (yet). Use it anyway?", default=False))
+        keep = _ask(
+            questionary.confirm(
+                f"'{resolved}' doesn't exist (yet). Use it anyway?",
+                default=False,
+                auto_enter=False,
+            )
+        )
         if keep:
             return raw
 
@@ -143,45 +157,101 @@ def run_setup(config_path: Path) -> Config | None:
         ).strip()
         or "./data-docs"
     )
-    site_dir = (
-        str(
-            _ask(
-                questionary.text(
-                    "HTML site output folder:",
-                    default=existing.output.site_dir if existing else "./data-docs-site",
+    # The HTML site is rebuilt by wiping its folder, so it must sit beside the
+    # markdown dir, never inside it. Default to a sibling and reject a conflict.
+    site_default = existing.output.site_dir if existing else _sibling_site(output_dir)
+    while True:
+        site_dir = (
+            str(
+                _ask(
+                    questionary.text(
+                        "HTML site output folder (must be separate from the markdown folder):",
+                        default=site_default,
+                    )
                 )
-            )
-        ).strip()
-        or "./data-docs-site"
-    )
+            ).strip()
+            or site_default
+        )
+        out_abs = (base_dir / Path(output_dir).expanduser()).resolve()
+        site_abs = (base_dir / Path(site_dir).expanduser()).resolve()
+        if not output_dirs_conflict(out_abs, site_abs):
+            break
+        print(
+            "  ✗ The HTML site folder can't be the same as — or inside — the markdown\n"
+            "    folder. Each build wipes the site folder, which would clobber your\n"
+            f"    markdown. Try a sibling like '{_sibling_site(output_dir)}'.",
+            file=sys.stderr,
+        )
+        site_default = _sibling_site(output_dir)
 
-    # --- junk filtering: folders/patterns to skip ---
+    # --- what to document (include) and skip (exclude), per repo ---
     sql_repo = existing.repos.get("sql") if existing else None
     pbi_repo = existing.repos.get("powerbi") if existing else None
-    print("\n── What to skip (junk filtering) ──", file=sys.stderr)
+    print("\n── What to document ──", file=sys.stderr)
+    print(
+        "  INCLUDE = the files to document (press Enter to keep the sensible default).\n"
+        "  SKIP    = optional folders to leave out (e.g. backups). Blank keeps everything.",
+        file=sys.stderr,
+    )
+    sql_include = _ask_csv(
+        "SQL — files/patterns to INCLUDE (comma-separated globs):",
+        sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
+    )
     sql_exclude = _ask_csv(
-        "SQL folders/patterns to EXCLUDE (comma-separated globs, e.g. **/logging/**, "
-        "**/Deployment/** — blank for none):",
-        sql_repo.exclude if sql_repo else ["**/archive/**"],
+        "SQL — folders to SKIP (optional, e.g. **/archive/**, **/Deployment/** — blank for none):",
+        sql_repo.exclude if sql_repo else [],
+    )
+    pbi_include = _ask_csv(
+        "Power BI — files/patterns to INCLUDE (comma-separated globs):",
+        pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
+    )
+    pbi_exclude = _ask_csv(
+        "Power BI — folders to SKIP (optional, e.g. **/BACKUP/**, **/Documentation/**, "
+        "**/Editor and Theme Files/** — blank for none):",
+        pbi_repo.exclude if pbi_repo else [],
     )
 
-    # --- medallion layers: bronze → silver → gold (each skippable) ---
-    print("\n── Medallion layers (leave both blank to skip a layer) ──", file=sys.stderr)
-    layers: dict[str, dict[str, list[str]]] = {}
+    # --- medallion layers: assign by SCHEMA (the common case) ---
+    print("\n── Medallion layers ──", file=sys.stderr)
+    print(
+        "  Assign each layer by SCHEMA name. In a Fabric/SQL warehouse the schema IS\n"
+        "  the folder, so schemas alone are all you need. Leave a layer blank to skip it.",
+        file=sys.stderr,
+    )
+    layer_schemas: dict[str, list[str]] = {}
     for layer in VALID_LAYERS:  # bronze, silver, gold
         existing_rule = existing.layers.get(layer) if existing else None
-        schemas = _ask_csv(
+        layer_schemas[layer] = _ask_csv(
             f"{layer.capitalize()} layer — schemas (comma-separated, e.g. "
-            + ("d365po, d365fo" if layer == "bronze" else "dwm, common" if layer == "gold" else "stg")
-            + ", or blank):",
+            + ("d365po, d365fo" if layer == "bronze" else "dwm, common, silver" if layer == "gold" else "stg")
+            + ", or blank to skip):",
             existing_rule.schemas if existing_rule else [],
         )
-        paths = _ask_csv(
-            f"{layer.capitalize()} layer — folder globs (comma-separated, e.g. "
-            + ("**/dim/**, **/fact/**" if layer == "gold" else "**/Bronze/**")
-            + ", or blank):",
-            existing_rule.paths if existing_rule else [],
+
+    # Folder-based layering is an advanced fallback for repos where a layer is
+    # a directory rather than a schema. Most repos don't need it, so it's off
+    # by default — but re-running setup keeps any folder rules you already had.
+    had_paths = bool(existing and any(rule.paths for rule in existing.layers.values()))
+    layer_paths: dict[str, list[str]] = {}
+    if _ask(
+        questionary.confirm(
+            "Advanced: does any layer map to a FOLDER instead of a schema?",
+            default=had_paths,
+            auto_enter=False,
         )
+    ):
+        for layer in VALID_LAYERS:
+            existing_rule = existing.layers.get(layer) if existing else None
+            layer_paths[layer] = _ask_csv(
+                f"{layer.capitalize()} layer — folder globs (comma-separated, e.g. "
+                + ("**/dim/**, **/fact/**" if layer == "gold" else "**/Bronze/**")
+                + ", or blank):",
+                existing_rule.paths if existing_rule else [],
+            )
+
+    layers: dict[str, dict[str, list[str]]] = {}
+    for layer in VALID_LAYERS:
+        schemas, paths = layer_schemas.get(layer, []), layer_paths.get(layer, [])
         if schemas or paths:
             layers[layer] = {"schemas": schemas, "paths": paths}
 
@@ -238,11 +308,19 @@ def run_setup(config_path: Path) -> Config | None:
     mappings: list[tuple[str, str]] = []
     if existing is not None and existing.schema_mappings:
         current = ", ".join(f"{m.schema_name} → {m.model}" for m in existing.schema_mappings)
-        keep = _ask(questionary.confirm(f"Keep existing schema mappings ({current})?", default=True))
+        keep = _ask(
+            questionary.confirm(
+                f"Keep existing schema mappings ({current})?", default=True, auto_enter=False
+            )
+        )
         if keep:
             mappings = [(m.schema_name, m.model) for m in existing.schema_mappings]
 
-    while _ask(questionary.confirm("Add a view-schema → semantic-model mapping?", default=not mappings)):
+    while _ask(
+        questionary.confirm(
+            "Add a view-schema → semantic-model mapping?", default=not mappings, auto_enter=False
+        )
+    ):
         schema = str(_ask(questionary.text("View schema (e.g. salespm):"))).strip()
         model = str(
             _ask(questionary.text("Semantic model it feeds (e.g. Sales and Project Management):"))
@@ -258,10 +336,10 @@ def run_setup(config_path: Path) -> Config | None:
         layers=layers,
         ignore_schemas=ignore_schemas,
         branding=branding,
-        sql_include=sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
+        sql_include=sql_include,
         sql_exclude=sql_exclude,
-        pbi_include=pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
-        pbi_exclude=pbi_repo.exclude if pbi_repo else [],
+        pbi_include=pbi_include,
+        pbi_exclude=pbi_exclude,
         output_dir=output_dir,
         site_dir=site_dir,
         sql_dialect=existing.sql_dialect if existing else "tsql",

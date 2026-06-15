@@ -75,6 +75,32 @@ def test_missing_repo_path_names_repo_key(tmp_path: Path):
         Config.load(path)
 
 
+def test_site_dir_inside_output_dir_rejected(tmp_path: Path):
+    # the real crash from the field: site_dir nested in the markdown dir
+    body = minimal_yaml(str(FIXTURES / "repo_sql"), str(FIXTURES / "repo_pbi"))
+    body += "output:\n  dir: ./docs\n  site_dir: ./docs/site\n"
+    path = write_config(tmp_path, body)
+    with pytest.raises(ConfigError, match="separate folders"):
+        Config.load(path)
+
+
+def test_output_dir_equal_site_dir_rejected(tmp_path: Path):
+    body = minimal_yaml(str(FIXTURES / "repo_sql"), str(FIXTURES / "repo_pbi"))
+    body += "output:\n  dir: ./docs\n  site_dir: ./docs\n"
+    path = write_config(tmp_path, body)
+    with pytest.raises(ConfigError, match="separate folders"):
+        Config.load(path)
+
+
+def test_sibling_output_dirs_accepted(tmp_path: Path):
+    body = minimal_yaml(str(FIXTURES / "repo_sql"), str(FIXTURES / "repo_pbi"))
+    body += "output:\n  dir: ./docs\n  site_dir: ./docs-site\n"
+    path = write_config(tmp_path, body)
+    config = Config.load(path)
+    assert config.output_dir() == (tmp_path / "docs").resolve()
+    assert config.site_dir() == (tmp_path / "docs-site").resolve()
+
+
 def test_scaffold_round_trips(tmp_path: Path):
     (tmp_path / "sql-repo").mkdir()
     (tmp_path / "pbi-repo").mkdir()

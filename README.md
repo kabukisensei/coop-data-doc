@@ -236,7 +236,8 @@ ignore_schemas: [staging, sm]       # schemas to drop entirely (never documented
 
 output:
   dir: ./data-docs                  # the markdown (agents read this)
-  site_dir: ./data-docs-site        # the website (humans read this)
+  site_dir: ./data-docs-site        # the website (humans read this) — must be a
+                                    # SEPARATE folder, not inside dir (see note below)
 
 sql_dialect: tsql                   # covers SQL Server, Azure SQL, Fabric warehouse
 ```
@@ -254,12 +255,19 @@ A table or view is assigned the **first** layer (precedence gold → silver → 
 - `schemas` list contains its schema, **or**
 - `paths` globs match its file.
 
-So you can mix both: gold = "the `dwm` and `common` schemas **plus** the `dim`/`fact`
-folders," while bronze = "the `d365po`/`d365fo` source schemas." Each layer is optional —
-**omit `bronze` or `silver` entirely to skip it.** Anything no rule matches falls back to
-a read/write heuristic (a table that's only ever read → silver; one that's created here →
-gold), and the scan warns which objects fell back so you can add rules. Bronze only ever
-appears when you declare it. The setup wizard walks you through these layer-by-layer.
+In a Fabric or SQL warehouse the folder layout is usually `<Warehouse>/<schema>/<ObjectType>/`,
+so **the schema *is* the folder** — listing `schemas` is all you need, and you can ignore
+`paths` entirely. `paths` exists only for the less-common case where a layer maps to a
+*folder* that isn't its own schema (say a `dim/`/`fact/` convention living under another
+schema). You can mix both — a node is assigned the first layer (gold → silver → bronze) hit
+by **either** its schema or its path — but most estates only ever fill in `schemas`. The
+setup wizard reflects this: it asks for schemas layer-by-layer and only asks about folders
+if you opt into the "advanced" question.
+
+Each layer is optional — **omit `bronze` or `silver` entirely to skip it.** Anything no rule
+matches falls back to a read/write heuristic (a table that's only ever read → silver; one
+that's created here → gold), and the scan warns which objects fell back so you can add rules.
+Bronze only ever appears when you declare it.
 
 **Dropping schemas you don't want documented:** list them in `ignore_schemas` (the wizard
 asks for these too). System schemas — `sys`, `information_schema`, `tempdb`, `db_*` — are
@@ -280,7 +288,7 @@ upstream link.
 | `layers.<bronze\|silver\|gold>.paths` | list of globs | File paths assigned to that layer. A node matches the first layer (gold → silver → bronze) hit by schema **or** path. |
 | `ignore_schemas` | list | Schemas dropped entirely. System schemas are always dropped on top of these. |
 | `output.dir` | string | Where the Markdown (agent docs) is written. |
-| `output.site_dir` | string | Where the HTML site is built. |
+| `output.site_dir` | string | Where the HTML site is built. **Must be a separate folder from `output.dir`** — not the same folder and not nested inside it (each build wipes `site_dir`, which would clobber your Markdown). Side-by-side like `./data-docs` + `./data-docs-site` is the convention. |
 | `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
 
 ### include / exclude — choosing what gets crawled
@@ -534,6 +542,7 @@ overwritten on the next `update`. To regenerate after source changes, run
 | `dependency conflicts … requires pyyaml==6.0.2, but you have 6.0.3` (or similar) | You installed into a shared system Python with plain `pip`, clashing with another tool. Fix: `pip uninstall -y coop-data-doc`, restore the other tool's pin (e.g. `pip install "pyyaml==6.0.2"`), then reinstall coop-data-doc with **pipx** (isolated): `pipx install git+https://github.com/kabukisensei/coop-data-doc.git`. |
 | `Config file not found` | You're in the wrong folder. `cd` to the folder containing `coop-data-doc.yml`, or pass `--config path/to/coop-data-doc.yml`. |
 | `Repo 'sql' path does not exist` | The path in `coop-data-doc.yml` is wrong. Re-run `coop-data-doc setup` and fix it. |
+| `output.dir and output.site_dir must be separate folders` / mkdocs `'site_dir' should not be within the 'docs_dir'` | Your HTML folder is the same as — or inside — your Markdown folder. Point `output.site_dir` at a sibling (e.g. `dir: ./data-docs`, `site_dir: ./data-docs-site`), or re-run `coop-data-doc setup` and accept the suggested sibling. |
 | `dynamic_sql` warning | A stored proc builds SQL inside strings; lineage can't be traced safely so the tool refuses to guess. Document that proc by hand in its Business Intent block. |
 | `regex_fallback` warning | A statement was too gnarly for full parsing; its lineage came from pattern-matching. Usually right — worth a quick eyeball. |
 | `unresolved_partition_source` warning | A Power BI table loads from something unrecognized. Run interactively once and map it, or mark it external. |
