@@ -16,7 +16,10 @@ not ``--quiet``). When disabled every method is a cheap no-op, so:
 
 from __future__ import annotations
 
+import itertools
 import sys
+import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
@@ -68,3 +71,28 @@ class Progress:
             show_eta=False,
         ) as bar:
             yield lambda *_args, **_kwargs: bar.update(1)
+
+    @contextmanager
+    def spinner(self, label: str) -> Iterator[None]:
+        """Animate a spinner on stderr for an indeterminate step (e.g. a
+        subprocess). No-op (silent) when disabled, so CI logs stay clean."""
+        if not self.enabled:
+            yield
+            return
+        stop = threading.Event()
+
+        def spin() -> None:
+            for frame in itertools.cycle("|/-\\"):
+                if stop.is_set():
+                    break
+                click.echo(f"\r{label} {frame}", nl=False, err=True)
+                time.sleep(0.1)
+
+        worker = threading.Thread(target=spin, daemon=True)
+        worker.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            worker.join(timeout=1)
+            click.echo(f"\r{label} ✓{' ' * 8}", err=True)

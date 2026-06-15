@@ -275,7 +275,8 @@ def test_display_name_schema_qualified_original_case(tmp_path: Path):
     )
     render_markdown(g, tmp_path, "Test")
     page = page_path(tmp_path, "gold_table:dim.practice").read_text(encoding="utf-8")
-    assert "# dim.Practice `gold_table`" in page  # schema-qualified, original case
+    assert "# dim.Practice\n" in page  # schema-qualified H1, original case
+    assert "# dim.Practice `gold_table`" not in page  # type label dropped from the title
     # mermaid label uses the same display
     from coop_data_doc.render.mermaid import local_flowchart
 

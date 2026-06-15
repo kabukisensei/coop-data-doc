@@ -140,7 +140,7 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     parts = [
         _front_matter(graph, node),
         "",
-        f"# {node.qualified_display} `{node.node_type.value}`",
+        f"# {node.qualified_display}",
         "",
         _contract_section(node),
         "",

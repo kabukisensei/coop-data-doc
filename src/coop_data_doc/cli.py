@@ -350,7 +350,8 @@ def _run_build(
     mkdocs_config = write_mkdocs_config(out_dir, config.site_dir(), config.project_name, graph)
     if serve:
         os.execvp(sys.executable, [sys.executable, "-m", "mkdocs", "serve", "-f", str(mkdocs_config)])
-    build_site(mkdocs_config, config.site_dir())
+    with progress.spinner(f"Building HTML site ({len(graph.nodes)} pages)"):
+        build_site(mkdocs_config, config.site_dir())
     index = config.site_dir() / "index.html"
     click.echo(f"HTML portal:   file://{index}", err=True)
 
@@ -403,7 +404,8 @@ def update(
 @cli.command()
 @click.option("--check", "check_only", is_flag=True, help="Report available updates; change nothing.")
 @click.option("--yes", is_flag=True, help="Apply without asking for confirmation.")
-def upgrade(check_only: bool, yes: bool) -> None:
+@click.pass_context
+def upgrade(ctx: click.Context, check_only: bool, yes: bool) -> None:
     """Update the tool itself and apply non-breaking dependency updates.
 
     The ONLY command that uses the network (PyPI metadata / git fetch).
@@ -411,8 +413,9 @@ def upgrade(check_only: bool, yes: bool) -> None:
     """
     from coop_data_doc.upgrade import UpgradeError, apply_plan, build_plan
 
-    click.echo("Checking for updates…", err=True)
-    plan = build_plan()
+    progress = Progress(should_enable(ctx.obj["quiet"]))
+    with progress.spinner("Checking for updates"):
+        plan = build_plan()
     click.echo(f"\ncoop-data-doc {plan.tool_installed} ({plan.install_method}) — {plan.tool_note}")
     if plan.dependencies:
         click.echo("\nDependencies:")
@@ -446,7 +449,8 @@ def upgrade(check_only: bool, yes: bool) -> None:
             click.echo("Nothing changed.")
             return
     try:
-        executed = apply_plan(plan)
+        with progress.spinner("Applying update (downloading + reinstalling)"):
+            executed = apply_plan(plan)
     except UpgradeError as exc:
         raise click.ClickException(str(exc)) from exc
     for command in executed:
