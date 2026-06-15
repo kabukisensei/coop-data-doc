@@ -259,6 +259,36 @@ def test_site_nav_grouped_by_layer():
     assert "Views:" in nav[gold_idx:]
 
 
+def test_site_nav_nests_tables_and_measures_under_each_model():
+    from coop_data_doc.render.site import _nav_section
+
+    g = LineageGraph()
+    # two models, each with its own table + measure (schema_name == model key)
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Finance", display_name="Finance"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "finance", "Region", display_name="Region"))
+    g.add_node(make_node(NodeType.MEASURE, "finance", "Total", display_name="Total", metadata={"dax": "1"}))
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Resource", display_name="Resource"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "resource", "Person", display_name="Person"))
+    nav = _nav_section(g)
+    # each model is its own subsection with nested Tables / Measures
+    assert '- "Finance":' in nav and '- "Resource":' in nav
+    fin = nav.index('"Finance":')
+    res = nav.index('"Resource":')
+    # Finance's table/measure appear under Finance, before Resource
+    assert "finance-region" in nav and nav.index("finance-region") > fin
+    assert "Tables:" in nav[fin:res] and "Measures:" in nav[fin:res]
+    # Resource has no measures -> no Measures subgroup in its block
+    assert "Measures:" not in nav[res:]
+
+
+def test_mermaid_click_targets_html():
+    g = build_graph()
+    chart = local_flowchart(g, "view:salespm.dim_customer")
+    clicks = [ln for ln in chart.splitlines() if ln.strip().startswith("click")]
+    assert clicks
+    assert all(".html" in ln and ".md" not in ln for ln in clicks)
+
+
 def test_display_name_schema_qualified_original_case(tmp_path: Path):
     g = LineageGraph()
     # node id/name normalized (lowercase) but display_name keeps original case

@@ -18,7 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from coop_data_doc.graph.model import LineageGraph, Node, NodeType
+from coop_data_doc.graph.model import LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.render.mermaid import slug
 
 _TABLE_TYPES = (NodeType.BRONZE_TABLE, NodeType.SILVER_TABLE, NodeType.GOLD_TABLE)
@@ -35,21 +35,6 @@ _SUBGROUPS = (
     ("Tables", _TABLE_TYPES),
     ("Views", (NodeType.VIEW,)),
 )
-# Power BI top sections (not layered)
-_PBI_NAV = [
-    (
-        "Semantic Models",
-        [
-            ("Models", NodeType.SEMANTIC_MODEL),
-            ("Model Tables", NodeType.PBI_TABLE),
-            ("Measures", NodeType.MEASURE),
-        ],
-    ),
-    (
-        "Reports",
-        [("Reports", NodeType.REPORT), ("Pages", NodeType.REPORT_PAGE), ("Visuals", NodeType.VISUAL)],
-    ),
-]
 
 
 def _node_layer(node: Node) -> str | None:
@@ -134,6 +119,55 @@ def _page(node: Node, node_id: str) -> str:
     return f"{node.node_type.value}/{slug(node_id)}.md"
 
 
+def _navkey(title: str) -> str:
+    """Double-quote a nav section title so special chars (`:` `+` etc. in
+    model/report names) can't break the YAML."""
+    return '"' + title.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _grouped_section(nodes, container, title, children) -> list[str]:
+    """Nav for `container` nodes (semantic_model / report) with their child
+    objects nested underneath, keyed by the child's schema_name == the
+    container's normalized name. Children whose container is missing get
+    their own subsection keyed by the bare name."""
+    # group child ids by their container key
+    grouped: dict[str, dict[str, list[str]]] = {}
+    for nid, node in nodes.items():
+        for _child_title, child_type in children:
+            if node.node_type is child_type:
+                grouped.setdefault(node.schema_name, {}).setdefault(child_type.value, []).append(nid)
+
+    containers = sorted(
+        (nid for nid, n in nodes.items() if n.node_type is container),
+        key=lambda nid: nodes[nid].display.lower(),
+    )
+    if not containers and not grouped:
+        return []
+
+    def block(section_title: str, key: str, container_id: str | None) -> list[str]:
+        out = [f"      - {_navkey(section_title)}:"]
+        if container_id is not None:
+            out.append(f"          - Overview: {_page(nodes[container_id], container_id)}")
+        for child_title, child_type in children:
+            ids = sorted(grouped.get(key, {}).get(child_type.value, []))
+            if not ids:
+                continue
+            out.append(f"          - {child_title}:")
+            out.extend(f"              - {_page(nodes[nid], nid)}" for nid in ids)
+        return out
+
+    lines = [f"  - {title}:"]
+    seen: set[str] = set()
+    for cid in containers:
+        # children carry the container's normalized name in schema_name
+        key = normalize_identifier(nodes[cid].name)
+        seen.add(key)
+        lines.extend(block(nodes[cid].display, key, cid))
+    for key in sorted(set(grouped) - seen):  # children with no container node
+        lines.extend(block(key, key, None))
+    return lines
+
+
 def _nav_section(graph: LineageGraph) -> str:
     """Build a nav tree grouped by layer (Bronze/Silver/Gold) then object
     type, with Power BI and any unlayered objects as their own sections."""
@@ -153,18 +187,25 @@ def _nav_section(graph: LineageGraph) -> str:
             lines.append(f"      - {sub_title}:")
             lines.extend(f"          - {_page(nodes[nid], nid)}" for nid in sub)
 
-    # Power BI sections (not layered)
-    for group_title, subgroups in _PBI_NAV:
-        rendered: list[str] = []
-        for sub_title, node_type in subgroups:
-            ids = sorted(nid for nid, n in nodes.items() if n.node_type is node_type)
-            if not ids:
-                continue
-            rendered.append(f"      - {sub_title}:")
-            rendered.extend(f"          - {_page(nodes[nid], nid)}" for nid in ids)
-        if rendered:
-            lines.append(f"  - {group_title}:")
-            lines.extend(rendered)
+    # Power BI: nest each semantic model's tables + measures under the model,
+    # and each report's pages + visuals under the report (a flat list of
+    # hundreds of measures/visuals is unusable).
+    lines.extend(
+        _grouped_section(
+            nodes,
+            container=NodeType.SEMANTIC_MODEL,
+            title="Semantic Models",
+            children=(("Tables", NodeType.PBI_TABLE), ("Measures", NodeType.MEASURE)),
+        )
+    )
+    lines.extend(
+        _grouped_section(
+            nodes,
+            container=NodeType.REPORT,
+            title="Reports",
+            children=(("Pages", NodeType.REPORT_PAGE), ("Visuals", NodeType.VISUAL)),
+        )
+    )
 
     # anything unlayered (views/procs no rule covered) — don't lose them
     other = sorted(

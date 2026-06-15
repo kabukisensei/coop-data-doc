@@ -72,8 +72,21 @@ def slug(node_id: str) -> str:
 
 
 def doc_relpath(node: Node) -> str:
-    """Path of a node's markdown page relative to another node's page."""
+    """Markdown-link path of a node's page, relative to another node's page.
+
+    Used in Markdown link syntax `[x](...)`, which MkDocs rewrites to the
+    built URL — so this keeps the `.md` suffix.
+    """
     return f"../{node.node_type.value}/{slug(node.id)}.md"
+
+
+def click_href(node: Node, *, from_root: bool = False) -> str:
+    """Click-through href for a Mermaid `click` directive. Mermaid renders
+    client-side and MkDocs does NOT rewrite these raw strings, so they must
+    point at the built `.html` page (the site uses use_directory_urls:false).
+    """
+    prefix = "" if from_root else "../"
+    return f"{prefix}{node.node_type.value}/{slug(node.id)}.html"
 
 
 # mermaid-significant characters → safe visual substitutes (keeps labels
@@ -119,7 +132,7 @@ def local_flowchart(graph: LineageGraph, node_id: str, up_depth: int = 2, down_d
         lines.append(f"    {alias[upstream_id]} -->|{label}| {alias[downstream_id]}")
     for nid in ordered:
         if nid != node_id:
-            lines.append(f'    click {alias[nid]} "{doc_relpath(graph.nodes[nid])}"')
+            lines.append(f'    click {alias[nid]} "{click_href(graph.nodes[nid])}"')
     lines.append(f"    style {alias[node_id]} stroke-width:3px")
     return "\n".join(lines)
 
@@ -145,5 +158,5 @@ def estate_flowchart(graph: LineageGraph) -> str | None:
         lines.append(f"    {alias[upstream_id]} -->|{label}| {alias[downstream_id]}")
     for nid in ordered:
         node = graph.nodes[nid]
-        lines.append(f'    click {alias[nid]} "{node.node_type.value}/{slug(nid)}.md"')
+        lines.append(f'    click {alias[nid]} "{click_href(node, from_root=True)}"')
     return "\n".join(lines)
