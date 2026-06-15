@@ -135,6 +135,82 @@ def test_apply_uv_tool():
     assert executed == [["uv", "tool", "upgrade", "coop-data-doc"]]
 
 
+def git_plan(method):
+    """A plan for a pipx/uv-tool app installed from a git URL."""
+    git_url = "git+https://github.com/kabukisensei/coop-data-doc.git"
+    return UpgradePlan(
+        install_method=method,
+        checkout=None,
+        tool_installed="0.13.0",
+        tool_note=f"installed from {git_url}; upgrading re-pulls the latest commit",
+        pip_spec=git_url,
+    )
+
+
+def test_apply_pipx_from_git_reinstalls():
+    # `pipx upgrade` no-ops on a git install, and `pipx install --force` FAILS
+    # under pipx's uv backend ("venv already exists"). `pipx reinstall` re-pulls
+    # the recorded git spec and works on both backends — do not "simplify" this.
+    executed = apply_plan(git_plan("pipx"), runner=recording_runner())
+    assert executed == [["pipx", "reinstall", "coop-data-doc"]]
+
+
+def test_apply_uv_tool_from_git_force_installs():
+    # uv tool install --force DOES re-fetch + re-pull a moving branch (verified)
+    git_url = "git+https://github.com/kabukisensei/coop-data-doc.git"
+    executed = apply_plan(git_plan("uv-tool"), runner=recording_runner())
+    assert executed == [["uv", "tool", "install", "--force", git_url]]
+
+
+def test_vcs_detection_ignores_plus_in_local_paths():
+    # a local/editable path containing "+" must NOT be treated as a VCS install
+    from coop_data_doc.upgrade import is_vcs_spec
+
+    assert is_vcs_spec("git+https://github.com/x/y.git")
+    assert is_vcs_spec("git+ssh://git@host/x.git@main")
+    assert not is_vcs_spec("-e /home/u/c++proj/coop-data-doc")
+    assert not is_vcs_spec("file:///home/u/c++proj/coop-data-doc")
+    assert not is_vcs_spec("/home/u/c++proj/coop-data-doc")
+    assert not is_vcs_spec(None)
+
+
+def test_apply_pipx_editable_local_path_uses_upgrade():
+    # pipx install whose recorded spec is a local "+"-containing path -> NOT VCS,
+    # so it must fall through to `pipx upgrade`, never a broken reinstall token
+    plan = UpgradePlan(
+        install_method="pipx",
+        checkout=None,
+        tool_installed="0.14.0",
+        tool_note="",
+        pip_spec="-e /home/u/c++proj/coop-data-doc",
+    )
+    assert not plan.is_vcs_install
+    assert apply_plan(plan, runner=recording_runner()) == [["pipx", "upgrade", "coop-data-doc"]]
+
+
+def test_build_plan_pipx_from_git_reads_origin(monkeypatch):
+    # pipx git installs still carry direct_url.json — read it like a pip install
+    monkeypatch.setattr(sys, "prefix", "/Users/x/.local/pipx/venvs/coop-data-doc")
+    monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])
+    git_url = "git+https://github.com/kabukisensei/coop-data-doc.git"
+    plan = build_plan(fetch=lambda _n: None, origin=lambda: git_url)
+    assert plan.install_method == "pipx"
+    assert plan.pip_spec == git_url
+    assert plan.is_vcs_install
+    assert "re-pulls" in plan.tool_note  # not the misleading "not on PyPI" note
+
+
+def test_build_plan_pipx_from_pypi_uses_upgrade(monkeypatch):
+    # a pipx PyPI install (no direct_url) keeps the plain `pipx upgrade` path
+    monkeypatch.setattr(sys, "prefix", "/Users/x/.local/pipx/venvs/coop-data-doc")
+    monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])
+    plan = build_plan(fetch=lambda _n: "9.9.9", origin=lambda: None)
+    assert plan.install_method == "pipx"
+    assert plan.pip_spec is None
+    assert not plan.is_vcs_install
+    assert apply_plan(plan, runner=recording_runner()) == [["pipx", "upgrade", "coop-data-doc"]]
+
+
 def test_build_plan_pip_from_git_reinstalls_from_url(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "plain"))
     monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])

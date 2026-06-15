@@ -449,6 +449,7 @@ def upgrade(ctx: click.Context, check_only: bool, yes: bool) -> None:
         return
     nothing_to_apply = (
         not plan.safe_updates
+        and not plan.is_vcs_install  # a git install can always re-pull a newer commit
         and "new commit(s)" not in plan.tool_note
         and ("latest release is" not in plan.tool_note)
     )

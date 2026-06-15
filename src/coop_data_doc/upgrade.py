@@ -26,6 +26,15 @@ from coop_data_doc import __version__
 PYPI_JSON_URL = "https://pypi.org/pypi/{name}/json"
 NETWORK_TIMEOUT_SECONDS = 10
 PACKAGE_NAME = "coop-data-doc"
+# A pip spec from a version control system: "git+…", "hg+…", "svn+…", "bzr+…".
+# Detect by scheme prefix, NOT a bare "+" substring — a local/editable path can
+# legitimately contain "+" (e.g. /home/u/c++proj) and must not be mistaken for VCS.
+_VCS_SPEC_RE = re.compile(r"^(git|hg|svn|bzr)\+")
+
+
+def is_vcs_spec(spec: str | None) -> bool:
+    """True when ``spec`` is a VCS install source (``git+https://…`` etc.)."""
+    return bool(spec and _VCS_SPEC_RE.match(spec))
 
 
 class UpgradeError(Exception):
@@ -56,6 +65,14 @@ class UpgradePlan:
     @property
     def major_updates(self) -> list[DependencyStatus]:
         return [d for d in self.dependencies if d.kind == "major"]
+
+    @property
+    def is_vcs_install(self) -> bool:
+        """Installed from a VCS spec (``git+…``). Such an install has no PyPI
+        version to compare against — its source is a moving branch — so an
+        upgrade should always re-pull rather than be skipped as 'up to date'.
+        """
+        return is_vcs_spec(self.pip_spec)
 
 
 # -- pure helpers -------------------------------------------------------------
@@ -220,11 +237,14 @@ def build_plan(
     origin=pip_install_origin,
 ) -> UpgradePlan:
     method, checkout = detect_install_method()
-    pip_spec = origin() if method == "pip" else None
+    # pip records the install source (PEP 610 direct_url.json) for ANY install
+    # method, including pipx/uv-tool venvs — so read it for all three. Only a
+    # git-checkout uses the working tree instead of a recorded spec.
+    pip_spec = origin() if method in ("pip", "pipx", "uv-tool") else None
 
     if method == "git-checkout" and checkout is not None:
         tool_note = _git_checkout_note(checkout, runner)
-    elif method == "pip" and pip_spec and "+" in pip_spec:
+    elif is_vcs_spec(pip_spec):
         tool_note = f"installed from {pip_spec}; upgrading re-pulls the latest commit"
     else:
         latest = fetch(PACKAGE_NAME)
@@ -273,9 +293,22 @@ def apply_plan(plan: UpgradePlan, runner=subprocess.run) -> list[list[str]]:
     executed: list[list[str]] = []
 
     if plan.install_method == "pipx":
-        command = ["pipx", "upgrade", PACKAGE_NAME]
+        # `pipx upgrade` compares versions and won't re-pull a moving git branch.
+        # Use `pipx reinstall` (NOT `pipx install --force`): it re-pulls from the
+        # recorded spec, preserves the pinned @ref, and — crucially — works under
+        # pipx's uv backend, which `install --force` fails against ("venv already
+        # exists / use --clear"). uv is auto-selected whenever it's on PATH.
+        command = (
+            ["pipx", "reinstall", PACKAGE_NAME] if plan.is_vcs_install else ["pipx", "upgrade", PACKAGE_NAME]
+        )
     elif plan.install_method == "uv-tool":
-        command = ["uv", "tool", "upgrade", PACKAGE_NAME]
+        # `uv tool install --force <url>` does re-fetch the remote and re-pull the
+        # latest commit on a moving branch (verified), so it's correct here.
+        command = (
+            ["uv", "tool", "install", "--force", plan.pip_spec]
+            if plan.is_vcs_install
+            else ["uv", "tool", "upgrade", PACKAGE_NAME]
+        )
     elif plan.install_method == "git-checkout" and plan.checkout is not None:
         if "new commit(s)" in plan.tool_note:
             pull = ["git", "-C", str(plan.checkout), "pull", "--ff-only"]
