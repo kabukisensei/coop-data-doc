@@ -92,6 +92,30 @@ def test_mcode_unresolved():
     assert ref is None and sqls == []
 
 
+def test_mcode_let_variable_indirection():
+    # the real PBIP template: schema/table bound to `let` variables
+    ref, sqls = extract_source(
+        "let\n"
+        '    LocalTable = "Date",\n'
+        '    LocalSchema = "common",\n'
+        "    Source = Sql.Database(SQLServer, SQLDatabase),\n"
+        "    Data = Source{[Schema=LocalSchema,Item=LocalTable]}[Data]\n"
+        "in\n    Data"
+    )
+    assert sqls == []
+    assert ref.raw_kind == "sql_database"
+    assert ref.schema_name == "common"
+    assert ref.object_name == "date"
+
+
+def test_mcode_static_calculation_table():
+    ref, _ = extract_source(
+        "let Source = Table.FromRows(Json.Document(Binary.Decompress("
+        'Binary.FromText("i45W", BinaryEncoding.Base64), Compression.Deflate))) in Source'
+    )
+    assert ref is not None and ref.raw_kind == "static"
+
+
 # ---- dax unit tests --------------------------------------------------------
 
 

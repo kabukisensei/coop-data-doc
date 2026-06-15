@@ -85,6 +85,10 @@ def _attach_partition_source(
                 "raw_kind": "native_query",
             }
             return
+    if ref is not None and ref.raw_kind == "static":
+        # inline/calculation/parameter table — no database lineage by design
+        table_node.metadata["partition_static"] = True
+        return
     if ref is not None and ref.raw_kind != "native_query":
         table_node.metadata["partition_source"] = {
             "schema": ref.schema_name,
