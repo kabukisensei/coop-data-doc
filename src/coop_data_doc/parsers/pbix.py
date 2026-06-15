@@ -35,6 +35,19 @@ _SHARED_RE = re.compile(r'\bshared\s+(?:#"([^"]+)"|([\w.]+))\s*=\s*(.*?);\s*(?=\
 
 PBIP_ADVICE = "open in Power BI Desktop and save as a .pbip project for full lineage"
 
+# refuse to decompress an absurdly large member — zip-bomb / DoS guard
+_MAX_MEMBER_BYTES = 200 * 1024 * 1024
+
+
+def _safe_read(archive: zipfile.ZipFile, name: str) -> bytes | None:
+    """Read a zip member only if its declared uncompressed size is sane."""
+    try:
+        if archive.getinfo(name).file_size > _MAX_MEMBER_BYTES:
+            return None
+        return archive.read(name)
+    except (KeyError, zipfile.BadZipFile, OSError):
+        return None
+
 
 def _extract_mashup_m(blob: bytes) -> str | None:
     start = blob.find(b"PK\x03\x04", 1)
@@ -42,9 +55,11 @@ def _extract_mashup_m(blob: bytes) -> str | None:
         return None
     try:
         with zipfile.ZipFile(io.BytesIO(blob[start:])) as inner:
-            for name in inner.namelist():
-                if name.endswith("Section1.m"):
-                    return inner.read(name).decode("utf-8-sig", errors="replace")
+            for info in inner.infolist():
+                if info.filename.endswith("Section1.m"):
+                    if info.file_size > _MAX_MEMBER_BYTES:
+                        return None
+                    return inner.read(info).decode("utf-8-sig", errors="replace")
     except (zipfile.BadZipFile, OSError, ValueError):
         return None
     return None
@@ -81,8 +96,11 @@ def parse_pbix(
             names = set(archive.namelist())
 
             if "Report/Layout" in names:
+                layout_bytes = _safe_read(archive, "Report/Layout")
                 try:
-                    raw = archive.read("Report/Layout").decode("utf-16-le", errors="replace").lstrip("﻿")
+                    if layout_bytes is None:
+                        raise ValueError("oversized or unreadable Report/Layout")
+                    raw = layout_bytes.decode("utf-16-le", errors="replace").lstrip("﻿")
                     warnings += parse_layout_json(json.loads(raw), stem, entry.path, graph)
                 except (json.JSONDecodeError, KeyError, ValueError):
                     warnings.append(
@@ -95,10 +113,8 @@ def parse_pbix(
 
             tables_found = False
             if "DataMashup" in names:
-                try:
-                    section = _extract_mashup_m(archive.read("DataMashup"))
-                except (KeyError, OSError):
-                    section = None
+                mashup_bytes = _safe_read(archive, "DataMashup")
+                section = _extract_mashup_m(mashup_bytes) if mashup_bytes is not None else None
                 if section:
                     model_node = graph.add_node(
                         Node(

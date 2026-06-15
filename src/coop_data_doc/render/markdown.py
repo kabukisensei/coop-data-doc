@@ -42,7 +42,20 @@ _TYPE_TITLES: dict[NodeType, str] = {
 
 
 def _quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return '"' + escaped + '"'
+
+
+def _cell(value: str) -> str:
+    """Make free text safe inside a Markdown table cell: escape pipes and
+    collapse newlines (an unescaped '|' or newline breaks the table)."""
+    return (value or "").replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
 def _front_matter(graph: LineageGraph, node: Node) -> str:
@@ -85,7 +98,10 @@ def _contract_section(node: Node) -> str:
             elif column.nullable is True:
                 nullable = "NULL"
             constraints = ", ".join(part for part in [nullable, *column.constraints] if part)
-            lines.append(f"| {column.name} | {column.data_type} | {constraints} | {column.description} |")
+            lines.append(
+                f"| {_cell(column.name)} | {_cell(column.data_type)} "
+                f"| {_cell(constraints)} | {_cell(column.description)} |"
+            )
     else:
         lines.append("_Columns not statically resolvable for this object._")
     if node.metadata.get("columns_unresolved"):
@@ -143,7 +159,11 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
         f"# {node.qualified_display}",
         "",
         # description imported from the source model (TMDL/BIM), if any
-        *([f"_{node.metadata['description']}_", ""] if node.metadata.get("description") else []),
+        *(
+            [f"_{' '.join(node.metadata['description'].split())}_", ""]
+            if node.metadata.get("description")
+            else []
+        ),
         _contract_section(node),
         "",
         "## Lineage",

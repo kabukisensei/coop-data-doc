@@ -34,6 +34,8 @@ _BINDING_RE = re.compile(r'\b([A-Za-z_]\w*)\s*=\s*"([^"]*)"')
 # or an identifier (resolved against the bindings above)
 _NAV_SCHEMA_RE = re.compile(r'\bSchema\s*=\s*(?:"([^"]+)"|([A-Za-z_]\w*))')
 _NAV_ITEM_RE = re.compile(r'\bItem\s*=\s*(?:"([^"]+)"|([A-Za-z_]\w*))')
+# a `{[ ... ]}` record-navigation segment (where Schema=/Item= really live)
+_NAV_RECORD_RE = re.compile(r"\{\[(.*?)\]\}", re.S)
 # inline/static tables (calculation, parameter, hand-built) have no DB source
 _STATIC_RE = re.compile(r"Table\.FromRows|#table\b|Json\.Document")
 
@@ -64,14 +66,17 @@ def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
 
     # Sql.Database navigation — works for quoted literals AND for the common
     # PBIP template that binds the schema/table to `let` variables first.
+    # Anchor Schema=/Item= to an actual `{[ ... ]}` navigation record so a
+    # `let` step named Schema/Item can't poison the result.
     bindings = {name: value for name, value in _BINDING_RE.findall(text)}
-    schema = _resolve(_NAV_SCHEMA_RE.search(text), bindings)
-    item = _resolve(_NAV_ITEM_RE.search(text), bindings)
-    if schema and item:
-        return (
-            SourceRef(schema_name=schema.lower(), object_name=item.lower(), raw_kind="sql_database"),
-            [],
-        )
+    for record in _NAV_RECORD_RE.findall(text):
+        schema = _resolve(_NAV_SCHEMA_RE.search(record), bindings)
+        item = _resolve(_NAV_ITEM_RE.search(record), bindings)
+        if schema and item:
+            return (
+                SourceRef(schema_name=schema.lower(), object_name=item.lower(), raw_kind="sql_database"),
+                [],
+            )
 
     if _LAKEHOUSE_RE.search(text):
         names = _NAME_NAV_RE.findall(text)

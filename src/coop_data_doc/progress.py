@@ -90,9 +90,12 @@ class Progress:
 
         worker = threading.Thread(target=spin, daemon=True)
         worker.start()
+        ok = False
         try:
             yield
+            ok = True
         finally:
             stop.set()
             worker.join(timeout=1)
-            click.echo(f"\r{label} ✓{' ' * 8}", err=True)
+            mark = "✓" if ok else "✗"
+            click.echo(f"\r{label} {mark}{' ' * 8}", err=True)

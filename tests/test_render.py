@@ -356,3 +356,34 @@ def test_no_branding_is_clean(tmp_path: Path):
     text = cfg.read_text(encoding="utf-8")
     assert "logo:" not in text  # no logo line when unbranded
     assert (docs / "assets" / "stylesheets" / "brand.css").is_file()  # empty brand.css still written
+
+
+def test_mkdocs_config_quotes_weird_project_name(tmp_path: Path):
+    import yaml as _yaml
+
+    from coop_data_doc.render.site import write_mkdocs_config
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# x", encoding="utf-8")
+    cfg = write_mkdocs_config(docs, tmp_path / "site", "Sales: FY26 # report", build_graph())
+    data = _yaml.safe_load(cfg.read_text(encoding="utf-8").replace("!!python/name:", "tag:"))
+    assert data["site_name"] == "Sales: FY26 # report"  # colon/# survived as a quoted scalar
+
+
+def test_description_with_pipe_does_not_break_contract_table(tmp_path: Path):
+    g = LineageGraph()
+    g.add_node(
+        Node(
+            id=Node.make_id(NodeType.PBI_TABLE, "m", "t"),
+            node_type=NodeType.PBI_TABLE,
+            name="t",
+            schema_name="m",
+            columns=[Column(name="c", data_type="int", description="a | b\nsecond line")],
+        )
+    )
+    render_markdown(g, tmp_path, "X")
+    page = page_path(tmp_path, "pbi_table:m.t").read_text(encoding="utf-8")
+    row = [ln for ln in page.splitlines() if ln.startswith("| c ")][0]
+    assert "a \\| b second line" in row  # pipe escaped, newline collapsed to a space
+    assert row.count(" | ") == 3  # exactly 4 cells (3 interior separators)

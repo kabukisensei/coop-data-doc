@@ -28,8 +28,15 @@ from coop_data_doc.config import (
 
 
 def _ask(prompt) -> object:
-    """Run a questionary prompt; Ctrl-C/EOF becomes KeyboardInterrupt."""
-    answer = prompt.ask()
+    """Run a questionary prompt; Ctrl-C/EOF becomes KeyboardInterrupt.
+
+    questionary returns None on EOF and may also raise; normalize both to
+    KeyboardInterrupt so the CLI shows the correct 'cancelled' message.
+    """
+    try:
+        answer = prompt.ask()
+    except EOFError as exc:
+        raise KeyboardInterrupt from exc
     if answer is None:
         raise KeyboardInterrupt
     return answer
@@ -222,6 +229,9 @@ def run_setup(config_path: Path) -> Config | None:
     ).strip()
     if accent:
         branding["accent_color"] = accent
+    # carry an existing favicon through unchanged (not prompted separately)
+    if existing_brand and existing_brand.favicon:
+        branding["favicon"] = existing_brand.favicon
 
     # --- schema → semantic-model hints ---
     print("\n── Power BI: which view schema feeds which model ──", file=sys.stderr)

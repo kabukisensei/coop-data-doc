@@ -124,7 +124,13 @@ def pip_install_origin() -> str | None:
     if not url:
         return None
     if "vcs_info" in info:
-        return f"{info['vcs_info'].get('vcs', 'git')}+{url}"
+        vcs = info["vcs_info"]
+        ref = vcs.get("requested_revision")
+        spec = f"{vcs.get('vcs', 'git')}+{url}"
+        return f"{spec}@{ref}" if ref else spec  # keep the pinned branch/ref
+    if info.get("dir_info", {}).get("editable"):
+        # editable install (`pip install -e`) — preserve it as editable
+        return f"-e {url[len('file://') :] if url.startswith('file://') else url}"
     return url  # local directory or a direct archive URL
 
 
@@ -279,17 +285,10 @@ def apply_plan(plan: UpgradePlan, runner=subprocess.run) -> list[list[str]]:
     elif plan.pip_spec:
         # installed from a git/URL via plain pip: reinstall from that exact
         # source. --force-reinstall guarantees a moving branch is re-pulled
-        # even when the version string is unchanged.
-        command = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "-q",
-            "-U",
-            "--force-reinstall",
-            plan.pip_spec,
-        ]
+        # even when the version string is unchanged. An editable install
+        # arrives as "-e <path>" — split it into separate argv tokens.
+        spec_tokens = ["-e", plan.pip_spec[3:]] if plan.pip_spec.startswith("-e ") else [plan.pip_spec]
+        command = [sys.executable, "-m", "pip", "install", "-q", "-U", "--force-reinstall", *spec_tokens]
     else:
         command = [sys.executable, "-m", "pip", "install", "-q", "-U", PACKAGE_NAME]
     _run(command, runner)

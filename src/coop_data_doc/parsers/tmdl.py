@@ -133,6 +133,7 @@ def parse_table_file(
         raw = lines[i]
         stripped = raw.strip()
         if not stripped:
+            pending_doc.clear()  # a blank line breaks doc-comment adjacency
             i += 1
             continue
         if stripped.startswith("///"):
@@ -257,8 +258,12 @@ def parse_table_file(
                 i += 1
             if partition_match.group(2).lower() == "m":
                 _attach_partition_source(table_node, "\n".join(m_parts), entry.path, warnings)
+            pending_doc.clear()
             continue
 
+        # any other line (property, hierarchy, level, relationship…) breaks
+        # the adjacency between a `///` block and the object it documents
+        pending_doc.clear()
         i += 1
     return warnings
 

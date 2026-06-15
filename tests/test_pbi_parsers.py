@@ -327,3 +327,42 @@ def test_tmdl_imports_doc_comment_descriptions(tmp_path):
     cols = {c.name: c.description for c in g.nodes["pbi_table:model.sales"].columns}
     assert cols["amt"] == ""  # 'TODO: Add description' placeholder skipped
     assert cols["cust_id"] == "The customer key."
+
+
+def test_tmdl_doc_comment_does_not_bleed_to_wrong_object(tmp_path):
+    from coop_data_doc.parsers.tmdl import parse_table_file
+
+    # a /// above a non-column construct (hierarchy/property) must NOT attach
+    # to the next column
+    tmdl = (
+        "table Sales\n"
+        "\t/// Geography drill-down hierarchy\n"
+        "\thierarchy Geo\n"
+        "\t\tlevel Country\n"
+        "\tcolumn region\n"
+        "\t\tdataType: string\n"
+    )
+    g = LineageGraph()
+
+    class _E:
+        path = "Sales.tmdl"
+        repo_key = "powerbi"
+
+    parse_table_file(tmdl, "Model", "semantic_model:model", _E(), g)
+    cols = {c.name: c.description for c in g.nodes["pbi_table:model.sales"].columns}
+    assert cols["region"] == ""  # the hierarchy's doc must not bleed onto region
+
+
+def test_mcode_navigation_anchored_not_poisoned_by_let_step():
+    from coop_data_doc.parsers.mcode import extract_source
+
+    # a let step literally named Schema/Item must not poison the real source
+    ref, _ = extract_source(
+        "let\n"
+        '    Schema = "junk",\n'
+        '    Item = "junk",\n'
+        "    Source = Sql.Database(S, D),\n"
+        '    Data = Source{[Schema="salespm", Item="dim_customer"]}[Data]\n'
+        "in Data"
+    )
+    assert ref is not None and ref.schema_name == "salespm" and ref.object_name == "dim_customer"

@@ -12,6 +12,7 @@ already defined), the shim by rewriting the built HTML.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -20,6 +21,8 @@ from pathlib import Path
 
 from coop_data_doc.graph.model import LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.render.mermaid import slug
+
+_MAX_BRAND_BYTES = 8 * 1024 * 1024  # don't copy oversized logo/favicon files
 
 _TABLE_TYPES = (NodeType.BRONZE_TABLE, NodeType.SILVER_TABLE, NodeType.GOLD_TABLE)
 _TABLE_LAYER = {
@@ -235,6 +238,8 @@ def _apply_branding(docs_dir: Path, branding, config_dir: Path | None) -> str:
             src = (base / rel).expanduser()
             if not src.is_file():
                 return None
+            if src.stat().st_size > _MAX_BRAND_BYTES:  # guard against huge/accidental files
+                return None
             images.mkdir(parents=True, exist_ok=True)
             dest = images / f"{stem}{src.suffix.lower()}"
             shutil.copyfile(src, dest)
@@ -291,9 +296,11 @@ def write_mkdocs_config(
     config_path = docs_dir.parent / CONFIG_NAME
     config_path.write_text(
         _MKDOCS_TEMPLATE.format(
-            site_name=project_name,
-            docs_dir=docs_dir.name,
-            site_dir=str(Path(site_dir).resolve()),
+            # JSON-quote scalars: a project name with ':' / '#' / leading '-'
+            # (all valid names) would otherwise produce invalid YAML
+            site_name=json.dumps(project_name),
+            docs_dir=json.dumps(docs_dir.name),
+            site_dir=json.dumps(str(Path(site_dir).resolve())),
             theme_brand=theme_brand,
             nav=_nav_section(graph),
         ),

@@ -8,12 +8,17 @@ the structured warning type that every parser returns instead of printing.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
 VALID_LAYERS = ("bronze", "silver", "gold")
+# safe CSS color forms for branding (no '{', '}', ';', newlines → no injection)
+_COLOR_RE = re.compile(
+    r"^(#[0-9A-Fa-f]{3,8}|rgb\([\d,\s.%]+\)|rgba\([\d,\s.%]+\)|hsl\([\d,\s.%]+\)|[A-Za-z]+)$"
+)
 
 
 class ParseWarning(BaseModel):
@@ -67,6 +72,17 @@ class Branding(BaseModel):
     favicon: str | None = None
     primary_color: str | None = None  # header / nav / links, e.g. "#004060"
     accent_color: str | None = None  # hover / active, e.g. "#e04020"
+
+    @field_validator("primary_color", "accent_color")
+    @classmethod
+    def _check_color(cls, value: str | None) -> str | None:
+        # only safe color forms — prevents CSS injection into brand.css
+        if value and not _COLOR_RE.match(value):
+            raise ValueError(
+                f"invalid color {value!r}; use hex (#rgb / #rrggbb / #rrggbbaa), "
+                "rgb()/rgba()/hsl(), or a CSS color name"
+            )
+        return value
 
 
 class LayerRule(BaseModel):

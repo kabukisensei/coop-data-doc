@@ -176,18 +176,28 @@ def cli(ctx: click.Context, verbose: bool, quiet: bool, log_file: str | None) ->
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING)
+    if not verbose:
+        # sqlglot logs every unsupported-syntax fallback; already surfaced
+        # (deduplicated) via the diagnostics summary
+        logging.getLogger("sqlglot").setLevel(logging.ERROR)
     if log_file:
-        # full DEBUG trace to a file, regardless of console verbosity
-        handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
+        try:
+            handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
+        except OSError as exc:
+            raise click.ClickException(f"could not open log file {log_file}: {exc}") from exc
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         root = logging.getLogger()
-        root.addHandler(handler)
+        # keep the console at WARNING so the file (not the terminal) gets the
+        # DEBUG flood; raise only the file-bound loggers to DEBUG
+        for existing in root.handlers:
+            if not isinstance(existing, logging.FileHandler) and existing.level < logging.WARNING:
+                existing.setLevel(logging.WARNING)
+                existing.addFilter(lambda r: not r.name.startswith("sqlglot"))
         root.setLevel(logging.DEBUG)
-    elif not verbose:
-        # sqlglot logs every unsupported-syntax fallback; those parse issues
-        # are already surfaced (deduplicated) via the diagnostics summary
-        logging.getLogger("sqlglot").setLevel(logging.ERROR)
+        root.addHandler(handler)
+        logging.getLogger("coop_data_doc").setLevel(logging.DEBUG)
+        logging.getLogger("sqlglot").setLevel(logging.DEBUG)
     if ctx.invoked_subcommand is None:
         if _stdio_is_interactive():
             _interactive_home(ctx)
@@ -498,8 +508,12 @@ def check(ctx: click.Context, config_path: str, lenient: bool) -> None:
         # blocks are preserved in the regenerated pages
         shutil.copytree(committed, fresh)
         render_markdown(graph, fresh, config.project_name)
-        write_diagnostics(
-            fresh, Diagnostics(warnings=warnings, unresolved=list(result.unresolved)), config.project_name
+        diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
+        write_diagnostics(fresh, diagnostics, config.project_name)
+        (fresh / "diagnostics.json").write_text(
+            json.dumps(diagnostics.to_json(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
         )
         to_json_file(graph, fresh / "graph.json")
         stale = _tree_diff(committed, fresh)
@@ -518,7 +532,7 @@ def _tree_diff(committed: Path, fresh: Path) -> list[str]:
 
     def generated_files(root: Path) -> set[Path]:
         files = {p.relative_to(root) for p in root.rglob("*.md") if p.is_file()}
-        for name in ("graph.json", "manifest.json"):
+        for name in ("graph.json", "manifest.json", "diagnostics.json"):
             if (root / name).is_file():
                 files.add(Path(name))
         return files

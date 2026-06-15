@@ -69,7 +69,7 @@ class Diagnostics:
                     f"{node_id} could not be matched to a SQL object",
                 )
             )
-        rows.sort(key=lambda r: (_SEVERITY_ORDER.index(r[0]), r[1], r[2]))
+        rows.sort(key=lambda r: (_SEVERITY_ORDER.index(r[0]), r[1], r[2], r[3]))
         return rows
 
     def category_counts(self) -> Counter:
@@ -103,9 +103,9 @@ class Diagnostics:
             cats = sorted(c for (s, c) in by_cat if s == severity)
             for category in cats:
                 lines.append(f"  [{severity}] {category:30} {by_cat[(severity, category)]}")
-        # top offending files
+        # top offending files (deterministic: by count desc, then filename)
         file_counts = Counter(f for _s, _c, f, _m in rows)
-        top = file_counts.most_common(5)
+        top = sorted(file_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
         if top:
             lines.append("  most affected:")
             lines.extend(f"    {f} ({n})" for f, n in top)
