@@ -184,6 +184,45 @@ def run_setup(config_path: Path) -> Config | None:
         existing.ignore_schemas if existing else [],
     )
 
+    # --- optional company branding for the HTML site ---
+    existing_brand = existing.branding if existing else None
+    print("\n── Branding (optional — blank to skip) ──", file=sys.stderr)
+    branding: dict[str, str] = {}
+    logo = str(
+        _ask(
+            questionary.text(
+                "Logo image path (shown in the site header; relative to this config):",
+                default=(existing_brand.logo if existing_brand and existing_brand.logo else ""),
+            )
+        )
+    ).strip()
+    if logo:
+        branding["logo"] = logo
+    primary = str(
+        _ask(
+            questionary.text(
+                "Primary brand color (hex, e.g. #004060):",
+                default=(
+                    existing_brand.primary_color if existing_brand and existing_brand.primary_color else ""
+                ),
+            )
+        )
+    ).strip()
+    if primary:
+        branding["primary_color"] = primary
+    accent = str(
+        _ask(
+            questionary.text(
+                "Accent color (hex, e.g. #e04020):",
+                default=(
+                    existing_brand.accent_color if existing_brand and existing_brand.accent_color else ""
+                ),
+            )
+        )
+    ).strip()
+    if accent:
+        branding["accent_color"] = accent
+
     # --- schema → semantic-model hints ---
     print("\n── Power BI: which view schema feeds which model ──", file=sys.stderr)
     mappings: list[tuple[str, str]] = []
@@ -208,6 +247,7 @@ def run_setup(config_path: Path) -> Config | None:
         mappings=mappings,
         layers=layers,
         ignore_schemas=ignore_schemas,
+        branding=branding,
         sql_include=sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
         sql_exclude=sql_exclude,
         pbi_include=pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,

@@ -76,7 +76,7 @@ use_directory_urls: false
 theme:
   name: material
   font: false  # system fonts; no Google Fonts CDN
-  palette:
+{theme_brand}  palette:
     - scheme: slate
       primary: teal
       toggle:
@@ -115,6 +115,7 @@ extra_javascript:
 
 extra_css:
   - assets/stylesheets/custom.css
+  - assets/stylesheets/brand.css
 
 nav:
 {nav}
@@ -177,7 +178,63 @@ def _nav_section(graph: LineageGraph) -> str:
     return "\n".join(lines)
 
 
-def write_mkdocs_config(docs_dir: Path, site_dir: Path, project_name: str, graph: LineageGraph) -> Path:
+def _apply_branding(docs_dir: Path, branding, config_dir: Path | None) -> str:
+    """Copy logo/favicon into the site, write brand.css, and return the YAML
+    lines to splice under `theme:` (empty string when no logo/favicon)."""
+    css_dir = docs_dir / _CSS_REL
+    css_dir.mkdir(parents=True, exist_ok=True)
+    theme_lines: list[str] = []
+    brand_css = "/* brand colors — set branding.primary_color / accent_color in the config */\n"
+
+    if branding is not None:
+        images = docs_dir / "assets" / "images"
+        base = Path(config_dir) if config_dir else docs_dir
+
+        def copy_image(rel: str, stem: str) -> str | None:
+            src = (base / rel).expanduser()
+            if not src.is_file():
+                return None
+            images.mkdir(parents=True, exist_ok=True)
+            dest = images / f"{stem}{src.suffix.lower()}"
+            shutil.copyfile(src, dest)
+            return dest.relative_to(docs_dir).as_posix()
+
+        if branding.logo:
+            logo_rel = copy_image(branding.logo, "logo")
+            if logo_rel:
+                theme_lines.append(f"  logo: {logo_rel}")
+        fav = branding.favicon or branding.logo
+        if fav:
+            fav_rel = copy_image(fav, "favicon")
+            if fav_rel:
+                theme_lines.append(f"  favicon: {fav_rel}")
+
+        primary = branding.primary_color
+        accent = branding.accent_color
+        if primary or accent:
+            decls = []
+            if primary:
+                decls.append(f"  --md-primary-fg-color: {primary};")
+            if accent:
+                decls.append(f"  --md-accent-fg-color: {accent};")
+            block = "\n".join(decls)
+            brand_css = (
+                "/* generated from branding.* in coop-data-doc.yml */\n"
+                f':root, [data-md-color-scheme="default"], [data-md-color-scheme="slate"] {{\n{block}\n}}\n'
+            )
+
+    (css_dir / "brand.css").write_text(brand_css, encoding="utf-8", newline="\n")
+    return ("\n".join(theme_lines) + "\n") if theme_lines else ""
+
+
+def write_mkdocs_config(
+    docs_dir: Path,
+    site_dir: Path,
+    project_name: str,
+    graph: LineageGraph,
+    branding=None,
+    config_dir: Path | None = None,
+) -> Path:
     """Copy vendored assets into the docs tree and write the Material
     config as a sibling of the docs dir; returns the config path.
     """
@@ -189,12 +246,14 @@ def write_mkdocs_config(docs_dir: Path, site_dir: Path, project_name: str, graph
     css_dir = docs_dir / _CSS_REL
     css_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(_VENDOR_SRC / "custom.css", css_dir / "custom.css")
+    theme_brand = _apply_branding(docs_dir, branding, config_dir)
     config_path = docs_dir.parent / CONFIG_NAME
     config_path.write_text(
         _MKDOCS_TEMPLATE.format(
             site_name=project_name,
             docs_dir=docs_dir.name,
             site_dir=str(Path(site_dir).resolve()),
+            theme_brand=theme_brand,
             nav=_nav_section(graph),
         ),
         encoding="utf-8",

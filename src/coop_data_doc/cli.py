@@ -347,7 +347,14 @@ def _run_build(
     click.echo(f"Markdown docs: {out_dir}", err=True)
     if skip_html:
         return
-    mkdocs_config = write_mkdocs_config(out_dir, config.site_dir(), config.project_name, graph)
+    mkdocs_config = write_mkdocs_config(
+        out_dir,
+        config.site_dir(),
+        config.project_name,
+        graph,
+        branding=config.branding,
+        config_dir=config.base_dir,
+    )
     if serve:
         os.execvp(sys.executable, [sys.executable, "-m", "mkdocs", "serve", "-f", str(mkdocs_config)])
     with progress.spinner(f"Building HTML site ({len(graph.nodes)} pages)"):

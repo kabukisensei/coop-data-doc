@@ -287,3 +287,42 @@ def test_display_falls_back_to_name_when_absent():
     n = Node(id="view:s.x", node_type=NodeType.VIEW, name="x", schema_name="s")
     assert n.display == "x"
     assert n.qualified_display == "s.x"
+
+
+def test_branding_logo_and_colors(tmp_path: Path):
+    from coop_data_doc.config import Branding
+    from coop_data_doc.render.site import write_mkdocs_config
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# x", encoding="utf-8")
+    logo = tmp_path / "brand.png"
+    logo.write_bytes(b"\x89PNG\r\n\x1a\n fake")
+    g = build_graph()
+    cfg = write_mkdocs_config(
+        docs,
+        tmp_path / "site",
+        "Test",
+        g,
+        branding=Branding(logo="brand.png", primary_color="#004060", accent_color="#e04020"),
+        config_dir=tmp_path,
+    )
+    text = cfg.read_text(encoding="utf-8")
+    assert "logo: assets/images/logo.png" in text
+    assert "favicon: assets/images/favicon.png" in text  # logo reused as favicon
+    assert (docs / "assets" / "images" / "logo.png").is_file()
+    brand_css = (docs / "assets" / "stylesheets" / "brand.css").read_text(encoding="utf-8")
+    assert "--md-primary-fg-color: #004060;" in brand_css
+    assert "--md-accent-fg-color: #e04020;" in brand_css
+
+
+def test_no_branding_is_clean(tmp_path: Path):
+    from coop_data_doc.render.site import write_mkdocs_config
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# x", encoding="utf-8")
+    cfg = write_mkdocs_config(docs, tmp_path / "site", "Test", build_graph())
+    text = cfg.read_text(encoding="utf-8")
+    assert "logo:" not in text  # no logo line when unbranded
+    assert (docs / "assets" / "stylesheets" / "brand.css").is_file()  # empty brand.css still written

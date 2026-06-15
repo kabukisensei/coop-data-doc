@@ -56,6 +56,19 @@ class OutputConfig(BaseModel):
     site_dir: str = "./data-docs-site"
 
 
+class Branding(BaseModel):
+    """Optional company branding for the HTML site: a logo, a favicon, and
+    brand colors (hex). All optional; relative paths resolve against the
+    config file's folder."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    logo: str | None = None
+    favicon: str | None = None
+    primary_color: str | None = None  # header / nav / links, e.g. "#004060"
+    accent_color: str | None = None  # hover / active, e.g. "#e04020"
+
+
 class LayerRule(BaseModel):
     """Which objects belong to a medallion layer.
 
@@ -83,6 +96,7 @@ class Config(BaseModel):
     schema_mappings: list[SchemaMapping] = Field(default_factory=list)
     layers: dict[str, LayerRule] = Field(default_factory=dict)
     ignore_schemas: list[str] = Field(default_factory=list)
+    branding: Branding = Field(default_factory=Branding)
     output: OutputConfig = Field(default_factory=OutputConfig)
     sql_dialect: str = "tsql"
 
@@ -212,6 +226,10 @@ repos:
 # information_schema, tempdb, db_*) are always dropped automatically.
 ignore_schemas: {ignore_schemas}
 
+# Optional company branding for the HTML site (logo/favicon paths relative
+# to this file; colors as hex). Leave empty for the default theme.
+{branding_block}
+
 output:
   dir: {output_dir}        # markdown docs (for agents)
   site_dir: {site_dir}     # html portal (for humans)
@@ -230,6 +248,7 @@ def render_config_yaml(
     mappings: list[tuple[str, str]],
     layers: dict[str, dict[str, list[str]]] | None = None,
     ignore_schemas: list[str] | None = None,
+    branding: dict[str, str] | None = None,
     sql_include: list[str] | None = None,
     sql_exclude: list[str] | None = None,
     pbi_include: list[str] | None = None,
@@ -267,6 +286,17 @@ def render_config_yaml(
         layers_block = "\n".join(lines)
     else:
         layers_block = "layers: {}"
+
+    brand = {k: v for k, v in (branding or {}).items() if v}
+    if brand:
+        lines = ["branding:"]
+        for key in ("logo", "favicon", "primary_color", "accent_color"):
+            if brand.get(key):
+                lines.append(f"  {key}: {json.dumps(brand[key])}")
+        branding_block = "\n".join(lines)
+    else:
+        branding_block = "branding: {}"
+
     return _CONFIG_TEMPLATE.format(
         project_name=json.dumps(project_name),
         sql_path=json.dumps(sql_path),
@@ -278,6 +308,7 @@ def render_config_yaml(
         mappings_block=mappings_block,
         layers_block=layers_block,
         ignore_schemas=json.dumps(ignore_schemas or []),
+        branding_block=branding_block,
         output_dir=json.dumps(output_dir),
         site_dir=json.dumps(site_dir),
         sql_dialect=json.dumps(sql_dialect),
