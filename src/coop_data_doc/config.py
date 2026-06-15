@@ -15,6 +15,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
 VALID_LAYERS = ("bronze", "silver", "gold")
+# Default site theme = the Cooptimize brand. Applied to every build unless the
+# config's branding.* overrides it (the setup wizard prefills these). Any user
+# can change them to their own colors.
+DEFAULT_PRIMARY_COLOR = "#004060"  # header / nav / links
+DEFAULT_ACCENT_COLOR = "#e04020"  # hover / active
 # safe CSS color forms for branding (no '{', '}', ';', newlines → no injection)
 _COLOR_RE = re.compile(
     r"^(#[0-9A-Fa-f]{3,8}|rgb\([\d,\s.%]+\)|rgba\([\d,\s.%]+\)|hsl\([\d,\s.%]+\)|[A-Za-z]+)$"
@@ -90,8 +95,9 @@ class Branding(BaseModel):
 
     logo: str | None = None
     favicon: str | None = None
-    primary_color: str | None = None  # header / nav / links, e.g. "#004060"
-    accent_color: str | None = None  # hover / active, e.g. "#e04020"
+    # default to the Cooptimize brand theme; overridable in the config / wizard
+    primary_color: str | None = DEFAULT_PRIMARY_COLOR  # header / nav / links
+    accent_color: str | None = DEFAULT_ACCENT_COLOR  # hover / active
 
     @field_validator("primary_color", "accent_color")
     @classmethod

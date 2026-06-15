@@ -149,6 +149,36 @@ def _existing_intent(path: Path) -> str:
     return match.group(1).strip("\n")
 
 
+_MAX_SOURCE_CHARS = 100_000
+
+
+def _code_fence(code: str) -> str:
+    """A backtick fence longer than any backtick run in `code` (min 3), so a
+    stray ``` inside the source can't terminate the block early."""
+    longest = run = 0
+    for ch in code:
+        run = run + 1 if ch == "`" else 0
+        longest = max(longest, run)
+    return "`" * max(3, longest + 1)
+
+
+def _source_section(node: Node) -> str:
+    """The defining SQL (CREATE statement / proc body) as a fenced, copyable
+    code block. Material's content.code.copy adds the copy button for free."""
+    code = node.source_code
+    truncated = len(code) > _MAX_SOURCE_CHARS
+    if truncated:
+        code = code[:_MAX_SOURCE_CHARS]
+    fence = _code_fence(code)
+    lines = ["## Source", ""]
+    if node.source_file:
+        lines += [f"_`{node.source_file}`_", ""]
+    lines += [f"{fence}sql", code, fence]
+    if truncated:
+        lines += ["", f"> ⚠ Source truncated to {_MAX_SOURCE_CHARS:,} characters; see the source file."]
+    return "\n".join(lines)
+
+
 def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     """Full markdown page for one node, carrying forward any existing
     Business Intent block from out_path.
@@ -166,6 +196,11 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
         ),
         _contract_section(node),
         "",
+    ]
+    # the defining SQL for tables/views/procs (no source_code -> no section)
+    if node.source_code:
+        parts += [_source_section(node), ""]
+    parts += [
         "## Lineage",
         "",
         _lineage_table(graph, node, graph.upstream(node.id, depth=1), "Upstream"),

@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from coop_data_doc.graph.model import LineageGraph, Node, NodeType, normalize_identifier
+from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.render.mermaid import slug
 
 _MAX_BRAND_BYTES = 8 * 1024 * 1024  # don't copy oversized logo/favicon files
@@ -110,6 +110,7 @@ nav:
 """
 
 _VENDOR_SRC = Path(__file__).resolve().parent.parent / "templates" / "assets"
+_BRAND_SRC = _VENDOR_SRC / "brand"  # bundled default Cooptimize logo.png / favicon.png
 _VENDOR_REL = Path("assets") / "javascripts" / "vendor"
 _CSS_REL = Path("assets") / "stylesheets"
 _SHIM_URL_RE = re.compile(r'src="https://unpkg\.com/iframe-worker/shim"')
@@ -123,9 +124,17 @@ def _page(node: Node, node_id: str) -> str:
 
 
 def _navkey(title: str) -> str:
-    """Double-quote a nav section title so special chars (`:` `+` etc. in
-    model/report names) can't break the YAML."""
-    return '"' + title.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Double-quote a nav section title so special chars (`:` `+`, and control
+    chars like newlines/tabs that can appear in bracketed SQL identifiers)
+    can't break the YAML. Mirrors markdown._quote's escaping."""
+    escaped = (
+        title.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return '"' + escaped + '"'
 
 
 def _grouped_section(nodes, container, title, children) -> list[str]:
@@ -171,24 +180,107 @@ def _grouped_section(nodes, container, title, children) -> list[str]:
     return lines
 
 
+def _report_section(graph: LineageGraph) -> list[str]:
+    """Nav for reports as a tree: Report -> Page -> Visuals. Visuals are
+    attached to their page via the visual->page FEEDS edge; a page's own
+    page is its 'Overview'. Reports/pages with no children still appear."""
+    nodes = graph.nodes
+    # visual id -> its page id (from the visual --FEEDS--> page edge)
+    visual_page: dict[str, str] = {}
+    for edge in graph.edges:
+        if edge.edge_type is not EdgeType.FEEDS:
+            continue
+        src, tgt = nodes.get(edge.source_id), nodes.get(edge.target_id)
+        if (
+            src is not None
+            and tgt is not None
+            and src.node_type is NodeType.VISUAL
+            and tgt.node_type is NodeType.REPORT_PAGE
+        ):
+            visual_page[edge.source_id] = edge.target_id
+    visuals_by_page: dict[str, list[str]] = {}
+    for vid, pid in visual_page.items():
+        visuals_by_page.setdefault(pid, []).append(vid)
+    pages_by_report: dict[str, list[str]] = {}  # keyed by report's normalized name
+    for nid, n in nodes.items():
+        if n.node_type is NodeType.REPORT_PAGE:
+            pages_by_report.setdefault(n.schema_name, []).append(nid)
+
+    reports = sorted(
+        (nid for nid, n in nodes.items() if n.node_type is NodeType.REPORT),
+        key=lambda nid: nodes[nid].display.lower(),
+    )
+
+    def page_block(pid: str) -> list[str]:
+        out = [f"          - {_navkey(nodes[pid].display)}:"]
+        out.append(f"              - Overview: {_page(nodes[pid], pid)}")
+        vids = sorted(visuals_by_page.get(pid, []), key=lambda v: nodes[v].display.lower())
+        out.extend(f"              - {_page(nodes[vid], vid)}" for vid in vids)
+        return out
+
+    # visuals not attached to any page (no FEEDS edge / missing page) must not
+    # vanish from nav — collect them per report and emit under "(unattached)",
+    # mirroring the orphan-page handling (every node stays reachable).
+    attached = {vid for vids in visuals_by_page.values() for vid in vids}
+    orphans_by_report: dict[str, list[str]] = {}
+    for nid, n in nodes.items():
+        if n.node_type is NodeType.VISUAL and nid not in attached:
+            orphans_by_report.setdefault(n.schema_name, []).append(nid)
+
+    report_id_by_key = {nodes[rid].name: rid for rid in reports}
+    keys = set(report_id_by_key) | set(pages_by_report) | set(orphans_by_report)
+    if not keys:
+        return []
+
+    def report_block(key: str) -> list[str]:
+        rid = report_id_by_key.get(key)
+        out = [f"      - {_navkey(nodes[rid].display if rid is not None else key)}:"]
+        if rid is not None:
+            out.append(f"          - Overview: {_page(nodes[rid], rid)}")
+        for pid in sorted(pages_by_report.get(key, []), key=lambda p: nodes[p].display.lower()):
+            out.extend(page_block(pid))
+        orphans = sorted(orphans_by_report.get(key, []), key=lambda v: nodes[v].display.lower())
+        if orphans:
+            out.append(f"          - {_navkey('(unattached)')}:")
+            out.extend(f"              - {_page(nodes[vid], vid)}" for vid in orphans)
+        return out
+
+    # reports with a node first (by display), then keys with only orphan
+    # pages/visuals (no report node); both deterministically ordered
+    with_node = sorted(
+        (k for k in keys if k in report_id_by_key),
+        key=lambda k: nodes[report_id_by_key[k]].display.lower(),
+    )
+    without_node = sorted(k for k in keys if k not in report_id_by_key)
+    lines = ["  - Reports:"]
+    for key in with_node + without_node:
+        lines.extend(report_block(key))
+    return lines
+
+
 def _nav_section(graph: LineageGraph) -> str:
     """Build a nav tree grouped by layer (Bronze/Silver/Gold) then object
     type, with Power BI and any unlayered objects as their own sections."""
     nodes = graph.nodes
     lines = ["  - Overview: index.md", "  - Diagnostics: diagnostics.md"]
 
-    # layered SQL objects: Layer -> object type -> pages
+    # layered SQL objects: Layer -> schema -> object type -> pages
     for layer, layer_title in _LAYER_NAV:
         members = sorted(nid for nid, n in nodes.items() if _node_layer(n) == layer)
         if not members:
             continue
         lines.append(f"  - {layer_title}:")
-        for sub_title, types in _SUBGROUPS:
-            sub = [nid for nid in members if nodes[nid].node_type in types]
-            if not sub:
-                continue
-            lines.append(f"      - {sub_title}:")
-            lines.extend(f"          - {_page(nodes[nid], nid)}" for nid in sub)
+        by_schema: dict[str, list[str]] = {}
+        for nid in members:  # members already id-sorted, so each list stays sorted
+            by_schema.setdefault(nodes[nid].schema_name, []).append(nid)
+        for schema in sorted(by_schema):
+            lines.append(f"      - {_navkey(schema or '(no schema)')}:")
+            for sub_title, types in _SUBGROUPS:
+                sub = [nid for nid in by_schema[schema] if nodes[nid].node_type in types]
+                if not sub:
+                    continue
+                lines.append(f"          - {sub_title}:")
+                lines.extend(f"              - {_page(nodes[nid], nid)}" for nid in sub)
 
     # Power BI: nest each semantic model's tables + measures under the model,
     # and each report's pages + visuals under the report (a flat list of
@@ -201,14 +293,7 @@ def _nav_section(graph: LineageGraph) -> str:
             children=(("Tables", NodeType.PBI_TABLE), ("Measures", NodeType.MEASURE)),
         )
     )
-    lines.extend(
-        _grouped_section(
-            nodes,
-            container=NodeType.REPORT,
-            title="Reports",
-            children=(("Pages", NodeType.REPORT_PAGE), ("Visuals", NodeType.VISUAL)),
-        )
-    )
+    lines.extend(_report_section(graph))
 
     # anything unlayered (views/procs no rule covered) — don't lose them
     other = sorted(
@@ -234,26 +319,30 @@ def _apply_branding(docs_dir: Path, branding, config_dir: Path | None) -> str:
         images = docs_dir / "assets" / "images"
         base = Path(config_dir) if config_dir else docs_dir
 
-        def copy_image(rel: str, stem: str) -> str | None:
-            src = (base / rel).expanduser()
-            if not src.is_file():
-                return None
-            if src.stat().st_size > _MAX_BRAND_BYTES:  # guard against huge/accidental files
-                return None
+        def _copy(src: Path, stem: str) -> str | None:
+            if not src.is_file() or src.stat().st_size > _MAX_BRAND_BYTES:
+                return None  # missing, or guard against huge/accidental files
             images.mkdir(parents=True, exist_ok=True)
             dest = images / f"{stem}{src.suffix.lower()}"
             shutil.copyfile(src, dest)
             return dest.relative_to(docs_dir).as_posix()
 
-        if branding.logo:
-            logo_rel = copy_image(branding.logo, "logo")
-            if logo_rel:
-                theme_lines.append(f"  logo: {logo_rel}")
+        def copy_image(rel: str, stem: str) -> str | None:
+            return _copy((base / rel).expanduser(), stem)
+
+        # logo: explicit config path, else the bundled Cooptimize default
+        logo_rel = copy_image(branding.logo, "logo") if branding.logo else None
+        if logo_rel is None:
+            logo_rel = _copy(_BRAND_SRC / "logo.png", "logo")
+        if logo_rel:
+            theme_lines.append(f"  logo: {logo_rel}")
+        # favicon: explicit, else the configured logo, else the bundled default
         fav = branding.favicon or branding.logo
-        if fav:
-            fav_rel = copy_image(fav, "favicon")
-            if fav_rel:
-                theme_lines.append(f"  favicon: {fav_rel}")
+        fav_rel = copy_image(fav, "favicon") if fav else None
+        if fav_rel is None:
+            fav_rel = _copy(_BRAND_SRC / "favicon.png", "favicon")
+        if fav_rel:
+            theme_lines.append(f"  favicon: {fav_rel}")
 
         primary = branding.primary_color
         accent = branding.accent_color

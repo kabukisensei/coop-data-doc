@@ -132,7 +132,9 @@ def _add_reads(
         )
 
 
-def _handle_create_table(create: exp.Create, graph: LineageGraph, entry: FileEntry, dialect: str) -> None:
+def _handle_create_table(
+    create: exp.Create, graph: LineageGraph, entry: FileEntry, dialect: str, source: str
+) -> None:
     target = create.this
     schema_expr = None
     if isinstance(target, exp.Schema):
@@ -148,6 +150,7 @@ def _handle_create_table(create: exp.Create, graph: LineageGraph, entry: FileEnt
             schema_name=schema,
             display_name=original_name(target.name),
             source_file=entry.path,
+            source_code=source,
             columns=columns,
         )
     )
@@ -169,6 +172,7 @@ def _handle_create_view(
     entry: FileEntry,
     dialect: str,
     warnings: list[ParseWarning],
+    source: str,
 ) -> None:
     schema, name = table_parts(create.this)
     node = graph.add_node(
@@ -179,6 +183,7 @@ def _handle_create_view(
             schema_name=schema,
             display_name=original_name(create.this.name),
             source_file=entry.path,
+            source_code=source,
         )
     )
     if not node.source_file:
@@ -229,9 +234,9 @@ def parse_sql_objects(
             if creates:
                 for create in creates:
                     if (create.kind or "").upper() == "TABLE":
-                        _handle_create_table(create, graph, entry, dialect)
+                        _handle_create_table(create, graph, entry, dialect, batch)
                     else:
-                        _handle_create_view(create, graph, entry, dialect, warnings)
+                        _handle_create_view(create, graph, entry, dialect, warnings, batch)
                 continue
             # regex fallback for batches sqlglot couldn't parse
             view_match = _VIEW_FALLBACK_RE.search(batch)

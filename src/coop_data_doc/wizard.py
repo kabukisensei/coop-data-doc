@@ -22,7 +22,9 @@ from coop_data_doc.config import (
     ConfigError,
     output_dirs_conflict,
     render_config_yaml,
+    DEFAULT_ACCENT_COLOR,
     DEFAULT_PBI_INCLUDE,
+    DEFAULT_PRIMARY_COLOR,
     DEFAULT_SQL_INCLUDE,
     VALID_LAYERS,
 )
@@ -281,12 +283,15 @@ def run_setup(config_path: Path) -> Config | None:
     ).strip()
     if logo:
         branding["logo"] = logo
+    # colors default to the Cooptimize brand theme; press Enter to keep it
     primary = str(
         _ask(
             questionary.text(
-                "Primary brand color (hex, e.g. #004060):",
+                "Primary brand color (hex; default = Cooptimize navy):",
                 default=(
-                    existing_brand.primary_color if existing_brand and existing_brand.primary_color else ""
+                    existing_brand.primary_color
+                    if existing_brand and existing_brand.primary_color
+                    else DEFAULT_PRIMARY_COLOR
                 ),
             )
         )
@@ -296,9 +301,11 @@ def run_setup(config_path: Path) -> Config | None:
     accent = str(
         _ask(
             questionary.text(
-                "Accent color (hex, e.g. #e04020):",
+                "Accent color (hex; default = Cooptimize red-orange):",
                 default=(
-                    existing_brand.accent_color if existing_brand and existing_brand.accent_color else ""
+                    existing_brand.accent_color
+                    if existing_brand and existing_brand.accent_color
+                    else DEFAULT_ACCENT_COLOR
                 ),
             )
         )

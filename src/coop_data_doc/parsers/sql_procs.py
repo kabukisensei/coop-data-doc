@@ -191,6 +191,7 @@ def parse_sql_procs(
                     schema_name=schema,
                     display_name=original_name(raw_name),
                     source_file=entry.path,
+                    source_code=batch,
                     metadata={"parse_quality": "ast"},
                 )
             )

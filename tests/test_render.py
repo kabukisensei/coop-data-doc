@@ -253,10 +253,15 @@ def test_site_nav_grouped_by_layer():
     assert "- Bronze Layer:" in nav
     assert "- Gold Layer:" in nav
     assert "- Semantic Models:" in nav
-    # within a layer, grouped by object type
+    # within a layer, grouped by schema, then object type
     gold_idx = nav.index("Gold Layer:")
+    assert '- "mart":' in nav  # the gold table's schema, nested under the layer
+    assert '- "sales":' in nav  # the gold view's schema
     assert "Tables:" in nav[gold_idx:]
     assert "Views:" in nav[gold_idx:]
+    # the table's type subgroup sits under its schema
+    mart_idx = nav.index('"mart":')
+    assert "Tables:" in nav[mart_idx:]
 
 
 def test_site_nav_nests_tables_and_measures_under_each_model():
@@ -279,6 +284,113 @@ def test_site_nav_nests_tables_and_measures_under_each_model():
     assert "Tables:" in nav[fin:res] and "Measures:" in nav[fin:res]
     # Resource has no measures -> no Measures subgroup in its block
     assert "Measures:" not in nav[res:]
+
+
+def test_site_nav_nests_visuals_under_pages():
+    from coop_data_doc.render.site import _nav_section
+
+    g = LineageGraph()
+    rpt = g.add_node(make_node(NodeType.REPORT, "", "sales", display_name="Sales"))
+    pg = g.add_node(make_node(NodeType.REPORT_PAGE, "sales", "overview", display_name="Overview"))
+    vis = g.add_node(make_node(NodeType.VISUAL, "sales", "abc123", display_name="abc123"))
+    g.add_edge(Edge(source_id=pg.id, target_id=rpt.id, edge_type=EdgeType.FEEDS))
+    g.add_edge(Edge(source_id=vis.id, target_id=pg.id, edge_type=EdgeType.FEEDS))
+    nav = _nav_section(g)
+    assert "- Reports:" in nav
+    assert '- "Sales":' in nav  # report
+    assert '- "Overview":' in nav  # page nested under the report
+    # the visual is nested under its page (appears after the page heading)
+    pg_idx = nav.index('"Overview":')
+    assert "sales-abc123" in nav and nav.index("sales-abc123") > pg_idx
+
+
+def test_navkey_escapes_control_chars():
+    # an interior newline (e.g. a bracketed T-SQL identifier spanning a line)
+    # must be escaped so the nav stays valid YAML, not break the mkdocs build
+    from coop_data_doc.render.site import _navkey
+
+    key = _navkey("a\nb\tc")
+    assert "\\n" in key and "\\t" in key
+    assert "\n" not in key and "\t" not in key  # no raw control chars
+    yaml.safe_load(f"{key}: x")  # loads without error
+
+
+def test_site_nav_keeps_orphan_visual():
+    # a visual with no page FEEDS edge must still appear in nav (no node lost)
+    from coop_data_doc.render.site import _nav_section
+
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.REPORT, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.VISUAL, "sales", "orphan1", display_name="orphan1"))
+    nav = _nav_section(g)
+    assert '- "Sales":' in nav
+    assert "(unattached)" in nav
+    assert "sales-orphan1" in nav  # the orphan visual is not dropped
+
+
+def test_source_section_embeds_sql(tmp_path: Path):
+    g = LineageGraph()
+    code = "CREATE VIEW sales.dim_customer AS\nSELECT 1 AS x;"
+    g.add_node(
+        make_node(
+            NodeType.VIEW,
+            "sales",
+            "dim_customer",
+            display_name="dim_customer",
+            source_file="views/sales/dim_customer.sql",
+            source_code=code,
+            metadata={"layer": "gold"},
+        )
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "view:sales.dim_customer").read_text(encoding="utf-8")
+    assert "## Source" in page
+    assert "```sql" in page  # fenced -> syntax highlight + Material copy button
+    assert code in page
+    assert "views/sales/dim_customer.sql" in page
+
+
+def test_no_source_section_when_no_code(tmp_path: Path):
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.MEASURE, "sales", "total", metadata={"dax": "SUM(x)"}))
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "measure:sales.total").read_text(encoding="utf-8")
+    assert "## Source" not in page  # no source_code -> no Source section
+    assert "## DAX" in page  # measures still show their DAX
+
+
+def test_source_fence_survives_backticks_in_code(tmp_path: Path):
+    g = LineageGraph()
+    code = "-- ``` not a fence\nSELECT 1;"
+    g.add_node(
+        make_node(
+            NodeType.STORED_PROC,
+            "dbo",
+            "usp_x",
+            source_file="p.sql",
+            source_code=code,
+            metadata={"layer": "gold"},
+        )
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "stored_proc:dbo.usp_x").read_text(encoding="utf-8")
+    assert "````sql" in page  # 4-backtick fence because the code contains ```
+    assert code in page
+
+
+def test_default_branding_is_cooptimize_theme(tmp_path: Path):
+    from coop_data_doc.config import DEFAULT_ACCENT_COLOR, DEFAULT_PRIMARY_COLOR, Branding
+    from coop_data_doc.render.site import write_mkdocs_config
+
+    assert Branding().primary_color == DEFAULT_PRIMARY_COLOR
+    assert Branding().accent_color == DEFAULT_ACCENT_COLOR
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# x", encoding="utf-8")
+    write_mkdocs_config(docs, tmp_path / "site", "Test", build_graph(), branding=Branding())
+    brand_css = (docs / "assets" / "stylesheets" / "brand.css").read_text(encoding="utf-8")
+    assert f"--md-primary-fg-color: {DEFAULT_PRIMARY_COLOR};" in brand_css
+    assert f"--md-accent-fg-color: {DEFAULT_ACCENT_COLOR};" in brand_css
 
 
 def test_mermaid_click_targets_html():
@@ -344,6 +456,22 @@ def test_branding_logo_and_colors(tmp_path: Path):
     brand_css = (docs / "assets" / "stylesheets" / "brand.css").read_text(encoding="utf-8")
     assert "--md-primary-fg-color: #004060;" in brand_css
     assert "--md-accent-fg-color: #e04020;" in brand_css
+
+
+def test_default_theme_bundles_logo(tmp_path: Path):
+    # a default config (Branding()) ships the bundled Cooptimize logo + favicon
+    from coop_data_doc.config import Branding
+    from coop_data_doc.render.site import write_mkdocs_config
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# x", encoding="utf-8")
+    cfg = write_mkdocs_config(docs, tmp_path / "site", "Test", build_graph(), branding=Branding())
+    text = cfg.read_text(encoding="utf-8")
+    assert "logo: assets/images/logo.png" in text
+    assert "favicon: assets/images/favicon.png" in text
+    assert (docs / "assets" / "images" / "logo.png").is_file()
+    assert (docs / "assets" / "images" / "favicon.png").is_file()
 
 
 def test_no_branding_is_clean(tmp_path: Path):

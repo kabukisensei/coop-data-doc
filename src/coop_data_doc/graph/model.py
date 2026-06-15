@@ -97,6 +97,10 @@ class Node(BaseModel):
     source_file: str = ""
     columns: list[Column] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
+    # raw defining SQL (CREATE statement / proc body) for the page's Source
+    # section. Excluded from serialization so graph.json / manifest.json stay
+    # lean — the rendered Markdown page carries the code for humans and agents.
+    source_code: str = Field(default="", exclude=True)
 
     @property
     def display(self) -> str:
@@ -163,6 +167,8 @@ class LineageGraph(BaseModel):
             existing.display_name = node.display_name
         if not existing.source_file:
             existing.source_file = node.source_file
+        if not existing.source_code:
+            existing.source_code = node.source_code
         known = {c.name.lower() for c in existing.columns}
         for col in node.columns:
             if col.name.lower() not in known:
