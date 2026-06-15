@@ -1,5 +1,12 @@
 # coop-data-doc
 
+[![PyPI version](https://img.shields.io/pypi/v/coop-data-doc.svg)](https://pypi.org/project/coop-data-doc/)
+[![Python versions](https://img.shields.io/pypi/pyversions/coop-data-doc.svg)](https://pypi.org/project/coop-data-doc/)
+[![CI](https://github.com/kabukisensei/coop-data-doc/actions/workflows/ci.yml/badge.svg)](https://github.com/kabukisensei/coop-data-doc/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
+> **Install:** `pipx install coop-data-doc` — see [Install](#install) for the one-time pipx setup.
+
 **Automatic documentation for your data estate.** Point this tool at two git repos — your
 SQL repo (stored procedures, tables, views) and your Power BI repo (semantic models and
 reports) — and it maps how data flows through everything:
@@ -78,16 +85,14 @@ python3 -m pip install --user pipx      # Windows: python -m pip install --user 
 python3 -m pipx ensurepath              # Windows: python -m pipx ensurepath
 ```
 
-Close and reopen your terminal, then install the tool. It isn't published to PyPI yet,
-so install it from your git host or from a folder you already have:
+Close and reopen your terminal, then install the tool from PyPI:
 
 ```bash
-# from your git host — needs git installed (check with: git --version)
-pipx install git+https://github.com/kabukisensei/coop-data-doc.git
-
-# or from a local folder (drag the folder into the terminal to get its path)
-pipx install /path/to/coop-data-doc
+pipx install coop-data-doc
 ```
+
+That's it. (Advanced — install a specific unreleased commit straight from the source
+repo instead: `pipx install git+https://github.com/kabukisensei/coop-data-doc.git`.)
 
 Check it worked:
 
@@ -539,7 +544,7 @@ overwritten on the next `update`. To regenerate after source changes, run
 | --- | --- |
 | `command not found: coop-data-doc` (macOS) or `the term 'coop-data-doc' is not recognized…` (Windows) | The install location isn't on your PATH. Run `python3 -m pipx ensurepath` (Windows: `python -m pipx ensurepath`), then close and reopen the terminal. |
 | `externally-managed-environment` during install (macOS) | Your Python is managed by Homebrew. Run `brew install pipx`, then `pipx ensurepath`, and retry. |
-| `dependency conflicts … requires pyyaml==6.0.2, but you have 6.0.3` (or similar) | You installed into a shared system Python with plain `pip`, clashing with another tool. Fix: `pip uninstall -y coop-data-doc`, restore the other tool's pin (e.g. `pip install "pyyaml==6.0.2"`), then reinstall coop-data-doc with **pipx** (isolated): `pipx install git+https://github.com/kabukisensei/coop-data-doc.git`. |
+| `dependency conflicts … requires pyyaml==6.0.2, but you have 6.0.3` (or similar) | You installed into a shared system Python with plain `pip`, clashing with another tool. Fix: `pip uninstall -y coop-data-doc`, restore the other tool's pin (e.g. `pip install "pyyaml==6.0.2"`), then reinstall coop-data-doc with **pipx** (isolated): `pipx install coop-data-doc`. |
 | `Config file not found` | You're in the wrong folder. `cd` to the folder containing `coop-data-doc.yml`, or pass `--config path/to/coop-data-doc.yml`. |
 | `Repo 'sql' path does not exist` | The path in `coop-data-doc.yml` is wrong. Re-run `coop-data-doc setup` and fix it. |
 | `output.dir and output.site_dir must be separate folders` / mkdocs `'site_dir' should not be within the 'docs_dir'` | Your HTML folder is the same as — or inside — your Markdown folder. Point `output.site_dir` at a sibling (e.g. `dir: ./data-docs`, `site_dir: ./data-docs-site`), or re-run `coop-data-doc setup` and accept the suggested sibling. |
