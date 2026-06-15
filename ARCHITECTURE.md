@@ -22,13 +22,16 @@ coop-data-doc.yml ──► [crawler] ──► FileInventory (classified files)
              │                             │
              ▼                             ▼
    resolve_stub_references()      link_visual_bindings()
-   classify_silver()                       │
-             └────────────► [linker (M4)] ◄┘
+             └──────────────┬───────────────┘
+                 prune_schemas() — drop system/ignored schemas
+                 assign_layers() — bronze/silver/gold (rules + heuristic)
+                            │
+                     [linker (M4)]
                 cache → exact → config rule → fuzzy → interactive prompt
                 answers persist to .lineage-cache.json (commit it)
                             │
                             ▼
-                  LineageGraph  ── graph.json (canonical artifact)
+                  LineageGraph  ── graph.json + diagnostics.json (artifacts)
                             │
              ┌──────────────┴──────────────┐
              ▼                             ▼
@@ -91,10 +94,15 @@ their `#` in the AST (flagged `temporary=True` instead — see
 `is_temp_table`), and `UPDATE alias ... FROM table AS alias` needs alias
 resolution for the write target.
 
-**Silver classification is a post-pass.** Any `gold_table` that is only ever
-read — never written/`CREATE`d anywhere in the SQL repo — is retyped
-`silver_table` (`classify_silver`). That's how source-layer tables are
-detected without a database connection.
+**Layer assignment is a post-pass** (`layering.assign_layers`). Object *type*
+comes from the SQL; the medallion *layer* (bronze/silver/gold) is assigned
+from `config.layers` rules — by schema and/or source-path glob, precedence
+gold → silver → bronze — with a read/write heuristic fallback (a table only
+ever read → silver source; one created here → gold). `display_name` carries
+the original-case name for rendering while ids stay normalized.
+`prune_schemas` first drops system schemas (`sys`/`information_schema`/
+`tempdb`/`db_*`) and any `ignore_schemas`, which would otherwise appear as
+phantom nodes from catalog references.
 
 **Name gaps are a first-class problem.** View schemas and semantic-model
 names are similar but not identical (e.g. schema `salespm` feeds the
@@ -141,14 +149,19 @@ re-rendering for the same reason.
 
 ```
 src/coop_data_doc/
-├── cli.py            entrypoints + run_pipeline (the orchestration)
-├── config.py         coop-data-doc.yml model + ParseWarning
+├── cli.py            entrypoints + run_pipeline (the orchestration) + interactive menu
+├── config.py         coop-data-doc.yml model (repos/layers/ignore_schemas) + ParseWarning
 ├── crawler.py        repo walk + FileKind classification
-├── graph/            model.py (Node/Edge/LineageGraph), serialize.py
+├── graph/            model.py (Node/Edge/LineageGraph, display_name), serialize.py
 ├── parsers/          sql_common/sql_objects/sql_procs, tmdl/bim/mcode/dax/pbir/pbix
+├── layering.py       medallion layer assignment + system/ignored-schema pruning
 ├── linker/           resolver.py (ladder), cache.py, interactive.py
-├── render/           markdown.py, mermaid.py, site.py
-└── templates/assets/ vendored mermaid + iframe-worker (see its README)
+├── diagnostics.py    severity-classified warnings → console / JSON / HTML page
+├── progress.py       stderr progress bars + spinner (TTY-only)
+├── wizard.py         interactive `setup` (repos, layers, ignore, mappings)
+├── upgrade.py        `upgrade` — the only networked command (PyPI/git)
+├── render/           markdown.py, mermaid.py, site.py (layer-grouped nav)
+└── templates/assets/ vendored mermaid + iframe-worker + custom.css
 tasks/                original builder briefs — double as interface docs
 tests/                fixtures/repo_sql + fixtures/repo_pbi drive everything
 ```

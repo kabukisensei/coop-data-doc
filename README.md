@@ -267,6 +267,71 @@ asks for these too). System schemas — `sys`, `information_schema`, `tempdb`, `
 that ignoring a schema removes it from lineage entirely, so anything downstream loses that
 upstream link.
 
+### Full configuration reference
+
+| Key | Type | What it does |
+| --- | --- | --- |
+| `project_name` | string | Title shown on the docs site. |
+| `repos.<key>.path` | string | Folder to crawl, relative to the config file. The key (`sql`, `powerbi`, …) is just a label; add as many repos as you like. |
+| `repos.<key>.include` | list of globs | Only files matching these are read. |
+| `repos.<key>.exclude` | list of globs | Files matching these are skipped (**exclude wins** over include). |
+| `schema_mappings` | list of `{schema, model}` | Hints linking a SQL view schema to the semantic model it feeds, for cases the names don't match. Often unnecessary — if the Power BI partition's schema equals the SQL schema, it matches automatically. |
+| `layers.<bronze\|silver\|gold>.schemas` | list | Schemas assigned to that layer. |
+| `layers.<bronze\|silver\|gold>.paths` | list of globs | File paths assigned to that layer. A node matches the first layer (gold → silver → bronze) hit by schema **or** path. |
+| `ignore_schemas` | list | Schemas dropped entirely. System schemas are always dropped on top of these. |
+| `output.dir` | string | Where the Markdown (agent docs) is written. |
+| `output.site_dir` | string | Where the HTML site is built. |
+| `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
+
+### include / exclude — choosing what gets crawled
+
+Patterns are matched against each file's path **relative to its repo**, forward-slashed:
+`**/Foo/**` = anything under a folder named `Foo`; `**/*.sql` = any `.sql` anywhere;
+`SomeDir/**` = everything under `SomeDir`. Two strategies:
+
+- **Allowlist (cleanest for big repos):** include only real object folders, e.g.
+  `include: ["**/Tables/*.sql", "**/Views/*.sql", "**/StoredProcedures/*.sql", "**/Functions/*.sql"]`
+  — everything else (deployment scripts, role grants, notebooks) is ignored automatically.
+- **Denylist:** keep `include: ["**/*.sql"]` and drop noise with
+  `exclude: ["**/logging/**", "**/Deployment/**", "**/BACKUP/**"]`.
+
+Use `coop-data-doc scan` (fast, no rendering) as the feedback loop: watch the object count
+and the diagnostics summary, adjust, repeat. **Reports need to be present in PBIR format**
+(a committed `.Report/definition/pages/.../visual.json` tree) or legacy `report.json` — the
+default Power BI `include` already matches them, so once they're in the repo they're picked
+up with no config change.
+
+### Worked example: a large multi-schema warehouse
+
+A real config for a Fabric warehouse + Power BI estate with medallion schemas, D365 source
+schemas, model-named gold schemas, a `common` schema feeding every model, and editor/backup
+noise to drop:
+
+```yaml
+project_name: Acme BI Estate
+repos:
+  sql:
+    path: ../fabric-dw
+    include: ["**/*.sql"]
+    exclude: ["**/logging/**", "**/Security/**", "**/Deployment/**"]
+  powerbi:
+    path: ../fabric
+    include: ["**/*.tmdl", "**/*.bim", "**/visual.json", "**/page.json", "**/report.json"]
+    exclude: ["**/BACKUP/**", "**/Documentation/**", "**/Editor and Theme Files/**"]
+layers:
+  bronze:
+    schemas: [dbo]                    # lakehouse landing tables
+  silver:
+    schemas: [d365po, d365fo]         # D365 source schemas
+  gold:
+    schemas: [silver, dwm, common, salespm, finance, forecast, resource]  # 'silver' schema is gold here!
+    paths: ["**/dim/**", "**/fact/**"]
+ignore_schemas: [staging, sm, snp, syn, accocomment, config]
+```
+
+The standout: a schema *named* `silver` can sit in the **gold** layer — assignment follows
+your rule, not the schema's name.
+
 ## When it asks you questions
 
 When a Power BI table's source can't be matched to a SQL object automatically, the tool

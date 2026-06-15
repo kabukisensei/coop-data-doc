@@ -10,8 +10,9 @@
 | M3 Power BI extractor | `parsers/tmdl.py`, `bim.py`, `mcode.py`, `dax.py`, `pbir.py`, `pbix.py` | semantic models, measures, reports, best-effort pbix |
 | M4 linker | `linker/resolver.py`, `cache.py`, `interactive.py` | joins SQL ↔ PBI: cache → exact → config rule → fuzzy → prompt |
 | M4½ layering | `layering.py` | medallion layer (bronze/silver/gold) from `config.layers` rules (schema/path), heuristic fallback; object *type* stays parser-detected |
-| M5 renderers | `render/markdown.py`, `mermaid.py`, `site.py` | agent Markdown + offline MkDocs Material portal |
-| M6 CLI | `cli.py`, `wizard.py`, `upgrade.py` | interactive menu (bare invocation), `setup` / `init` / `scan` / `build` / `update` / `check` / `help` / `upgrade` |
+| M4¾ diagnostics | `diagnostics.py` | severity-classified warnings/unresolved → console summary, `diagnostics.json`, and the HTML Diagnostics page |
+| M5 renderers | `render/markdown.py`, `mermaid.py`, `site.py` | agent Markdown + offline MkDocs Material portal; nav grouped by layer→type; `schema.Object` (original-case `display_name`) titles |
+| M6 CLI | `cli.py`, `wizard.py`, `upgrade.py`, `progress.py` | interactive menu (bare invocation), `setup` / `init` / `scan` / `build` / `update` / `check` / `help` / `upgrade`; stderr progress bars + spinner |
 
 The original builder briefs live in `tasks/` and double as interface documentation.
 
