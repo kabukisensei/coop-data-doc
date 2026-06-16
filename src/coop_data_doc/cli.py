@@ -428,7 +428,14 @@ def upgrade(ctx: click.Context, check_only: bool, yes: bool) -> None:
     The ONLY command that uses the network (PyPI metadata / git fetch).
     Major-version dependency jumps are reported but never auto-applied.
     """
-    from coop_data_doc.upgrade import UpgradeError, apply_plan, build_plan
+    from coop_data_doc.upgrade import (
+        LauncherLockedError,
+        UpgradeError,
+        apply_plan,
+        build_plan,
+        manual_upgrade_message,
+        needs_fresh_shell,
+    )
 
     progress = Progress(should_enable(ctx.obj["quiet"]))
     with progress.spinner("Checking for updates"):
@@ -456,6 +463,10 @@ def upgrade(ctx: click.Context, check_only: bool, yes: bool) -> None:
     if nothing_to_apply and plan.install_method not in ("pip", "git-checkout"):
         click.echo("\nEverything is up to date.")
         return
+    if needs_fresh_shell(plan) is not None:
+        # Windows can't replace the running launcher in place — guide, don't churn.
+        click.echo("\n" + manual_upgrade_message(plan))
+        return
     if not yes:
         if not _stdio_is_interactive():
             click.echo("\nRe-run with --yes to apply in non-interactive environments.", err=True)
@@ -469,6 +480,10 @@ def upgrade(ctx: click.Context, check_only: bool, yes: bool) -> None:
     try:
         with progress.spinner("Applying update (downloading + reinstalling)"):
             executed = apply_plan(plan)
+    except LauncherLockedError as exc:
+        # Not a failure — the running launcher just can't swap itself on Windows.
+        click.echo(f"\n{exc}")
+        return
     except UpgradeError as exc:
         raise click.ClickException(str(exc)) from exc
     for command in executed:

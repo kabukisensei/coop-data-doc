@@ -59,9 +59,13 @@ ruff check src tests
 ## Releasing
 
 Bump the version in **both** `pyproject.toml` and `src/coop_data_doc/__init__.py`
-on every release. This is mandatory: installs from the git URL (pipx/uv/pip) are
-**version-gated** — `pipx upgrade` re-clones the branch but only installs when the
-version number increased. Ship code changes under the same version and users'
-`coop-data-doc upgrade` will silently report "already at latest" and skip them.
+on every release. This is mandatory: `coop-data-doc upgrade` is **version-gated** —
+`pipx upgrade` only installs when the version number increased — so shipping code
+changes under an unchanged version makes users' upgrade silently report "already at
+latest" and skip them. PyPI releases are immutable, so a version is never reused.
 Use semver: patch for fixes, minor for new commands/features, major for breaking
 config/output changes.
+
+Publishing is automated via trusted publishing (`.github/workflows/publish.yml`):
+push a matching tag — `git tag vX.Y.Z && git push origin vX.Y.Z` — and the release
+builds and uploads to PyPI on its own (no tokens).

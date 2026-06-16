@@ -100,7 +100,7 @@ Check it worked:
 coop-data-doc --version
 ```
 
-You should see `coop-data-doc, version 0.3.0` (or newer). If the terminal says
+You should see `coop-data-doc, version 0.17.0` (or newer). If the terminal says
 *"command not found"* (macOS) or *"the term 'coop-data-doc' is not recognized…"*
 (Windows), see [Troubleshooting](#troubleshooting).
 
@@ -411,10 +411,20 @@ coop-data-doc upgrade --check    # see what's available, change nothing
 coop-data-doc upgrade            # apply (asks for confirmation first)
 ```
 
-After upgrading, `coop-data-doc --version` should report the new version (e.g. `0.2.0`).
-If it still shows the old number even though you expected changes, force a clean re-pull:
-`pipx reinstall coop-data-doc` (or `pipx uninstall coop-data-doc && pipx install
-git+https://github.com/kabukisensei/coop-data-doc.git`).
+After upgrading, `coop-data-doc --version` should report the new version. If it still
+shows the old number even though you expected changes, force a clean re-pull:
+`pipx reinstall coop-data-doc`.
+
+**On Windows**, the running tool can't replace its own launcher (`coop-data-doc.exe`) —
+Windows locks a running executable — so `coop-data-doc upgrade` will tell you to finish
+the upgrade from a **new terminal**:
+
+```powershell
+pipx upgrade coop-data-doc      # run in a fresh window, where the tool isn't running
+```
+
+(On older versions this surfaced as a raw `[WinError 32] … being used by another process`
+error — same cause, same fix. See [Troubleshooting](#troubleshooting).)
 
 `upgrade` detects how the tool was installed (pipx / uv / pip / a git checkout) and
 updates it — a git checkout gets new commits pulled and reinstalled. For pip and
@@ -544,6 +554,7 @@ overwritten on the next `update`. To regenerate after source changes, run
 | --- | --- |
 | `command not found: coop-data-doc` (macOS) or `the term 'coop-data-doc' is not recognized…` (Windows) | The install location isn't on your PATH. Run `python3 -m pipx ensurepath` (Windows: `python -m pipx ensurepath`), then close and reopen the terminal. |
 | `externally-managed-environment` during install (macOS) | Your Python is managed by Homebrew. Run `brew install pipx`, then `pipx ensurepath`, and retry. |
+| `coop-data-doc upgrade` fails on Windows with `[WinError 32] … being used by another process` (a `PermissionError` or `OSError` naming `coop-data-doc.exe`) | Windows can't replace the tool's launcher while it's running. The package may have already updated — check `coop-data-doc --version`. If it's still the old version, run `pipx upgrade coop-data-doc` in a **fresh** terminal (where the tool isn't running). v0.17.0+ detects this and prints the exact command instead of the raw error. |
 | `dependency conflicts … requires pyyaml==6.0.2, but you have 6.0.3` (or similar) | You installed into a shared system Python with plain `pip`, clashing with another tool. Fix: `pip uninstall -y coop-data-doc`, restore the other tool's pin (e.g. `pip install "pyyaml==6.0.2"`), then reinstall coop-data-doc with **pipx** (isolated): `pipx install coop-data-doc`. |
 | `Config file not found` | You're in the wrong folder. `cd` to the folder containing `coop-data-doc.yml`, or pass `--config path/to/coop-data-doc.yml`. |
 | `Repo 'sql' path does not exist` | The path in `coop-data-doc.yml` is wrong. Re-run `coop-data-doc setup` and fix it. |
