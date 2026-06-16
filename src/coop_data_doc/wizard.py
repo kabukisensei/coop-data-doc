@@ -11,6 +11,7 @@ everything else in the codebase stays pure.
 
 from __future__ import annotations
 
+import glob
 import sys
 from pathlib import Path
 
@@ -56,6 +57,107 @@ def _ask_csv(message: str, default: list[str]) -> list[str]:
     """Prompt for a comma-separated list; blank returns []."""
     raw = str(_ask(questionary.text(message, default=", ".join(default)))).strip()
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _top_level_folders(repo_abs: Path) -> list[str]:
+    """Sorted names of the repo's top-level, non-hidden subfolders.
+
+    Empty when the repo path doesn't exist yet (the 'use it anyway' case) or
+    is flat — callers fall back to typing globs by hand in that case. Hidden
+    dirs are skipped to match the crawler, which never descends into them.
+    """
+    if not repo_abs.is_dir():
+        return []
+    return sorted(
+        child.name for child in repo_abs.iterdir() if child.is_dir() and not child.name.startswith(".")
+    )
+
+
+def _unescape_glob(escaped: str) -> str:
+    """Reverse ``glob.escape``: ``[*]``→``*``, ``[?]``→``?``, ``[[]``→``[``.
+
+    ``glob.escape`` only ever wraps those three metacharacters, so undoing
+    exactly them recovers the literal folder name we escaped on the way out.
+    """
+    return escaped.replace("[*]", "*").replace("[?]", "?").replace("[[]", "[")
+
+
+def _folder_name_from_glob(pattern: str) -> str | None:
+    """The folder name a simple 'skip this folder' glob targets, else None.
+
+    Recognizes the exact shapes this wizard writes — ``**/Name/**`` with any
+    fnmatch metacharacters in ``Name`` escaped the way it escapes them — plus
+    the legacy ``Name/**`` / ``Name/*`` forms, so re-running setup can
+    round-trip a checkbox back to its folder. Anything else (nested paths or a
+    real wildcard pattern like ``**/data*/**``) returns None and is preserved
+    verbatim as a hand-written pattern.
+    """
+    body = pattern.strip()
+    if body.startswith("**/"):
+        body = body[3:]
+    for suffix in ("/**", "/*"):
+        if body.endswith(suffix):
+            body = body[: -len(suffix)]
+            break
+    else:
+        return None
+    if not body or "/" in body:
+        return None
+    name = _unescape_glob(body)
+    # Only a literal folder name round-trips: a genuine wildcard pattern
+    # re-escapes to something different, so it stays a custom pattern.
+    if glob.escape(name) != body:
+        return None
+    return name
+
+
+def _ask_folders_to_skip(
+    repo_label: str,
+    repo_rel_path: str,
+    base_dir: Path,
+    existing_exclude: list[str],
+    csv_message: str,
+) -> list[str]:
+    """Pick which top-level folders to document via a checkbox, returning the
+    exclude globs for the ones left unchecked.
+
+    Everything starts checked (= documented); unchecking a folder writes a
+    ``**/Name/**`` skip glob for it. Hand-written excludes that don't map to a
+    detected top-level folder (e.g. nested ``**/BACKUP/**``) are preserved
+    untouched. Falls back to the comma-separated text prompt when the repo
+    isn't on disk yet or has no subfolders, so behavior is unchanged there.
+    """
+    repo_abs = (base_dir / Path(repo_rel_path).expanduser()).resolve()
+    folders = _top_level_folders(repo_abs)
+    if not folders:
+        return _ask_csv(csv_message, existing_exclude)
+
+    # Split the existing excludes: simple folder-globs become unchecked boxes;
+    # everything else is a custom pattern we carry through verbatim.
+    excluded_names: set[str] = set()
+    custom: list[str] = []
+    for pattern in existing_exclude:
+        name = _folder_name_from_glob(pattern)
+        if name is not None and name in folders:
+            excluded_names.add(name)
+        else:
+            custom.append(pattern)
+
+    choices = [
+        questionary.Choice(title=name, value=name, checked=name not in excluded_names) for name in folders
+    ]
+    selected = _ask(
+        questionary.checkbox(
+            f"{repo_label} — pick the folders to document "
+            "(everything is checked; SPACE to uncheck a folder to skip, ENTER to confirm):",
+            choices=choices,
+        )
+    )
+    selected_set = set(selected)
+    # glob.escape keeps plain names byte-identical (archive -> **/archive/**) but
+    # makes a folder whose name contains [ ] ? * match literally in the crawler.
+    folder_excludes = [f"**/{glob.escape(name)}/**" for name in folders if name not in selected_set]
+    return custom + folder_excludes
 
 
 def _ask_repo_path(label: str, default: str, base_dir: Path) -> str:
@@ -191,26 +293,33 @@ def run_setup(config_path: Path) -> Config | None:
     pbi_repo = existing.repos.get("powerbi") if existing else None
     print("\n── What to document ──", file=sys.stderr)
     print(
-        "  INCLUDE = the files to document (press Enter to keep the sensible default).\n"
-        "  SKIP    = optional folders to leave out (e.g. backups). Blank keeps everything.",
+        "  INCLUDE = the file types to document (press Enter to keep the sensible default).\n"
+        "  SKIP    = uncheck any top-level folders to leave out (e.g. backups). When the repo\n"
+        "            isn't on disk yet, you type skip globs instead. Keeping everything is fine.",
         file=sys.stderr,
     )
     sql_include = _ask_csv(
         "SQL — files/patterns to INCLUDE (comma-separated globs):",
         sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
     )
-    sql_exclude = _ask_csv(
-        "SQL — folders to SKIP (optional, e.g. **/archive/**, **/Deployment/** — blank for none):",
+    sql_exclude = _ask_folders_to_skip(
+        "SQL",
+        sql_path,
+        base_dir,
         sql_repo.exclude if sql_repo else [],
+        "SQL — folders to SKIP (optional, e.g. **/archive/**, **/Deployment/** — blank for none):",
     )
     pbi_include = _ask_csv(
         "Power BI — files/patterns to INCLUDE (comma-separated globs):",
         pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
     )
-    pbi_exclude = _ask_csv(
+    pbi_exclude = _ask_folders_to_skip(
+        "Power BI",
+        pbi_path,
+        base_dir,
+        pbi_repo.exclude if pbi_repo else [],
         "Power BI — folders to SKIP (optional, e.g. **/BACKUP/**, **/Documentation/**, "
         "**/Editor and Theme Files/** — blank for none):",
-        pbi_repo.exclude if pbi_repo else [],
     )
 
     # --- medallion layers: assign by SCHEMA (the common case) ---

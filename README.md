@@ -138,6 +138,13 @@ Because there's no configuration here yet, it offers to walk you through setup. 
 - **Project name** — the title shown on the docs website.
 - **SQL repo path** and **Power BI repo path** — type or paste the folder paths; the
   wizard checks they exist and lets you re-type a typo.
+- **Which folders to document** — once a repo path is set, the wizard lists that repo's
+  top-level folders as a checkbox (everything starts checked). Press **Space** to uncheck
+  any folder you want to skip — backups, deployment scripts, archives — and **Enter** to
+  confirm. No need to type out skip patterns by hand. (If the repo isn't on disk yet, it
+  falls back to asking for skip globs as text.) Each unchecked folder becomes a
+  `**/Name/**` entry under `repos.<key>.exclude`; nested skip patterns you've added by
+  hand are kept as-is on a re-run.
 - **Output folders** — press Enter to accept the defaults.
 - **"Add a view-schema → semantic-model mapping?"** — this is a hint like *"the
   `sales` schema feeds the Sales Analytics model"*. If you know one,
