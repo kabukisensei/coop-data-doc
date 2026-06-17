@@ -17,7 +17,7 @@ class SourceRef(BaseModel):
 
     schema_name: str
     object_name: str
-    raw_kind: str  # "sql_database" | "native_query" | "lakehouse" | "static" | "fallback"
+    raw_kind: str  # "sql_database" | "native_query" | "lakehouse" | "as_model" | "static" | "fallback"
 
 
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
@@ -25,6 +25,10 @@ _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 
 _NATIVE_QUERY_RE = re.compile(r'Value\.NativeQuery\s*\([^,]+,\s*"((?:[^"]|"")*)"', re.S)
 _LAKEHOUSE_RE = re.compile(r"Lakehouse\.Contents\s*\(|Fabric\.|\.Warehouse\s*\(")
+# A composite/DirectQuery reference to another Power BI semantic model:
+# AnalysisServices.Database("powerbi://…", "ModelName", …) — the 2nd arg is the
+# upstream model (a.k.a. AS database) this table chains to.
+_AS_DATABASE_RE = re.compile(r'AnalysisServices\.Database\s*\(\s*"[^"]*"\s*,\s*"([^"]+)"')
 _NAME_NAV_RE = re.compile(r'\b(?:Name|Id)\s*=\s*"([^"]+)"')
 
 # `let` variable bindings: IDENT = "literal" — used to resolve indirected
@@ -63,6 +67,13 @@ def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
     native_sql = [m.group(1).replace('""', '"') for m in _NATIVE_QUERY_RE.finditer(text)]
     if native_sql:
         return SourceRef(schema_name="", object_name="", raw_kind="native_query"), native_sql
+
+    # composite/DirectQuery chain to another semantic model. Match against the
+    # block-comment-stripped original (NOT `text`): the `//` line-comment strip
+    # would eat the `powerbi://…` connection URL and hide the model name.
+    as_match = _AS_DATABASE_RE.search(_BLOCK_COMMENT_RE.sub(" ", m_expression))
+    if as_match:
+        return SourceRef(schema_name="", object_name=as_match.group(1), raw_kind="as_model"), []
 
     # Sql.Database navigation — works for quoted literals AND for the common
     # PBIP template that binds the schema/table to `let` variables first.

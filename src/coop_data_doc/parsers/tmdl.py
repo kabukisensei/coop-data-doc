@@ -29,10 +29,18 @@ from coop_data_doc.parsers.sql_common import collect_source_tables, parse_batch
 
 _TABLE_RE = re.compile(r"^table\s+(.+?)\s*$")
 _MEASURE_RE = re.compile(r"^measure\s+('[^']*'|\"[^\"]*\"|\S+)\s*=\s*(.*)$")
+# A line that is only backticks: TMDL's multi-line expression delimiter
+# (``measure 'X' = ```` … ```` ``). The fence chars are NOT part of the DAX.
+_FENCE_RE = re.compile(r"^`{3,}$")
 _COLUMN_RE = re.compile(r"^column\s+('[^']*'|\"[^\"]*\"|\S+)\s*$")
 _DATATYPE_RE = re.compile(r"^dataType\s*:\s*(\S+)")
 _PARTITION_RE = re.compile(r"^partition\s+(.+?)\s*=\s*(\w+)\s*$")
 _SOURCE_RE = re.compile(r"^source\s*=\s*(.*)$")
+_MODE_RE = re.compile(r"^mode\s*:\s*(\w+)")
+_ENTITY_NAME_RE = re.compile(r"^entityName\s*:\s*(.+?)\s*$")
+_EXPRESSION_SOURCE_RE = re.compile(r"^expressionSource\s*:\s*(.+?)\s*$")
+# a shared-expression block in expressions.tmdl: `expression 'Name' = …`
+_EXPRESSION_RE = re.compile(r"^expression\s+('[^']*'|\"[^\"]*\"|\S+)\s*=\s*(.*)$")
 _RELATIONSHIP_RE = re.compile(r"^relationship\s+(\S+)")
 _FROM_COLUMN_RE = re.compile(r"^fromColumn\s*:\s*(.+?)\s*$")
 _TO_COLUMN_RE = re.compile(r"^toColumn\s*:\s*(.+?)\s*$")
@@ -48,6 +56,22 @@ def _unquote(name: str) -> str:
 
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" \t"))
+
+
+def _dedent(raw_lines: list[str]) -> str:
+    """A TMDL multi-line expression body, with the boilerplate indentation
+    removed: drop blank edge lines, then strip the common leading whitespace
+    so the inner DAX structure (VAR/RETURN nesting) is preserved for display.
+    """
+    body = list(raw_lines)
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    if not body:
+        return ""
+    common = min((len(ln) - len(ln.lstrip())) for ln in body if ln.strip())
+    return "\n".join(ln[common:] for ln in body)
 
 
 def model_root(path: str) -> tuple[str, str]:
@@ -88,6 +112,11 @@ def _attach_partition_source(
     if ref is not None and ref.raw_kind == "static":
         # inline/calculation/parameter table — no database lineage by design
         table_node.metadata["partition_static"] = True
+        return
+    if ref is not None and ref.raw_kind == "as_model":
+        # DirectQuery chain to another semantic model — resolved later, against
+        # the model graph (not SQL), by link_composite_models.
+        table_node.metadata["model_source"] = {"model": ref.object_name}
         return
     if ref is not None and ref.raw_kind != "native_query":
         table_node.metadata["partition_source"] = {
@@ -170,6 +199,30 @@ def parse_table_file(
                 i += 1
                 continue
 
+            expr_match = _EXPRESSION_RE.match(stripped)
+            if expr_match:
+                # a shared expression (expressions.tmdl) — collect its M body so
+                # entity partitions can resolve their expressionSource later
+                expr_name = _unquote(expr_match.group(1))
+                expr_parts = [expr_match.group(2)] if expr_match.group(2) else []
+                i += 1
+                while i < len(lines):
+                    nxt = lines[i]
+                    body = nxt.strip()
+                    if body and (
+                        _indent(nxt) == 0 or _PROPERTY_RE.match(body) or body.startswith("annotation ")
+                    ):
+                        break
+                    if body:
+                        expr_parts.append(body)
+                    i += 1
+                model_meta = graph.nodes[model_id].metadata
+                model_meta.setdefault("expressions", {})[normalize_identifier(expr_name)] = "\n".join(
+                    expr_parts
+                ).strip()
+                pending_doc.clear()
+                continue
+
         if table_node is None:
             i += 1
             continue
@@ -179,16 +232,34 @@ def parse_table_file(
             current_column = None
             measure_name = _unquote(measure_match.group(1))
             measure_desc = take_doc()
-            dax_parts = [measure_match.group(2)] if measure_match.group(2) else []
+            first = measure_match.group(2)
             i += 1
-            while i < len(lines):
-                nxt = lines[i]
-                inner = nxt.strip()
-                if inner and (_indent(nxt) <= indent or _PROPERTY_RE.match(inner)):
-                    break
-                if inner:
-                    dax_parts.append(inner)
-                i += 1
+            if _FENCE_RE.match(first.strip()):
+                # Multi-line expression: ``` opens the body, ``` on its own line
+                # closes it. Keep the lines between (dedented) but never the
+                # backtick delimiters — capturing them wraps stray ``` into the
+                # rendered code fence and splits it into empty boxes.
+                body: list[str] = []
+                while i < len(lines):
+                    if _FENCE_RE.match(lines[i].strip()):
+                        i += 1
+                        break
+                    if lines[i].strip() and _indent(lines[i]) <= indent:
+                        break  # safety net for a missing close fence
+                    body.append(lines[i])
+                    i += 1
+                dax = _dedent(body)
+            else:
+                dax_parts = [first] if first else []
+                while i < len(lines):
+                    nxt = lines[i]
+                    inner = nxt.strip()
+                    if inner and (_indent(nxt) <= indent or _PROPERTY_RE.match(inner)):
+                        break
+                    if inner:
+                        dax_parts.append(inner)
+                    i += 1
+                dax = "\n".join(dax_parts).strip()
             measure = graph.add_node(
                 Node(
                     id=Node.make_id(NodeType.MEASURE, model_name, measure_name),
@@ -197,11 +268,7 @@ def parse_table_file(
                     schema_name=model_key,
                     display_name=measure_name,
                     source_file=entry.path,
-                    metadata=(
-                        {"dax": "\n".join(dax_parts).strip(), "description": measure_desc}
-                        if measure_desc
-                        else {"dax": "\n".join(dax_parts).strip()}
-                    ),
+                    metadata=({"dax": dax, "description": measure_desc} if measure_desc else {"dax": dax}),
                 )
             )
             graph.add_edge(
@@ -233,13 +300,24 @@ def parse_table_file(
         partition_match = _PARTITION_RE.match(stripped)
         if partition_match:
             current_column = None
+            partition_type = partition_match.group(2).lower()
             m_parts: list[str] = []
+            mode: str | None = None
+            entity_name: str | None = None
+            expression_source: str | None = None
             i += 1
             while i < len(lines):
                 nxt = lines[i]
                 inner = nxt.strip()
                 if inner and _indent(nxt) <= indent:
                     break
+                if inner:
+                    if (m := _MODE_RE.match(inner)) is not None:
+                        mode = m.group(1).lower()
+                    elif (m := _ENTITY_NAME_RE.match(inner)) is not None:
+                        entity_name = _unquote(m.group(1))
+                    elif (m := _EXPRESSION_SOURCE_RE.match(inner)) is not None:
+                        expression_source = _unquote(m.group(1))
                 source_match = _SOURCE_RE.match(inner) if inner else None
                 if source_match:
                     source_indent = _indent(nxt)
@@ -256,8 +334,19 @@ def parse_table_file(
                         i += 1
                     continue
                 i += 1
-            if partition_match.group(2).lower() == "m":
+            # storage mode (import / directQuery / dual) — the defining trait of
+            # a composite model; kept even when the source itself is unresolved
+            if mode:
+                table_node.metadata["storage_mode"] = mode
+            if partition_type == "m":
                 _attach_partition_source(table_node, "\n".join(m_parts), entry.path, warnings)
+            elif partition_type == "entity" and expression_source:
+                # DirectQuery-to-AS table: its source lives in a shared
+                # expression, resolved later by link_composite_models.
+                table_node.metadata["entity_source"] = {
+                    "entity": entity_name or "",
+                    "expression": expression_source,
+                }
             pending_doc.clear()
             continue
 
@@ -297,6 +386,65 @@ def parse_model_file(text: str, model_node: Node) -> None:
         existing = model_node.metadata.get("relationships", [])
         merged = {(r["from"], r["to"]) for r in existing} | {(r["from"], r["to"]) for r in complete}
         model_node.metadata["relationships"] = [{"from": pair[0], "to": pair[1]} for pair in sorted(merged)]
+
+
+def link_composite_models(graph: LineageGraph) -> list[ParseWarning]:
+    """Create lineage from a composite model's DirectQuery-to-AS tables to the
+    upstream semantic model they chain to.
+
+    Two shapes are handled: a partition whose M directly calls
+    ``AnalysisServices.Database`` (stored as ``model_source``), and a TMDL
+    ``entity`` partition pointing at a shared expression (``entity_source``)
+    that does. Resolved against loaded semantic-model nodes; an unresolved
+    target is flagged for diagnostics, never guessed.
+    """
+    warnings: list[ParseWarning] = []
+    models = {
+        node.name: node_id
+        for node_id, node in graph.nodes.items()
+        if node.node_type is NodeType.SEMANTIC_MODEL
+    }
+    for node_id in sorted(graph.nodes):
+        node = graph.nodes[node_id]
+        if node.node_type is not NodeType.PBI_TABLE:
+            continue
+        model_source = node.metadata.get("model_source")
+        entity_source = node.metadata.get("entity_source")
+        if not (model_source or entity_source):
+            continue
+        target_name: str | None = None
+        if model_source:
+            target_name = normalize_identifier(model_source.get("model", ""))
+        else:
+            owner = graph.nodes.get(f"semantic_model:{node.schema_name}")
+            expr = (owner.metadata.get("expressions", {}) if owner is not None else {}).get(
+                normalize_identifier(entity_source.get("expression", ""))
+            )
+            if expr:
+                ref, _ = extract_source(expr)
+                if ref is not None and ref.raw_kind == "as_model":
+                    target_name = normalize_identifier(ref.object_name)
+                    node.metadata.setdefault("storage_mode", "directquery")
+        upstream = models.get(target_name) if target_name else None
+        if upstream is not None and upstream != f"semantic_model:{node.schema_name}":
+            graph.add_edge(
+                Edge(
+                    source_id=upstream,
+                    target_id=node.id,
+                    edge_type=EdgeType.FEEDS,
+                    evidence=f"composite: DirectQuery to {target_name}",
+                )
+            )
+        else:
+            node.metadata["partition_source_unresolved"] = True
+            warnings.append(
+                ParseWarning(
+                    file=node.source_file,
+                    message=f"composite source of {node.name} ({target_name or '?'}) not among loaded models",
+                    category="unresolved_partition_source",
+                )
+            )
+    return warnings
 
 
 def parse_tmdl(

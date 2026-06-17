@@ -372,8 +372,15 @@ def run_setup(config_path: Path) -> Config | None:
         if schemas or paths:
             layers[layer] = {"schemas": schemas, "paths": paths}
 
+    print("\n── Schemas to drop ──", file=sys.stderr)
+    print(
+        "  Every object in the included files is documented. The layer schemas above only\n"
+        "  group/colour objects — they don't restrict what's shown — so this is the one place\n"
+        "  to drop schemas you never want (noise like staging/temp). Blank keeps everything.",
+        file=sys.stderr,
+    )
     ignore_schemas = _ask_csv(
-        "Schemas to IGNORE entirely / skip (comma-separated, e.g. staging, sm — blank "
+        "Schemas to DROP from the docs (comma-separated, e.g. staging, tmp — blank "
         "for none; system schemas like sys/information_schema are always dropped):",
         existing.ignore_schemas if existing else [],
     )

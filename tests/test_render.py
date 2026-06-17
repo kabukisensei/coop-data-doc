@@ -286,22 +286,20 @@ def test_site_nav_nests_tables_and_measures_under_each_model():
     assert "Measures:" not in nav[res:]
 
 
-def test_site_nav_nests_visuals_under_pages():
+def test_site_nav_nests_pages_under_reports():
     from coop_data_doc.render.site import _nav_section
 
     g = LineageGraph()
     rpt = g.add_node(make_node(NodeType.REPORT, "", "sales", display_name="Sales"))
     pg = g.add_node(make_node(NodeType.REPORT_PAGE, "sales", "overview", display_name="Overview"))
-    vis = g.add_node(make_node(NodeType.VISUAL, "sales", "abc123", display_name="abc123"))
     g.add_edge(Edge(source_id=pg.id, target_id=rpt.id, edge_type=EdgeType.FEEDS))
-    g.add_edge(Edge(source_id=vis.id, target_id=pg.id, edge_type=EdgeType.FEEDS))
     nav = _nav_section(g)
     assert "- Reports:" in nav
     assert '- "Sales":' in nav  # report
-    assert '- "Overview":' in nav  # page nested under the report
-    # the visual is nested under its page (appears after the page heading)
-    pg_idx = nav.index('"Overview":')
-    assert "sales-abc123" in nav and nav.index("sales-abc123") > pg_idx
+    # the page nests under its report as a leaf link (visuals are folded away)
+    rpt_idx = nav.index('"Sales":')
+    assert "sales-overview" in nav and nav.index("sales-overview") > rpt_idx
+    assert '"Overview":' in nav  # the page's display name labels its nav entry
 
 
 def test_navkey_escapes_control_chars():
@@ -315,17 +313,15 @@ def test_navkey_escapes_control_chars():
     yaml.safe_load(f"{key}: x")  # loads without error
 
 
-def test_site_nav_keeps_orphan_visual():
-    # a visual with no page FEEDS edge must still appear in nav (no node lost)
+def test_site_nav_keeps_orphan_page():
+    # a report_page whose report node is missing must still appear in nav
     from coop_data_doc.render.site import _nav_section
 
     g = LineageGraph()
-    g.add_node(make_node(NodeType.REPORT, "", "sales", display_name="Sales"))
-    g.add_node(make_node(NodeType.VISUAL, "sales", "orphan1", display_name="orphan1"))
+    g.add_node(make_node(NodeType.REPORT_PAGE, "ghost", "overview", display_name="Overview"))
     nav = _nav_section(g)
-    assert '- "Sales":' in nav
-    assert "(unattached)" in nav
-    assert "sales-orphan1" in nav  # the orphan visual is not dropped
+    assert "- Reports:" in nav
+    assert "ghost-overview" in nav  # the orphan page is not dropped
 
 
 def test_source_section_embeds_sql(tmp_path: Path):
@@ -357,6 +353,121 @@ def test_no_source_section_when_no_code(tmp_path: Path):
     page = page_path(tmp_path, "measure:sales.total").read_text(encoding="utf-8")
     assert "## Source" not in page  # no source_code -> no Source section
     assert "## DAX" in page  # measures still show their DAX
+
+
+def test_build_site_on_page_ticks_per_page(tmp_path: Path, monkeypatch):
+    # build_site streams mkdocs -v output and ticks once per "Building page" line.
+    from coop_data_doc.render import site as site_module
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = iter(
+                [
+                    "INFO    -  Building documentation\n",
+                    "DEBUG   -  Building page index.md\n",
+                    "DEBUG   -  Building page bronze_table/x.md\n",
+                    "DEBUG   -  Running `page_context` event\n",
+                    "DEBUG   -  Building page diagnostics.md\n",
+                ]
+            )
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(site_module.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    ticks: list[int] = []
+    # site_dir has no shim file, so localize_shim is a quick no-op
+    site_module.build_site(tmp_path / "cfg.yml", tmp_path / "site", on_page=lambda *a: ticks.append(1))
+    assert len(ticks) == 3  # exactly one per page, theme/event lines ignored
+
+
+def test_dax_fence_survives_backticks_in_expression(tmp_path: Path):
+    # defense-in-depth: even if a measure's DAX contains a ``` run, the rendered
+    # fence must be longer so the block isn't split into two empty code boxes.
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.MEASURE, "sales", "total", metadata={"dax": "// ```\nSUM(x)"}))
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "measure:sales.total").read_text(encoding="utf-8")
+    assert "````dax" in page  # 4-backtick fence opens the block
+    assert "// ```\nSUM(x)" in page  # the stray ``` stays inside the box
+
+
+def test_contract_section_only_for_column_bearing_types(tmp_path: Path):
+    g = LineageGraph()
+    g.add_node(
+        make_node(
+            NodeType.GOLD_TABLE,
+            "dbo",
+            "fact",
+            columns=[Column(name="id", data_type="INT", nullable=False)],
+        )
+    )
+    g.add_node(make_node(NodeType.MEASURE, "sales", "total", metadata={"dax": "SUM(x)"}))
+    g.add_node(make_node(NodeType.STORED_PROC, "dbo", "usp_x", source_file="p.sql", source_code="SELECT 1;"))
+    render_markdown(g, tmp_path, "Test")
+    table_page = page_path(tmp_path, "gold_table:dbo.fact").read_text(encoding="utf-8")
+    measure_page = page_path(tmp_path, "measure:sales.total").read_text(encoding="utf-8")
+    proc_page = page_path(tmp_path, "stored_proc:dbo.usp_x").read_text(encoding="utf-8")
+    assert "## Structural Contract" in table_page  # tables keep their column contract
+    assert "## Structural Contract" not in measure_page  # measures show DAX instead
+    assert "## Structural Contract" not in proc_page  # procs show Source instead
+
+
+def test_pbi_table_page_shows_storage_mode(tmp_path: Path):
+    g = LineageGraph()
+    g.add_node(
+        make_node(
+            NodeType.PBI_TABLE,
+            "sales",
+            "orders",
+            display_name="orders",
+            metadata={"storage_mode": "directquery"},
+        )
+    )
+    render_markdown(g, tmp_path, "X")
+    page = page_path(tmp_path, "pbi_table:sales.orders").read_text(encoding="utf-8")
+    assert "**Storage mode:** DirectQuery" in page
+
+
+def test_reports_downstream_of_models_and_visuals_collapsed():
+    from coop_data_doc.parsers.pbir import collapse_visuals, link_reports_to_models
+
+    g = LineageGraph()
+    model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    pbit = g.add_node(make_node(NodeType.PBI_TABLE, "sales", "orders", display_name="orders"))
+    g.add_edge(Edge(source_id=pbit.id, target_id=model.id, edge_type=EdgeType.FEEDS))
+    rpt = g.add_node(make_node(NodeType.REPORT, "", "dash", display_name="Dash"))
+    pg = g.add_node(make_node(NodeType.REPORT_PAGE, "dash", "p1", display_name="P1"))
+    vis = g.add_node(make_node(NodeType.VISUAL, "dash", "v1", display_name="v1"))
+    g.add_edge(Edge(source_id=pg.id, target_id=rpt.id, edge_type=EdgeType.FEEDS))
+    g.add_edge(Edge(source_id=vis.id, target_id=pg.id, edge_type=EdgeType.FEEDS))
+    g.add_edge(Edge(source_id=vis.id, target_id=pbit.id, edge_type=EdgeType.VISUALIZES))
+
+    link_reports_to_models(g)
+    collapse_visuals(g)
+    keys = {(e.source_id, e.target_id, e.edge_type.value) for e in g.edges}
+    assert ("semantic_model:sales", "report:dash", "feeds") in keys  # report downstream of model
+    assert "visual:dash.v1" not in g.nodes  # visual folded away
+    assert ("report_page:dash.p1", "pbi_table:sales.orders", "visualizes") in keys  # rewired onto the page
+
+
+def test_semantic_model_page_drops_child_prefix(tmp_path: Path):
+    g = LineageGraph()
+    model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Finance", display_name="Finance"))
+    measure = g.add_node(
+        make_node(
+            NodeType.MEASURE, "finance", "Total Sales", display_name="Total Sales", metadata={"dax": "1"}
+        )
+    )
+    g.add_edge(Edge(source_id=measure.id, target_id=model.id, edge_type=EdgeType.FEEDS))
+    render_markdown(g, tmp_path, "Test")
+    model_page = page_path(tmp_path, "semantic_model:finance").read_text(encoding="utf-8")
+    measure_page = page_path(tmp_path, "measure:finance.total sales").read_text(encoding="utf-8")
+    # on the model's own page, the measure is listed bare (no "finance." prefix)
+    assert "[Total Sales]" in model_page
+    assert "[finance.Total Sales]" not in model_page
+    # the measure's own page title still carries the qualifier
+    assert "# finance.Total Sales" in measure_page
 
 
 def test_source_fence_survives_backticks_in_code(tmp_path: Path):

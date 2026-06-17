@@ -17,9 +17,10 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
-from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, normalize_identifier
+from coop_data_doc.graph.model import LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.render.mermaid import slug
 
 _MAX_BRAND_BYTES = 8 * 1024 * 1024  # don't copy oversized logo/favicon files
@@ -181,26 +182,12 @@ def _grouped_section(nodes, container, title, children) -> list[str]:
 
 
 def _report_section(graph: LineageGraph) -> list[str]:
-    """Nav for reports as a tree: Report -> Page -> Visuals. Visuals are
-    attached to their page via the visual->page FEEDS edge; a page's own
-    page is its 'Overview'. Reports/pages with no children still appear."""
+    """Nav for reports as a tree: Report -> Pages. Each report's pages nest
+    under it as leaf links; the report's own page is its 'Overview'. (Visuals
+    are folded into their page by collapse_visuals, so they're not listed.)
+    Reports with no pages, and pages whose report node is missing, still
+    appear so no node is lost."""
     nodes = graph.nodes
-    # visual id -> its page id (from the visual --FEEDS--> page edge)
-    visual_page: dict[str, str] = {}
-    for edge in graph.edges:
-        if edge.edge_type is not EdgeType.FEEDS:
-            continue
-        src, tgt = nodes.get(edge.source_id), nodes.get(edge.target_id)
-        if (
-            src is not None
-            and tgt is not None
-            and src.node_type is NodeType.VISUAL
-            and tgt.node_type is NodeType.REPORT_PAGE
-        ):
-            visual_page[edge.source_id] = edge.target_id
-    visuals_by_page: dict[str, list[str]] = {}
-    for vid, pid in visual_page.items():
-        visuals_by_page.setdefault(pid, []).append(vid)
     pages_by_report: dict[str, list[str]] = {}  # keyed by report's normalized name
     for nid, n in nodes.items():
         if n.node_type is NodeType.REPORT_PAGE:
@@ -210,25 +197,8 @@ def _report_section(graph: LineageGraph) -> list[str]:
         (nid for nid, n in nodes.items() if n.node_type is NodeType.REPORT),
         key=lambda nid: nodes[nid].display.lower(),
     )
-
-    def page_block(pid: str) -> list[str]:
-        out = [f"          - {_navkey(nodes[pid].display)}:"]
-        out.append(f"              - Overview: {_page(nodes[pid], pid)}")
-        vids = sorted(visuals_by_page.get(pid, []), key=lambda v: nodes[v].display.lower())
-        out.extend(f"              - {_page(nodes[vid], vid)}" for vid in vids)
-        return out
-
-    # visuals not attached to any page (no FEEDS edge / missing page) must not
-    # vanish from nav — collect them per report and emit under "(unattached)",
-    # mirroring the orphan-page handling (every node stays reachable).
-    attached = {vid for vids in visuals_by_page.values() for vid in vids}
-    orphans_by_report: dict[str, list[str]] = {}
-    for nid, n in nodes.items():
-        if n.node_type is NodeType.VISUAL and nid not in attached:
-            orphans_by_report.setdefault(n.schema_name, []).append(nid)
-
     report_id_by_key = {nodes[rid].name: rid for rid in reports}
-    keys = set(report_id_by_key) | set(pages_by_report) | set(orphans_by_report)
+    keys = set(report_id_by_key) | set(pages_by_report)
     if not keys:
         return []
 
@@ -238,15 +208,11 @@ def _report_section(graph: LineageGraph) -> list[str]:
         if rid is not None:
             out.append(f"          - Overview: {_page(nodes[rid], rid)}")
         for pid in sorted(pages_by_report.get(key, []), key=lambda p: nodes[p].display.lower()):
-            out.extend(page_block(pid))
-        orphans = sorted(orphans_by_report.get(key, []), key=lambda v: nodes[v].display.lower())
-        if orphans:
-            out.append(f"          - {_navkey('(unattached)')}:")
-            out.extend(f"              - {_page(nodes[vid], vid)}" for vid in orphans)
+            out.append(f"          - {_navkey(nodes[pid].display)}: {_page(nodes[pid], pid)}")
         return out
 
-    # reports with a node first (by display), then keys with only orphan
-    # pages/visuals (no report node); both deterministically ordered
+    # reports with a node first (by display), then keys with only orphan pages
+    # (no report node); both deterministically ordered
     with_node = sorted(
         (k for k in keys if k in report_id_by_key),
         key=lambda k: nodes[report_id_by_key[k]].display.lower(),
@@ -422,14 +388,33 @@ def localize_shim(site_dir: Path) -> int:
     return rewritten
 
 
-def build_site(config_path: Path, site_dir: Path) -> None:
-    """Run `mkdocs build` and localize the search worker shim afterwards."""
-    completed = subprocess.run(
-        [sys.executable, "-m", "mkdocs", "build", "-f", str(config_path)],
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        tail = "\n".join(completed.stderr.splitlines()[-15:])
-        raise SiteBuildError(f"mkdocs build failed:\n{tail}")
+def build_site(config_path: Path, site_dir: Path, *, on_page: Callable[..., None] | None = None) -> None:
+    """Run `mkdocs build` and localize the search worker shim afterwards.
+
+    ``on_page`` (optional) is called once per HTML page mkdocs builds, for a
+    progress bar. Supplying it runs mkdocs verbosely and streams its output to
+    count page events; without it mkdocs runs quietly as before.
+    """
+    base = [sys.executable, "-m", "mkdocs", "build", "-f", str(config_path)]
+    if on_page is None:
+        completed = subprocess.run(base, capture_output=True, text=True)
+        if completed.returncode != 0:
+            tail = "\n".join(completed.stderr.splitlines()[-15:])
+            raise SiteBuildError(f"mkdocs build failed:\n{tail}")
+    else:
+        # `-v` makes mkdocs log "Building page <path>" once per page; stream it.
+        proc = subprocess.Popen(
+            [*base, "-v"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+        )
+        captured: list[str] = []
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            captured.append(line)
+            if "Building page " in line:
+                on_page()
+        if proc.wait() != 0:
+            # drop the DEBUG flood `-v` adds so the real error stays legible
+            meaningful = [ln for ln in captured if not ln.lstrip().startswith("DEBUG")]
+            tail = "".join((meaningful or captured)[-15:]).strip()
+            raise SiteBuildError(f"mkdocs build failed:\n{tail}")
     localize_shim(site_dir)
