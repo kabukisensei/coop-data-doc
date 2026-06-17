@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-from coop_data_doc.graph.model import LineageGraph, Node, NodeType
+from coop_data_doc.graph.model import LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.graph.serialize import to_json_str
 from coop_data_doc.render.mermaid import (
     doc_relpath,
@@ -25,6 +25,24 @@ INTENT_BEGIN = "<!-- intent:begin -->"
 INTENT_END = "<!-- intent:end -->"
 _DEFAULT_INTENT = "_Add a short description of what this object is for and who relies on it._"
 _INTENT_RE = re.compile(re.escape(INTENT_BEGIN) + r"(.*?)" + re.escape(INTENT_END), re.S)
+
+# Object types that have a column contract worth a "Structural Contract"
+# section. Procs/measures/semantic-models/reports/visuals never carry columns,
+# so the section would only ever render the "not resolvable" placeholder —
+# noise that reads like a broken page. They're documented via Source/DAX instead.
+_CONTRACT_TYPES = frozenset(
+    {
+        NodeType.BRONZE_TABLE,
+        NodeType.SILVER_TABLE,
+        NodeType.GOLD_TABLE,
+        NodeType.VIEW,
+        NodeType.PBI_TABLE,
+    }
+)
+
+# Power BI storage mode, shown on table pages — the defining trait of a
+# composite model (Import cached vs. DirectQuery live vs. Dual).
+_STORAGE_LABELS = {"import": "Import", "directquery": "DirectQuery", "dual": "Dual"}
 
 _TYPE_TITLES: dict[NodeType, str] = {
     NodeType.BRONZE_TABLE: "Source Tables (Bronze)",
@@ -132,7 +150,14 @@ def _lineage_table(graph: LineageGraph, node: Node, ids: list[str], direction: s
         if other is None:
             continue
         via, evidence = edge_info.get(other_id, ("", ""))
-        label = other.qualified_display
+        # On a semantic model's own page, its tables/measures don't need the
+        # model-name prefix — the page already establishes the model.
+        own_child = (
+            node.node_type is NodeType.SEMANTIC_MODEL
+            and other.node_type in (NodeType.PBI_TABLE, NodeType.MEASURE)
+            and other.schema_name == normalize_identifier(node.name)
+        )
+        label = other.display if own_child else other.qualified_display
         evidence_file = evidence.split(":", 1)[0] if evidence else ""
         lines.append(
             f"| [{label}]({doc_relpath(other)}) | {other.node_type.value} | {via} | {evidence_file} |"
@@ -194,8 +219,12 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
             if node.metadata.get("description")
             else []
         ),
-        _contract_section(node),
-        "",
+        *(
+            [f"**Storage mode:** {_STORAGE_LABELS.get(mode, mode.title())}", ""]
+            if node.node_type is NodeType.PBI_TABLE and (mode := node.metadata.get("storage_mode"))
+            else []
+        ),
+        *([_contract_section(node), ""] if node.node_type in _CONTRACT_TYPES else []),
     ]
     # the defining SQL for tables/views/procs (no source_code -> no section)
     if node.source_code:
@@ -221,9 +250,13 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
         "",
     ]
     if node.node_type is NodeType.MEASURE and node.metadata.get("dax"):
+        dax = node.metadata["dax"]
+        # size the fence to the content so any stray backticks in the DAX
+        # can't terminate the block early (mirrors _source_section)
+        fence = _code_fence(dax)
         parts.insert(
             parts.index("## Lineage"),
-            "## DAX\n\n```dax\n" + node.metadata["dax"] + "\n```\n",
+            f"## DAX\n\n{fence}dax\n{dax}\n{fence}\n",
         )
     return "\n".join(parts)
 

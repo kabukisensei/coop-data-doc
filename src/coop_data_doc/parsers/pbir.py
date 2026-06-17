@@ -327,3 +327,93 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
         elif "pending_model_resolution" in visual.metadata:
             del visual.metadata["pending_model_resolution"]
     return warnings
+
+
+def link_reports_to_models(graph: LineageGraph) -> list[ParseWarning]:
+    """Make reports downstream of the semantic model(s) they draw from.
+
+    A report's models are those owning the tables/measures its visuals
+    visualize (report <- page <- visual --visualizes--> table/measure -> model).
+    Adds a ``model --feeds--> report`` edge per (model, report) pair so reports
+    surface on each model's downstream list. Must run while visual edges still
+    exist (before :func:`collapse_visuals`).
+    """
+    report_of_page: dict[str, str] = {}
+    page_of_visual: dict[str, str] = {}
+    for edge in graph.edges:
+        if edge.edge_type is not EdgeType.FEEDS:
+            continue
+        src, tgt = graph.nodes.get(edge.source_id), graph.nodes.get(edge.target_id)
+        if src is None or tgt is None:
+            continue
+        if src.node_type is NodeType.REPORT_PAGE and tgt.node_type is NodeType.REPORT:
+            report_of_page[src.id] = tgt.id
+        elif src.node_type is NodeType.VISUAL and tgt.node_type is NodeType.REPORT_PAGE:
+            page_of_visual[src.id] = tgt.id
+
+    model_id_by_key = {
+        n.name: nid for nid, n in graph.nodes.items() if n.node_type is NodeType.SEMANTIC_MODEL
+    }
+    pairs: set[tuple[str, str]] = set()
+    for edge in graph.edges:
+        if edge.edge_type is not EdgeType.VISUALIZES:
+            continue
+        visual, target = graph.nodes.get(edge.source_id), graph.nodes.get(edge.target_id)
+        if visual is None or visual.node_type is not NodeType.VISUAL:
+            continue
+        if target is None or target.node_type not in (NodeType.PBI_TABLE, NodeType.MEASURE):
+            continue
+        page = page_of_visual.get(visual.id)
+        report = report_of_page.get(page) if page is not None else None
+        model = model_id_by_key.get(target.schema_name)
+        if report is not None and model is not None:
+            pairs.add((model, report))
+
+    for model_id, report_id in sorted(pairs):
+        graph.add_edge(
+            Edge(
+                source_id=model_id,
+                target_id=report_id,
+                edge_type=EdgeType.FEEDS,
+                evidence=f"{graph.nodes[report_id].source_file}: report consumes this model",
+            )
+        )
+    return []
+
+
+def collapse_visuals(graph: LineageGraph) -> list[ParseWarning]:
+    """Fold visuals into their report page and drop the visual nodes.
+
+    Per-visual detail pages add noise; the useful lineage is "which
+    tables/measures does this page show". Each visual's ``visualizes`` edges are
+    re-pointed from the visual to its page, then every visual node (and its
+    edges) is removed. Run AFTER the Module 4 linker so cross-model bindings are
+    already resolved into edges.
+    """
+    visual_ids = {nid for nid, n in graph.nodes.items() if n.node_type is NodeType.VISUAL}
+    if not visual_ids:
+        return []
+    page_of_visual: dict[str, str] = {}
+    for edge in graph.edges:
+        if edge.edge_type is EdgeType.FEEDS and edge.source_id in visual_ids:
+            tgt = graph.nodes.get(edge.target_id)
+            if tgt is not None and tgt.node_type is NodeType.REPORT_PAGE:
+                page_of_visual[edge.source_id] = edge.target_id
+    # page -> target visualizes edges to recreate (deduped, deterministic order)
+    rewired: set[tuple[str, str, str]] = set()
+    for edge in graph.edges:
+        if edge.edge_type is EdgeType.VISUALIZES and edge.source_id in visual_ids:
+            page = page_of_visual.get(edge.source_id)
+            if page is not None and page != edge.target_id:
+                rewired.add((page, edge.target_id, edge.evidence))
+    # drop every edge that touches a visual, then add the page-level edges
+    graph.edges = [
+        edge for edge in graph.edges if edge.source_id not in visual_ids and edge.target_id not in visual_ids
+    ]
+    for page, target, evidence in sorted(rewired):
+        graph.add_edge(
+            Edge(source_id=page, target_id=target, edge_type=EdgeType.VISUALIZES, evidence=evidence)
+        )
+    for visual_id in visual_ids:
+        graph.nodes.pop(visual_id, None)
+    return []

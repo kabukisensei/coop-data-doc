@@ -28,7 +28,13 @@ from coop_data_doc.graph.serialize import to_json_file
 from coop_data_doc.linker.cache import LineageCache
 from coop_data_doc.linker.resolver import ResolutionResult, link_graph
 from coop_data_doc.parsers.bim import parse_bim
-from coop_data_doc.parsers.pbir import link_visual_bindings, parse_legacy_reports, parse_pbir
+from coop_data_doc.parsers.pbir import (
+    collapse_visuals,
+    link_reports_to_models,
+    link_visual_bindings,
+    parse_legacy_reports,
+    parse_pbir,
+)
 from coop_data_doc.parsers.pbix import parse_pbix
 from coop_data_doc.parsers.sql_objects import parse_sql_objects
 from coop_data_doc.layering import assign_layers, prune_schemas
@@ -36,7 +42,7 @@ from coop_data_doc.parsers.sql_procs import (
     parse_sql_procs,
     resolve_stub_references,
 )
-from coop_data_doc.parsers.tmdl import parse_tmdl
+from coop_data_doc.parsers.tmdl import link_composite_models, parse_tmdl
 from coop_data_doc.progress import Progress, should_enable
 from coop_data_doc.render.markdown import render_markdown, write_diagnostics
 from coop_data_doc.render.site import build_site, write_mkdocs_config
@@ -83,6 +89,7 @@ def run_pipeline(
         warnings += parse_legacy_reports(legacy, graph, on_file=tick)
         warnings += parse_pbix(pbix, graph, on_file=tick)
     warnings += link_visual_bindings(graph)
+    warnings += link_composite_models(graph)
 
     dropped = prune_schemas(graph, config.ignore_schemas)
     if dropped:
@@ -95,6 +102,9 @@ def run_pipeline(
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
     result, link_warnings = link_graph(graph, config, cache, interactive)
     warnings += link_warnings
+    # reports become downstream of their models, then visuals fold into pages
+    link_reports_to_models(graph)
+    collapse_visuals(graph)
     _log.debug(
         "done: %d nodes, %d edges, %d cross-repo links, %d unresolved, %d warnings",
         len(graph.nodes),
@@ -216,7 +226,7 @@ def _interactive_home(ctx: click.Context) -> None:
             questionary.Choice("Scan only (refresh graph.json, no rendering)", "scan"),
             questionary.Choice("Change settings (re-run the setup wizard)", "setup"),
             questionary.Choice("Check docs freshness (the CI gate)", "check"),
-            questionary.Choice("Upgrade the tool & dependencies (uses network)", "upgrade"),
+            questionary.Choice("Check for updates & show the upgrade command", "upgrade"),
             questionary.Choice("Exit", "exit"),
         ]
     else:
@@ -243,7 +253,7 @@ def _interactive_home(ctx: click.Context) -> None:
     elif action == "check":
         ctx.invoke(check, config_path=DEFAULT_CONFIG)
     elif action == "upgrade":
-        ctx.invoke(upgrade, check_only=False, yes=False)
+        ctx.invoke(upgrade)
     elif action == "update":
         _run_build(
             ctx,
@@ -276,7 +286,8 @@ def help_cmd(ctx: click.Context, command_name: str | None) -> None:
 
 @cli.command()
 @click.argument("path", default=DEFAULT_CONFIG)
-def setup(path: str) -> None:
+@click.pass_context
+def setup(ctx: click.Context, path: str) -> None:
     """Interactively create or update coop-data-doc.yml.
 
     Prompts for every value, prefilled from the existing config when present,
@@ -296,14 +307,23 @@ def setup(path: str) -> None:
             err=True,
         )
         sys.exit(1)
+    build_cmd = "coop-data-doc build" if path == DEFAULT_CONFIG else f"coop-data-doc build --config {path}"
     if config is None:
-        click.echo(f"Saved {path}. Fix the noted problem, then run `coop-data-doc build`.")
+        click.echo(f"Saved {path}. Fix the noted problem, then run `{build_cmd}`.")
         return
     click.echo(
         f"Saved {path} — project '{config.project_name}', "
         f"{len(config.repos)} repos, {len(config.schema_mappings)} schema mapping(s)."
     )
-    click.echo("Next: run `coop-data-doc build`.")
+    # offer to build right away; either way show the command to run it later
+    try:
+        build_now = questionary.confirm("Build the docs now?", default=True, auto_enter=False).ask()
+    except (KeyboardInterrupt, OSError):
+        build_now = None
+    if build_now:
+        _run_build(ctx, path, non_interactive=False, strict=False, skip_html=False, serve=False)
+    else:
+        click.echo(f"Build them whenever you're ready with:  {build_cmd}")
 
 
 @cli.command()
@@ -367,7 +387,12 @@ def _run_build(
     )
     if serve:
         os.execvp(sys.executable, [sys.executable, "-m", "mkdocs", "serve", "-f", str(mkdocs_config)])
-    with progress.spinner(f"Building HTML site ({len(graph.nodes)} pages)"):
+    # one page per node, plus index.md + diagnostics.md
+    page_total = len(graph.nodes) + 2
+    if progress.enabled:
+        with progress.bar(f"Building HTML site ({len(graph.nodes)} pages)", total=page_total) as tick:
+            build_site(mkdocs_config, config.site_dir(), on_page=tick)
+    else:
         build_site(mkdocs_config, config.site_dir())
     index = config.site_dir() / "index.html"
     click.echo(f"HTML portal:   file://{index}", err=True)
@@ -419,23 +444,17 @@ def update(
 
 
 @cli.command()
-@click.option("--check", "check_only", is_flag=True, help="Report available updates; change nothing.")
-@click.option("--yes", is_flag=True, help="Apply without asking for confirmation.")
 @click.pass_context
-def upgrade(ctx: click.Context, check_only: bool, yes: bool) -> None:
-    """Update the tool itself and apply non-breaking dependency updates.
+def upgrade(ctx: click.Context) -> None:
+    """Check for a newer release and print the command to upgrade.
 
-    The ONLY command that uses the network (PyPI metadata / git fetch).
-    Major-version dependency jumps are reported but never auto-applied.
+    The ONLY command that uses the network (PyPI metadata / git fetch). It
+    does not self-update: replacing the tool while it's running is flaky
+    (and impossible on Windows), so instead it prints the exact command for
+    how this copy was installed — e.g. `pipx upgrade coop-data-doc` — to run
+    from a normal shell.
     """
-    from coop_data_doc.upgrade import (
-        LauncherLockedError,
-        UpgradeError,
-        apply_plan,
-        build_plan,
-        manual_upgrade_message,
-        needs_fresh_shell,
-    )
+    from coop_data_doc.upgrade import build_plan, manual_upgrade_command
 
     progress = Progress(should_enable(ctx.obj["quiet"]))
     with progress.spinner("Checking for updates"):
@@ -448,47 +467,14 @@ def upgrade(ctx: click.Context, check_only: bool, yes: bool) -> None:
             label = {
                 "current": "up to date",
                 "safe": f"update available → {latest}",
-                "major": f"MAJOR update available → {latest} (review before applying)",
+                "major": f"MAJOR update available → {latest} (review before upgrading)",
                 "unknown": "could not check (offline?)",
             }[dep.kind]
             click.echo(f"  {dep.name:20} {dep.installed:12} {label}")
-    if check_only:
-        return
-    nothing_to_apply = (
-        not plan.safe_updates
-        and not plan.is_vcs_install  # a git install can always re-pull a newer commit
-        and "new commit(s)" not in plan.tool_note
-        and ("latest release is" not in plan.tool_note)
-    )
-    if nothing_to_apply and plan.install_method not in ("pip", "git-checkout"):
-        click.echo("\nEverything is up to date.")
-        return
-    if needs_fresh_shell(plan) is not None:
-        # Windows can't replace the running launcher in place — guide, don't churn.
-        click.echo("\n" + manual_upgrade_message(plan))
-        return
-    if not yes:
-        if not _stdio_is_interactive():
-            click.echo("\nRe-run with --yes to apply in non-interactive environments.", err=True)
-            return
-        answer = questionary.confirm(
-            "Apply the tool upgrade and non-breaking dependency updates?", default=True
-        ).ask()
-        if not answer:
-            click.echo("Nothing changed.")
-            return
-    try:
-        with progress.spinner("Applying update (downloading + reinstalling)"):
-            executed = apply_plan(plan)
-    except LauncherLockedError as exc:
-        # Not a failure — the running launcher just can't swap itself on Windows.
-        click.echo(f"\n{exc}")
-        return
-    except UpgradeError as exc:
-        raise click.ClickException(str(exc)) from exc
-    for command in executed:
-        click.echo(f"ran: {' '.join(command)}", err=True)
-    click.echo("Upgrade complete. Run `coop-data-doc --version` to confirm.")
+    click.echo("\nTo upgrade, run this in a regular terminal:\n")
+    for line in manual_upgrade_command(plan).splitlines():
+        click.echo(f"    {line}")
+    click.echo("\nThen confirm with:  coop-data-doc --version")
 
 
 @cli.command()

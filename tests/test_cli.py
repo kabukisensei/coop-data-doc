@@ -283,7 +283,7 @@ def test_check_lenient_tolerates_risky_parses(tmp_path: Path):
     assert result.exit_code == 0, result.output
 
 
-# ---- `upgrade` launcher-lock CLI branches (Windows) ---------------------------
+# ---- `upgrade` prints the command instead of self-updating --------------------
 
 
 def _stub_plan(method, tool_note="latest release is 0.16.0"):
@@ -292,60 +292,30 @@ def _stub_plan(method, tool_note="latest release is 0.16.0"):
     return UpgradePlan(install_method=method, checkout=None, tool_installed="0.15.0", tool_note=tool_note)
 
 
-def test_upgrade_launcher_locked_proactively_prints_guidance_exit_zero(monkeypatch):
-    # pipx/uv-tool on the locked Windows launcher: guide and exit 0, never churn.
+def test_upgrade_prints_pipx_command_and_does_not_self_update(monkeypatch):
+    # upgrade reports status and prints the exact command for this install; it
+    # never reinstalls in place (flaky while running, impossible on Windows).
     from coop_data_doc import upgrade as upgrade_module
 
     monkeypatch.setattr(upgrade_module, "build_plan", lambda *a, **k: _stub_plan("pipx"))
-    monkeypatch.setattr(
-        upgrade_module, "needs_fresh_shell", lambda plan: Path("C:/Users/q/.local/bin/coop-data-doc.exe")
-    )
 
     def _must_not_run(*a, **k):
-        raise AssertionError("apply_plan must not run when the launcher is locked")
+        raise AssertionError("upgrade must not self-update")
 
     monkeypatch.setattr(upgrade_module, "apply_plan", _must_not_run)
 
     result = CliRunner().invoke(cli, ["-q", "upgrade"], obj={}, catch_exceptions=False)
     assert result.exit_code == 0
-    assert "NEW terminal" in result.output
+    assert "latest release is 0.16.0" in result.output
     assert "pipx upgrade coop-data-doc" in result.output
 
 
-def test_upgrade_launcher_locked_reactively_prints_guidance_exit_zero(monkeypatch):
-    # pip/git-checkout reach apply_plan; a LauncherLockedError prints plainly and
-    # exits 0 — it must NOT surface as a scary ClickException. Locks catch order.
+def test_upgrade_prints_pip_command(monkeypatch):
+    # a plain-pip install gets the pip command, not the pipx one.
     from coop_data_doc import upgrade as upgrade_module
-    from coop_data_doc.upgrade import LauncherLockedError, manual_upgrade_message
-
-    plan = _stub_plan("pip")
-    monkeypatch.setattr(upgrade_module, "build_plan", lambda *a, **k: plan)
-    monkeypatch.setattr(upgrade_module, "needs_fresh_shell", lambda p: None)
-
-    def _raise_locked(p, **k):
-        raise LauncherLockedError(manual_upgrade_message(p))
-
-    monkeypatch.setattr(upgrade_module, "apply_plan", _raise_locked)
-
-    result = CliRunner().invoke(cli, ["-q", "upgrade", "--yes"], obj={}, catch_exceptions=False)
-    assert result.exit_code == 0
-    assert "NEW terminal" in result.output
-    assert "python -m pip install -U coop-data-doc" in result.output
-
-
-def test_upgrade_plain_error_still_surfaces_as_click_error(monkeypatch):
-    # a non-lock UpgradeError must remain a real error (exit 1), not be swallowed.
-    from coop_data_doc import upgrade as upgrade_module
-    from coop_data_doc.upgrade import UpgradeError
 
     monkeypatch.setattr(upgrade_module, "build_plan", lambda *a, **k: _stub_plan("pip"))
-    monkeypatch.setattr(upgrade_module, "needs_fresh_shell", lambda p: None)
 
-    def _raise(p, **k):
-        raise UpgradeError("network unreachable")
-
-    monkeypatch.setattr(upgrade_module, "apply_plan", _raise)
-
-    result = CliRunner().invoke(cli, ["-q", "upgrade", "--yes"], obj={}, catch_exceptions=False)
-    assert result.exit_code == 1
-    assert "network unreachable" in result.output
+    result = CliRunner().invoke(cli, ["-q", "upgrade"], obj={}, catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "python -m pip install -U coop-data-doc" in result.output

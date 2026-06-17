@@ -329,6 +329,138 @@ def test_tmdl_imports_doc_comment_descriptions(tmp_path):
     assert cols["cust_id"] == "The customer key."
 
 
+def test_mcode_analysis_services_database():
+    from coop_data_doc.parsers.mcode import extract_source
+
+    m = 'let Source = AnalysisServices.Database("powerbi://x/y", "Finance"), C = Source[Data] in C'
+    ref, sql = extract_source(m)
+    assert ref is not None and ref.raw_kind == "as_model" and ref.object_name == "Finance"
+    assert sql == []
+
+
+def test_composite_model_directquery_to_model_lineage():
+    # an `entity` partition (mode: directQuery) points at a shared expression
+    # whose M calls AnalysisServices.Database("…","Finance") — that must become
+    # a feeds edge from the Finance model to this composite table.
+    from coop_data_doc.graph.model import Node, NodeType
+    from coop_data_doc.parsers.tmdl import link_composite_models, parse_table_file
+
+    g = LineageGraph()
+    g.add_node(
+        Node(
+            id="semantic_model:finance",
+            node_type=NodeType.SEMANTIC_MODEL,
+            name="finance",
+            display_name="Finance",
+        )
+    )
+    g.add_node(
+        Node(
+            id="semantic_model:finance + forecast",
+            node_type=NodeType.SEMANTIC_MODEL,
+            name="finance + forecast",
+            display_name="Finance + Forecast",
+        )
+    )
+
+    class _E:
+        path = "Finance + Forecast.SemanticModel/definition/tables/Sector.tmdl"
+        repo_key = "powerbi"
+
+    class _EX:
+        path = "Finance + Forecast.SemanticModel/definition/expressions.tmdl"
+        repo_key = "powerbi"
+
+    table_tmdl = (
+        "table Sector\n"
+        "\tcolumn id\n"
+        "\t\tdataType: int64\n"
+        "\tpartition Sector = entity\n"
+        "\t\tmode: directQuery\n"
+        "\t\tsource\n"
+        "\t\t\tentityName: Sector\n"
+        "\t\t\texpressionSource: 'DirectQuery to AS - Finance'\n"
+    )
+    expr_tmdl = (
+        "expression 'DirectQuery to AS - Finance' =\n"
+        "\t\tlet\n"
+        '\t\t    Source = AnalysisServices.Database("powerbi://api.powerbi.com/v1.0/myorg/X", "Finance"),\n'
+        "\t\t    Cube = Source[Data]\n"
+        "\t\tin\n"
+        "\t\t    Cube\n"
+        "\tlineageTag: abc123\n"
+    )
+    model_id = "semantic_model:finance + forecast"
+    parse_table_file(table_tmdl, "Finance + Forecast", model_id, _E(), g)
+    parse_table_file(expr_tmdl, "Finance + Forecast", model_id, _EX(), g)
+
+    table = g.nodes["pbi_table:finance + forecast.sector"]
+    assert table.metadata.get("storage_mode") == "directquery"
+    assert table.metadata["entity_source"]["expression"] == "DirectQuery to AS - Finance"
+    assert g.nodes[model_id].metadata["expressions"]  # shared expression captured
+
+    link_composite_models(g)
+    keys = {(e.source_id, e.target_id, e.edge_type.value) for e in g.edges}
+    assert ("semantic_model:finance", "pbi_table:finance + forecast.sector", "feeds") in keys
+
+
+def test_tmdl_storage_mode_import_partition():
+    from coop_data_doc.parsers.tmdl import parse_table_file
+
+    tmdl = (
+        "table Fact\n"
+        "\tpartition Fact = m\n"
+        "\t\tmode: import\n"
+        "\t\tsource =\n"
+        '\t\t\tlet Source = Sql.Database("s", "db"){[Schema="dbo",Item="fact"]}[Data] in Source\n'
+    )
+    g = LineageGraph()
+
+    class _E:
+        path = "M.SemanticModel/definition/tables/Fact.tmdl"
+        repo_key = "powerbi"
+
+    parse_table_file(tmdl, "M", "semantic_model:m", _E(), g)
+    assert g.nodes["pbi_table:m.fact"].metadata.get("storage_mode") == "import"
+
+
+def test_tmdl_multiline_measure_strips_fence_delimiters():
+    # TMDL wraps multi-line measure expressions in ``` … ```. Those fence lines
+    # must NOT end up in the stored DAX — otherwise the renderer's own ```dax
+    # fence is split into two empty code boxes with the DAX leaking as text.
+    from coop_data_doc.parsers.tmdl import parse_table_file
+
+    tmdl = (
+        "table Finance\n"
+        "\tmeasure 'Forecast' = ```\n"
+        "\t\t\t\n"
+        "\t\t\tVAR x = SELECTEDVALUE('Rows'[Link])\n"
+        "\t\t\tRETURN\n"
+        "\t\t\tCALCULATE(\n"
+        "\t\t\t    [Base],\n"
+        "\t\t\t    KEEPFILTERS('Acct'[Id] = x)\n"
+        "\t\t\t)\n"
+        "\t\t\t\n"
+        "\t\t\t```\n"
+        "\t\tformatString: #,##0\n"
+        "\tmeasure 'Simple' = SUM(Finance[amt])\n"
+    )
+    g = LineageGraph()
+
+    class _E:
+        path = "Finance.tmdl"
+        repo_key = "powerbi"
+
+    parse_table_file(tmdl, "Finance", "semantic_model:finance", _E(), g)
+    dax = g.nodes["measure:finance.forecast"].metadata["dax"]
+    assert "```" not in dax  # no stray fence delimiters
+    assert dax.startswith("VAR x =")  # boilerplate indent stripped, body kept
+    assert "    [Base]," in dax  # inner indentation preserved (dedented, not flattened)
+    assert dax.rstrip().endswith(")")
+    # the trailing property and the next measure are not swallowed by the fence
+    assert g.nodes["measure:finance.simple"].metadata["dax"] == "SUM(Finance[amt])"
+
+
 def test_tmdl_doc_comment_does_not_bleed_to_wrong_object(tmp_path):
     from coop_data_doc.parsers.tmdl import parse_table_file
 

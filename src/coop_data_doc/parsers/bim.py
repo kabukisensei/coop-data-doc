@@ -97,6 +97,8 @@ def parse_bim(
                 )
             )
             for partition in table.get("partitions") or []:
+                if partition.get("mode"):
+                    table_node.metadata["storage_mode"] = str(partition["mode"]).lower()
                 source = partition.get("source") or {}
                 expression = _expression_text(source.get("expression"))
                 if source.get("type") in (None, "m") and expression:
