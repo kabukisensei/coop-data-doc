@@ -314,7 +314,7 @@ def test_config_find_walks_up_parents(tmp_path: Path):
 
 def test_config_find_prefers_env_var(tmp_path: Path, monkeypatch):
     """COOP_DATA_DOC_CONFIG environment variable overrides discovery."""
-    from coop_data_doc.config import Config, DEFAULT_CONFIG
+    from coop_data_doc.config import Config
     env_config = tmp_path / "custom-config.yml"
     env_config.write_text("project_name: EnvTest\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
     monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(env_config))
