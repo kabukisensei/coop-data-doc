@@ -96,9 +96,7 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
     # dynamic/dynamic-source fixtures and rebuild for a clean baseline
     (tmp_path / "sql-repo" / "procs" / "usp_dynamic_refresh.sql").unlink()
     (tmp_path / "sql-repo" / "procs" / "usp_cursor_legacy.sql").unlink()
-    (
-        tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl"
-    ).unlink()
+    (tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl").unlink()
     # the committed cache answers the one genuinely ambiguous mapping,
     # exactly as a real interactive session would have
     (tmp_path / ".lineage-cache.json").write_text(
@@ -241,9 +239,7 @@ def test_check_fails_on_orphaned_committed_page(tmp_path: Path):
     setup_workspace(tmp_path)
     (tmp_path / "sql-repo" / "procs" / "usp_dynamic_refresh.sql").unlink()
     (tmp_path / "sql-repo" / "procs" / "usp_cursor_legacy.sql").unlink()
-    (
-        tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl"
-    ).unlink()
+    (tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl").unlink()
     (tmp_path / ".lineage-cache.json").write_text(
         '{\n  "version": 1,\n  "mappings": {\n'
         '    "pbi_table:sales.fact_sales": {\n'
@@ -289,9 +285,11 @@ def test_check_lenient_tolerates_risky_parses(tmp_path: Path):
 
 # --- Tests for config discovery and status command ---
 
+
 def test_config_find_in_cwd(tmp_path: Path):
     """Config.find() locates config in current directory."""
     from coop_data_doc.config import Config, DEFAULT_CONFIG
+
     config = tmp_path / DEFAULT_CONFIG
     config.write_text("project_name: Test\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
     found = Config.find(start_dir=tmp_path)
@@ -303,6 +301,7 @@ def test_config_find_in_cwd(tmp_path: Path):
 def test_config_find_walks_up_parents(tmp_path: Path):
     """Config.find() walks up parent directories to find config."""
     from coop_data_doc.config import Config, DEFAULT_CONFIG
+
     config = tmp_path / DEFAULT_CONFIG
     config.write_text("project_name: Test\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
     nested = tmp_path / "a" / "b" / "c"
@@ -315,8 +314,11 @@ def test_config_find_walks_up_parents(tmp_path: Path):
 def test_config_find_prefers_env_var(tmp_path: Path, monkeypatch):
     """COOP_DATA_DOC_CONFIG environment variable overrides discovery."""
     from coop_data_doc.config import Config
+
     env_config = tmp_path / "custom-config.yml"
-    env_config.write_text("project_name: EnvTest\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
+    env_config.write_text(
+        "project_name: EnvTest\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n"
+    )
     monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(env_config))
     found = Config.find(start_dir=tmp_path)
     assert found == env_config

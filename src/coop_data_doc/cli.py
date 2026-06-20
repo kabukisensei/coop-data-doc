@@ -297,7 +297,9 @@ def help_cmd(ctx: click.Context, command_name: str | None) -> None:
 
 
 @cli.command()
-@click.option("--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents).")
+@click.option(
+    "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."
+)
 @click.pass_context
 def status(ctx: click.Context, config_path: str | None) -> None:
     """Show project status: config found? docs built? stale?"""
@@ -427,7 +429,9 @@ def init(path: str, force: bool) -> None:
 
 
 @cli.command()
-@click.option("--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents).")
+@click.option(
+    "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."
+)
 @click.option("--non-interactive", is_flag=True, help="Never prompt (CI mode).")
 @click.option("--strict", is_flag=True, help="Exit 2 on unresolved refs / risky parses.")
 @click.pass_context
@@ -479,7 +483,12 @@ def _run_build(
 
 
 _BUILD_OPTIONS = [
-    click.option("--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."),
+    click.option(
+        "--config",
+        "config_path",
+        default=None,
+        help="Config file path (default: discover in cwd and parents).",
+    ),
     click.option("--non-interactive", is_flag=True, help="Never prompt (CI mode)."),
     click.option("--strict", is_flag=True, help="Exit 2 on unresolved refs / risky parses."),
     click.option("--skip-html", is_flag=True, help="Markdown only; skip the mkdocs site."),
@@ -558,7 +567,9 @@ def upgrade(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents).")
+@click.option(
+    "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."
+)
 @click.option(
     "--lenient",
     is_flag=True,
