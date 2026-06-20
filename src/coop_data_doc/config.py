@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -17,6 +18,35 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError,
 DEFAULT_CONFIG = "coop-data-doc.yml"
 
 VALID_LAYERS = ("bronze", "silver", "gold")
+# Default site theme = the Cooptimize brand. Applied to every build unless the
+# config's branding.* overrides it (the setup wizard prefills these). Any user
+# can change them to their own colors.
+DEFAULT_PRIMARY_COLOR = "#004060"  # header / nav / links
+DEFAULT_ACCENT_COLOR = "#e04020"  # hover / active
+# safe CSS color forms for branding (no '{', '}', ';', newlines → no injection)
+_COLOR_RE = re.compile(
+    r"^(#[0-9A-Fa-f]{3,8}|rgb\([\d,\s.%]+\)|rgba\([\d,\s.%]+\)|hsl\([\d,\s.%]+\)|[A-Za-z]+)$"
+)
+
+
+def _within_or_equal(inner: Path, outer: Path) -> bool:
+    """True when ``inner`` is the same path as ``outer`` or sits inside it."""
+    try:
+        inner.relative_to(outer)
+        return True
+    except ValueError:
+        return False
+
+
+def output_dirs_conflict(output_dir: Path, site_dir: Path) -> bool:
+    """Whether the markdown and HTML output dirs collide.
+
+    mkdocs rebuilds the HTML site by wiping ``site_dir`` and filling it, so it
+    must not be the markdown dir nor nested either way — otherwise the build
+    clobbers the markdown or copies the build into itself. Expects already
+    resolved absolute paths; True when they conflict.
+    """
+    return _within_or_equal(site_dir, output_dir) or _within_or_equal(output_dir, site_dir)
 
 
 class ParseWarning(BaseModel):
@@ -59,6 +89,31 @@ class OutputConfig(BaseModel):
     site_dir: str = "./data-docs-site"
 
 
+class Branding(BaseModel):
+    """Optional company branding for the HTML site: a logo, a favicon, and
+    brand colors (hex). All optional; relative paths resolve against the
+    config file's folder."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    logo: str | None = None
+    favicon: str | None = None
+    # default to the Cooptimize brand theme; overridable in the config / wizard
+    primary_color: str | None = DEFAULT_PRIMARY_COLOR  # header / nav / links
+    accent_color: str | None = DEFAULT_ACCENT_COLOR  # hover / active
+
+    @field_validator("primary_color", "accent_color")
+    @classmethod
+    def _check_color(cls, value: str | None) -> str | None:
+        # only safe color forms — prevents CSS injection into brand.css
+        if value and not _COLOR_RE.match(value):
+            raise ValueError(
+                f"invalid color {value!r}; use hex (#rgb / #rrggbb / #rrggbbaa), "
+                "rgb()/rgba()/hsl(), or a CSS color name"
+            )
+        return value
+
+
 class LayerRule(BaseModel):
     """Which objects belong to a medallion layer.
 
@@ -85,6 +140,8 @@ class Config(BaseModel):
     repos: dict[str, RepoConfig]
     schema_mappings: list[SchemaMapping] = Field(default_factory=list)
     layers: dict[str, LayerRule] = Field(default_factory=dict)
+    ignore_schemas: list[str] = Field(default_factory=list)
+    branding: Branding = Field(default_factory=Branding)
     output: OutputConfig = Field(default_factory=OutputConfig)
     sql_dialect: str = "tsql"
 
@@ -167,6 +224,17 @@ class Config(BaseModel):
             )
             raise ConfigError(f"Invalid config in {path}: {issues}") from exc
         config._base_dir = path.resolve().parent
+        out_dir, site = config.output_dir(), config.site_dir()
+        if output_dirs_conflict(out_dir, site):
+            raise ConfigError(
+                "output.dir and output.site_dir must be separate folders — neither can be "
+                "inside the other. mkdocs rebuilds the HTML site by wiping site_dir, which "
+                "would clobber or duplicate your markdown.\n"
+                f"  dir:      {config.output.dir}  ->  {out_dir}\n"
+                f"  site_dir: {config.output.site_dir}  ->  {site}\n"
+                "Fix: put them side by side, e.g. dir: ./data-docs and site_dir: "
+                f"./data-docs-site (configured in {path})."
+            )
         for repo_key in sorted(config.repos):
             root = config.repo_root(repo_key)
             if not root.is_dir():
@@ -184,11 +252,11 @@ class Config(BaseModel):
                 project_name="Coop BI Estate",
                 sql_path="../sql-repo",
                 pbi_path="../pbi-repo",
-                mappings=[("salespm", "Sales and Project Management")],
+                mappings=[("sales", "Sales Analytics")],
                 layers={
-                    "bronze": {"schemas": ["d365po", "d365fo"], "paths": []},
+                    "bronze": {"schemas": ["erp_orders", "erp_finance"], "paths": []},
                     "silver": {"schemas": ["stg"], "paths": []},
-                    "gold": {"schemas": ["dwm", "common"], "paths": ["**/dim/**", "**/fact/**"]},
+                    "gold": {"schemas": ["mart", "common"], "paths": ["**/dim/**", "**/fact/**"]},
                 },
             ),
             encoding="utf-8",
@@ -237,6 +305,14 @@ repos:
 # to a read/write heuristic (read-only source -> silver, else gold).
 {layers_block}
 
+# Schemas to drop entirely (never documented). System schemas (sys,
+# information_schema, tempdb, db_*) are always dropped automatically.
+ignore_schemas: {ignore_schemas}
+
+# Optional company branding for the HTML site (logo/favicon paths relative
+# to this file; colors as hex). Leave empty for the default theme.
+{branding_block}
+
 output:
   dir: {output_dir}        # markdown docs (for agents)
   site_dir: {site_dir}     # html portal (for humans)
@@ -254,6 +330,8 @@ def render_config_yaml(
     pbi_path: str,
     mappings: list[tuple[str, str]],
     layers: dict[str, dict[str, list[str]]] | None = None,
+    ignore_schemas: list[str] | None = None,
+    branding: dict[str, str] | None = None,
     sql_include: list[str] | None = None,
     sql_exclude: list[str] | None = None,
     pbi_include: list[str] | None = None,
@@ -291,6 +369,17 @@ def render_config_yaml(
         layers_block = "\n".join(lines)
     else:
         layers_block = "layers: {}"
+
+    brand = {k: v for k, v in (branding or {}).items() if v}
+    if brand:
+        lines = ["branding:"]
+        for key in ("logo", "favicon", "primary_color", "accent_color"):
+            if brand.get(key):
+                lines.append(f"  {key}: {json.dumps(brand[key])}")
+        branding_block = "\n".join(lines)
+    else:
+        branding_block = "branding: {}"
+
     return _CONFIG_TEMPLATE.format(
         project_name=json.dumps(project_name),
         sql_path=json.dumps(sql_path),
@@ -301,6 +390,8 @@ def render_config_yaml(
         pbi_exclude=json.dumps(pbi_exclude if pbi_exclude is not None else []),
         mappings_block=mappings_block,
         layers_block=layers_block,
+        ignore_schemas=json.dumps(ignore_schemas or []),
+        branding_block=branding_block,
         output_dir=json.dumps(output_dir),
         site_dir=json.dumps(site_dir),
         sql_dialect=json.dumps(sql_dialect),
