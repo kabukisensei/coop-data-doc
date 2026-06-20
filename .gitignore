@@ -1,8 +1,51 @@
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+*.token
+*.env
+.envrc
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
+venv/
 dist/
 build/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hermes
+.hermes/
+
+# Database (if any)
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Backup files
+*.bak
+*.backup
+*.orig
+*.swp
+*~
+
+# Node (if ever used)
+node_modules/

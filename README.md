@@ -391,6 +391,7 @@ markers is regenerated, so put your notes inside them.
 | Command | What it does |
 | --- | --- |
 | `coop-data-doc` | interactive menu (in scripts/CI it prints help instead) |
+| `coop-data-doc status` | **show project state** — config found? docs built? stale? |
 | `coop-data-doc setup [PATH]` | guided wizard — create or update the config (prefills current values) |
 | `coop-data-doc init [PATH] [--force]` | write a commented starter config to edit by hand |
 | `coop-data-doc update` | re-scan the repos and refresh all documentation |
@@ -400,12 +401,14 @@ markers is regenerated, so put your notes inside them.
 | `coop-data-doc upgrade [--check] [--yes]` | update the **tool itself** + dependency updates |
 | `coop-data-doc help [command]` | show help (same as `--help`) |
 
+**Config discovery:** `coop-data-doc` searches for `coop-data-doc.yml` in the current directory and walks up parent directories (like `git` finding `.git`). You can override with `--config PATH` or the `COOP_DATA_DOC_CONFIG` environment variable.
+
 Options for `build`/`update`: `--skip-html` (markdown only), `--serve` (live-preview
-the site). `scan`/`build`/`update` all accept `--non-interactive` (never prompt; for
-CI) and `--strict` (exit code 2 on unresolved references or risky parses). Every
-pipeline command accepts `--config PATH` (default: `./coop-data-doc.yml`). Global flags
-go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet) —
-e.g. `coop-data-doc -q update`.
+ the site). `scan`/`build`/`update` all accept `--non-interactive` (never prompt; for
+ CI) and `--strict` (exit code 2 on unresolved references or risky parses). Every
+ pipeline command accepts `--config PATH` (default: discover in cwd and parents). Global flags
+ go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet) —
+ e.g. `coop-data-doc -q update`.
 
 `scan`/`build`/`update` show progress bars on stderr while they work, but only in an
 interactive terminal — they're suppressed by `-q` and absent in CI or piped output, and
@@ -460,9 +463,9 @@ Ctrl+C.
 
 ## 🤖 For AI agents
 
-The Markdown output (`output.dir`, default `data-docs/`) is designed to be read by LLM
-agents without custom tooling. If you're an agent (or wiring one up), here's the
-contract:
+> **For the full machine-readable contract, see `AGENTS.md`.** It covers the JSON schema, CLI flags, exit codes, config discovery, and Python API.
+
+The Markdown output (`output.dir`, default `data-docs/`) is designed to be read by LLM agents without custom tooling. Here's the quick summary:
 
 **Entry points**
 

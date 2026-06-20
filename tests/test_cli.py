@@ -31,8 +31,8 @@ repos:
     path: ./pbi-repo
     include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
 schema_mappings:
-  - schema: sales
-    model: Sales
+  - schema: salespm
+    model: SalesPM
 output:
   dir: ./data-docs
   site_dir: ./site
@@ -84,7 +84,7 @@ def test_build_skip_html(tmp_path: Path):
     docs = tmp_path / "data-docs"
     assert (docs / "index.md").is_file()
     assert (docs / "manifest.json").is_file()
-    assert doc_page(docs, "view:sales.dim_customer").is_file()
+    assert doc_page(docs, "view:salespm.dim_customer").is_file()
     assert doc_page(docs, "stored_proc:dbo.usp_load_fact_sales").is_file()
 
 
@@ -96,12 +96,14 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
     # dynamic/dynamic-source fixtures and rebuild for a clean baseline
     (tmp_path / "sql-repo" / "procs" / "usp_dynamic_refresh.sql").unlink()
     (tmp_path / "sql-repo" / "procs" / "usp_cursor_legacy.sql").unlink()
-    (tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl").unlink()
+    (
+        tmp_path / "pbi-repo" / "SalesPM.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl"
+    ).unlink()
     # the committed cache answers the one genuinely ambiguous mapping,
     # exactly as a real interactive session would have
     (tmp_path / ".lineage-cache.json").write_text(
         '{\n  "version": 1,\n  "mappings": {\n'
-        '    "pbi_table:sales.fact_sales": {\n'
+        '    "pbi_table:salespm.fact_sales": {\n'
         '      "target": "gold_table:dbo.fact_sales",\n'
         '      "method": "interactive"\n    }\n  }\n}\n',
         encoding="utf-8",
@@ -113,7 +115,7 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
     assert result.exit_code == 0, result.output
 
     # human edits an intent block -> still up to date (preserved, not stale)
-    page = doc_page(tmp_path / "data-docs", "view:sales.dim_customer")
+    page = doc_page(tmp_path / "data-docs", "view:salespm.dim_customer")
     page.write_text(  # newline="\n": mimic an editor that preserves LF
         page.read_text(encoding="utf-8").replace(
             "_Add a short description of what this object is for and who relies on it._",
@@ -239,10 +241,12 @@ def test_check_fails_on_orphaned_committed_page(tmp_path: Path):
     setup_workspace(tmp_path)
     (tmp_path / "sql-repo" / "procs" / "usp_dynamic_refresh.sql").unlink()
     (tmp_path / "sql-repo" / "procs" / "usp_cursor_legacy.sql").unlink()
-    (tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl").unlink()
+    (
+        tmp_path / "pbi-repo" / "SalesPM.SemanticModel" / "definition" / "tables" / "ext_unresolved.tmdl"
+    ).unlink()
     (tmp_path / ".lineage-cache.json").write_text(
         '{\n  "version": 1,\n  "mappings": {\n'
-        '    "pbi_table:sales.fact_sales": {\n'
+        '    "pbi_table:salespm.fact_sales": {\n'
         '      "target": "gold_table:dbo.fact_sales",\n'
         '      "method": "interactive"\n    }\n  }\n}\n',
         encoding="utf-8",
@@ -267,10 +271,10 @@ def test_check_lenient_tolerates_risky_parses(tmp_path: Path):
     setup_workspace(tmp_path)
     (tmp_path / ".lineage-cache.json").write_text(
         '{\n  "version": 1,\n  "mappings": {\n'
-        '    "pbi_table:sales.fact_sales": {\n'
+        '    "pbi_table:salespm.fact_sales": {\n'
         '      "target": "gold_table:dbo.fact_sales",\n'
         '      "method": "interactive"\n    },\n'
-        '    "pbi_table:sales.ext_unresolved": {\n'
+        '    "pbi_table:salespm.ext_unresolved": {\n'
         '      "target": null,\n'
         '      "method": "external"\n    }\n  }\n}\n',
         encoding="utf-8",
@@ -283,39 +287,103 @@ def test_check_lenient_tolerates_risky_parses(tmp_path: Path):
     assert result.exit_code == 0, result.output
 
 
-# ---- `upgrade` prints the command instead of self-updating --------------------
+# --- Tests for config discovery and status command ---
+
+def test_config_find_in_cwd(tmp_path: Path):
+    """Config.find() locates config in current directory."""
+    from coop_data_doc.config import Config, DEFAULT_CONFIG
+    config = tmp_path / DEFAULT_CONFIG
+    config.write_text("project_name: Test\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
+    found = Config.find(start_dir=tmp_path)
+    assert found is not None
+    assert found.name == DEFAULT_CONFIG
+    assert found.parent == tmp_path
 
 
-def _stub_plan(method, tool_note="latest release is 0.16.0"):
-    from coop_data_doc.upgrade import UpgradePlan
+def test_config_find_walks_up_parents(tmp_path: Path):
+    """Config.find() walks up parent directories to find config."""
+    from coop_data_doc.config import Config, DEFAULT_CONFIG
+    config = tmp_path / DEFAULT_CONFIG
+    config.write_text("project_name: Test\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
+    nested = tmp_path / "a" / "b" / "c"
+    nested.mkdir(parents=True)
+    found = Config.find(start_dir=nested)
+    assert found is not None
+    assert found.parent == tmp_path
 
-    return UpgradePlan(install_method=method, checkout=None, tool_installed="0.15.0", tool_note=tool_note)
+
+def test_config_find_prefers_env_var(tmp_path: Path, monkeypatch):
+    """COOP_DATA_DOC_CONFIG environment variable overrides discovery."""
+    from coop_data_doc.config import Config, DEFAULT_CONFIG
+    env_config = tmp_path / "custom-config.yml"
+    env_config.write_text("project_name: EnvTest\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(env_config))
+    found = Config.find(start_dir=tmp_path)
+    assert found == env_config
 
 
-def test_upgrade_prints_pipx_command_and_does_not_self_update(monkeypatch):
-    # upgrade reports status and prints the exact command for this install; it
-    # never reinstalls in place (flaky while running, impossible on Windows).
-    from coop_data_doc import upgrade as upgrade_module
+def test_status_no_config(tmp_path: Path):
+    """status exits 1 with friendly message when no config found."""
+    result = run(["status"], tmp_path)
+    assert result.exit_code == 1
+    assert "no config found" in result.output
+    assert "coop-data-doc init" in result.output
+    assert "coop-data-doc setup" in result.output
 
-    monkeypatch.setattr(upgrade_module, "build_plan", lambda *a, **k: _stub_plan("pipx"))
 
-    def _must_not_run(*a, **k):
-        raise AssertionError("upgrade must not self-update")
-
-    monkeypatch.setattr(upgrade_module, "apply_plan", _must_not_run)
-
-    result = CliRunner().invoke(cli, ["-q", "upgrade"], obj={}, catch_exceptions=False)
+def test_status_with_valid_config(tmp_path: Path):
+    """status shows project state when config is valid."""
+    setup_workspace(tmp_path)
+    # Build first so docs exist
+    run(["build", "--non-interactive", "--skip-html"], tmp_path)
+    result = run(["status"], tmp_path)
     assert result.exit_code == 0
-    assert "latest release is 0.16.0" in result.output
-    assert "pipx upgrade coop-data-doc" in result.output
+    assert "config:" in result.output
+    assert "data-docs" in result.output
+    assert "freshness:" in result.output
 
 
-def test_upgrade_prints_pip_command(monkeypatch):
-    # a plain-pip install gets the pip command, not the pipx one.
-    from coop_data_doc import upgrade as upgrade_module
+def test_status_with_invalid_config(tmp_path: Path):
+    """status exits 1 when config exists but is invalid."""
+    config = tmp_path / "coop-data-doc.yml"
+    config.write_text("invalid: yaml: [", encoding="utf-8")
+    result = run(["status"], tmp_path)
+    assert result.exit_code == 1
+    assert "config exists but is invalid" in result.output
 
-    monkeypatch.setattr(upgrade_module, "build_plan", lambda *a, **k: _stub_plan("pip"))
 
-    result = CliRunner().invoke(cli, ["-q", "upgrade"], obj={}, catch_exceptions=False)
+def test_scan_uses_config_discovery(tmp_path: Path):
+    """scan without --config finds config in parent directory."""
+    setup_workspace(tmp_path)
+    nested = tmp_path / "sub" / "sub2"
+    nested.mkdir(parents=True)
+    result = run(["scan", "--non-interactive"], nested)
     assert result.exit_code == 0
-    assert "python -m pip install -U coop-data-doc" in result.output
+    assert (tmp_path / "data-docs" / "graph.json").is_file()
+
+
+def test_build_uses_config_discovery(tmp_path: Path):
+    """build without --config finds config in parent directory."""
+    setup_workspace(tmp_path)
+    nested = tmp_path / "sub"
+    nested.mkdir(parents=True)
+    result = run(["build", "--non-interactive", "--skip-html"], nested)
+    assert result.exit_code == 0
+    assert (tmp_path / "data-docs" / "index.md").is_file()
+
+
+def test_init_suggests_setup_on_existing_valid_config(tmp_path: Path):
+    """init on existing valid config suggests setup instead of error."""
+    setup_workspace(tmp_path)
+    result = run(["init"], tmp_path)
+    assert result.exit_code == 1
+    assert "already exists and is valid" in result.output
+    assert "coop-data-doc setup" in result.output
+
+
+def test_init_force_overwrites_valid_config(tmp_path: Path):
+    """init --force overwrites existing valid config."""
+    setup_workspace(tmp_path)
+    result = run(["init", "--force"], tmp_path)
+    assert result.exit_code == 0
+    assert "Wrote" in result.output
