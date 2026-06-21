@@ -308,6 +308,8 @@ def help_cmd(ctx: click.Context, command_name: str | None) -> None:
 @click.pass_context
 def status(ctx: click.Context, config_path: str | None) -> None:
     """Show project status: config found? docs built? stale?"""
+    # offline by design — to check PyPI for a newer release, run `upgrade`
+    click.echo(f"version:   {__version__} (run `coop-data-doc upgrade` to check for updates)")
     # honor an explicit --config; otherwise discover in cwd and parents
     if config_path is not None:
         found = Path(config_path)

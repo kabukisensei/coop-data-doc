@@ -21,6 +21,7 @@ from coop_data_doc.graph.model import (
     LineageGraph,
     Node,
     NodeType,
+    merge_relationships,
     normalize_identifier,
 )
 from coop_data_doc.parsers.dax import link_measures
@@ -44,6 +45,8 @@ _EXPRESSION_RE = re.compile(r"^expression\s+('[^']*'|\"[^\"]*\"|\S+)\s*=\s*(.*)$
 _RELATIONSHIP_RE = re.compile(r"^relationship\s+(\S+)")
 _FROM_COLUMN_RE = re.compile(r"^fromColumn\s*:\s*(.+?)\s*$")
 _TO_COLUMN_RE = re.compile(r"^toColumn\s*:\s*(.+?)\s*$")
+_IS_ACTIVE_RE = re.compile(r"^isActive\s*:\s*(\S+)")
+_CROSS_FILTER_RE = re.compile(r"^crossFilteringBehavior\s*:\s*(\S+)")
 _PROPERTY_RE = re.compile(r"^[A-Za-z][\w]*\s*:")
 
 
@@ -358,13 +361,19 @@ def parse_table_file(
 
 
 def parse_model_file(text: str, model_node: Node) -> None:
-    """Collect relationship blocks from model.tmdl onto the model node."""
-    relationships: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
+    """Collect relationship blocks from model.tmdl onto the model node.
+
+    Each relationship records its column endpoints plus whether it is active
+    (default ``true``) and whether it cross-filters in both directions, so the
+    docs can show the model's real shape — inactive (role-playing) and
+    bidirectional edges, not just that an edge exists.
+    """
+    relationships: list[dict] = []
+    current: dict | None = None
     for raw in text.splitlines():
         stripped = raw.strip()
         if _RELATIONSHIP_RE.match(stripped) and _indent(raw) == 0:
-            current = {}
+            current = {"active": True, "bidirectional": False}
             relationships.append(current)
             continue
         if current is None:
@@ -378,14 +387,15 @@ def parse_model_file(text: str, model_node: Node) -> None:
         to_match = _TO_COLUMN_RE.match(stripped)
         if to_match:
             current["to"] = normalize_identifier(to_match.group(1))
-    complete = sorted(
-        (r for r in relationships if "from" in r and "to" in r),
-        key=lambda r: (r["from"], r["to"]),
-    )
+        active_match = _IS_ACTIVE_RE.match(stripped)
+        if active_match:
+            current["active"] = active_match.group(1).strip().lower() != "false"
+        cross_match = _CROSS_FILTER_RE.match(stripped)
+        if cross_match:
+            current["bidirectional"] = cross_match.group(1).strip().lower() == "bothdirections"
+    complete = [r for r in relationships if "from" in r and "to" in r]
     if complete:
-        existing = model_node.metadata.get("relationships", [])
-        merged = {(r["from"], r["to"]) for r in existing} | {(r["from"], r["to"]) for r in complete}
-        model_node.metadata["relationships"] = [{"from": pair[0], "to": pair[1]} for pair in sorted(merged)]
+        merge_relationships(model_node, complete)
 
 
 def link_composite_models(graph: LineageGraph) -> list[ParseWarning]:

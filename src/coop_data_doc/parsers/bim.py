@@ -18,6 +18,7 @@ from coop_data_doc.graph.model import (
     LineageGraph,
     Node,
     NodeType,
+    merge_relationships,
     normalize_identifier,
 )
 from coop_data_doc.parsers.dax import link_measures
@@ -134,19 +135,19 @@ def parse_bim(
                     )
                 )
 
-        relationships = sorted(
+        relationships = [
             {
-                (
-                    normalize_identifier(f"{r.get('fromTable', '')}.{r.get('fromColumn', '')}"),
-                    normalize_identifier(f"{r.get('toTable', '')}.{r.get('toColumn', '')}"),
-                )
-                for r in model.get("relationships") or []
-                if r.get("fromTable") and r.get("toTable")
+                "from": normalize_identifier(f"{r.get('fromTable', '')}.{r.get('fromColumn', '')}"),
+                "to": normalize_identifier(f"{r.get('toTable', '')}.{r.get('toColumn', '')}"),
+                # BIM omits isActive when true; crossFilteringBehavior is a string
+                # ("oneDirection" / "bothDirections" / "automatic").
+                "active": r.get("isActive", True) is not False,
+                "bidirectional": str(r.get("crossFilteringBehavior", "")).lower() == "bothdirections",
             }
-        )
+            for r in model.get("relationships") or []
+            if r.get("fromTable") and r.get("toTable")
+        ]
         if relationships:
-            existing = {(r["from"], r["to"]) for r in model_node.metadata.get("relationships", [])}
-            merged = sorted(existing | set(relationships))
-            model_node.metadata["relationships"] = [{"from": pair[0], "to": pair[1]} for pair in merged]
+            merge_relationships(model_node, relationships)
         link_measures(graph, model_name)
     return warnings
