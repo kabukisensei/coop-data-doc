@@ -470,6 +470,72 @@ def test_semantic_model_page_drops_child_prefix(tmp_path: Path):
     assert "# finance.Total Sales" in measure_page
 
 
+def _parse_grid(page_text: str):
+    """Parse the relationship grid markdown table into (fact_columns, rows),
+    where rows maps a dimension's first-cell text to {fact_column: cell}."""
+    grid_lines = [ln for ln in page_text.splitlines() if ln.startswith("|")]
+    sep_idx = next(
+        i for i, ln in enumerate(grid_lines) if set(ln.replace("|", "").replace(" ", "")) <= set(":-")
+    )
+    header = [c.strip() for c in grid_lines[sep_idx - 1].strip("|").split("|")]
+    facts = header[1:]
+    rows: dict[str, dict[str, str]] = {}
+    for ln in grid_lines[sep_idx + 1 :]:
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        rows[cells[0]] = dict(zip(facts, cells[1:]))
+    return facts, rows
+
+
+def test_semantic_model_relationship_grid(tmp_path: Path):
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Sales", display_name="Sales"))
+    for name, disp in [
+        ("fact_sales", "Fact Sales"),
+        ("fact_returns", "Fact Returns"),
+        ("dim_customer", "Dim Customer"),
+        ("dim_date", "Dim Date"),
+    ]:
+        g.add_node(make_node(NodeType.PBI_TABLE, "sales", name, display_name=disp))
+    g.nodes["semantic_model:sales"].metadata["relationships"] = [
+        {"from": "fact_sales.customer_id", "to": "dim_customer.customer_id"},
+        {"from": "fact_sales.date_id", "to": "dim_date.date_id"},
+        {"from": "fact_returns.date_id", "to": "dim_date.date_id"},
+    ]
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
+    assert "## Joel's Relationship Grid" in page
+    facts, rows = _parse_grid(page)
+    # facts are columns (link text), dims are rows; both sorted by table name
+    assert [f.split("]")[0] + "]" for f in facts] == ["[Fact Returns]", "[Fact Sales]"]
+    assert [k.split("]")[0] + "]" for k in rows] == ["[Dim Customer]", "[Dim Date]"]
+    cust = next(v for k, v in rows.items() if "Dim Customer" in k)
+    date = next(v for k, v in rows.items() if "Dim Date" in k)
+    fact_sales_col = next(c for c in facts if "Fact Sales" in c)
+    fact_returns_col = next(c for c in facts if "Fact Returns" in c)
+    # dim_customer relates only to fact_sales; dim_date relates to both
+    assert cust[fact_sales_col] == "🟢" and cust[fact_returns_col] == ""
+    assert date[fact_sales_col] == "🟢" and date[fact_returns_col] == "🟢"
+
+
+def test_relationship_grid_placeholder_when_empty(tmp_path: Path):
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Empty", display_name="Empty"))
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "semantic_model:empty").read_text(encoding="utf-8")
+    assert "## Joel's Relationship Grid" in page  # section always present on a model
+    assert "_No relationships defined in this semantic model._" in page
+    assert "🟢" not in page
+
+
+def test_relationship_grid_only_on_semantic_models(tmp_path: Path):
+    # build_graph() has a pbi_table and a (relationship-less) semantic model
+    render_markdown(build_graph(), tmp_path, "Test")
+    pbit = page_path(tmp_path, "pbi_table:sales.dim_customer").read_text(encoding="utf-8")
+    model = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
+    assert "Joel's Relationship Grid" not in pbit  # not on table pages
+    assert "## Joel's Relationship Grid" in model  # present on the model page
+
+
 def test_source_fence_survives_backticks_in_code(tmp_path: Path):
     g = LineageGraph()
     code = "-- ``` not a fence\nSELECT 1;"

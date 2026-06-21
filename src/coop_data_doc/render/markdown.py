@@ -44,6 +44,12 @@ _CONTRACT_TYPES = frozenset(
 # composite model (Import cached vs. DirectQuery live vs. Dual).
 _STORAGE_LABELS = {"import": "Import", "directquery": "DirectQuery", "dual": "Dual"}
 
+# Marker dropped in a relationship-grid cell where a fact relates to a
+# dimension. A literal green-circle codepoint (not a Material emoji shortcode)
+# so it renders over file:// with no icon-font/CDN fetch — same offline-first
+# reasoning as the ⚠ used elsewhere in this module.
+_RELATIONSHIP_DOT = "🟢"
+
 _TYPE_TITLES: dict[NodeType, str] = {
     NodeType.BRONZE_TABLE: "Source Tables (Bronze)",
     NodeType.SILVER_TABLE: "Tables (Silver)",
@@ -165,6 +171,56 @@ def _lineage_table(graph: LineageGraph, node: Node, ids: list[str], direction: s
     return "\n".join(lines)
 
 
+def _relationship_grid(graph: LineageGraph, node: Node) -> str:
+    """Render "Joel's Relationship Grid" — a fact × dimension matrix for a
+    semantic model, built from its parsed relationships (``metadata["relationships"]``,
+    each a ``{"from": "<table>.<col>", "to": "<table>.<col>"}`` pair).
+
+    Power BI authors relationships from the *many* side to the *one* side, so
+    each ``from`` table is a fact (a grid column) and each ``to`` table is a
+    dimension (a grid row); a green dot marks the cell where the two relate.
+    Tables resolve to their page links and original-case display names; a
+    table with no node (e.g. unparsed) falls back to its bare name.
+    """
+    lines = ["## Joel's Relationship Grid", ""]
+    relationships = node.metadata.get("relationships") or []
+    if not relationships:
+        lines.append("_No relationships defined in this semantic model._")
+        return "\n".join(lines)
+
+    facts: set[str] = set()
+    dims: set[str] = set()
+    related: set[tuple[str, str]] = set()  # (dimension table, fact table)
+    for rel in relationships:
+        fact = rel["from"].partition(".")[0]
+        dim = rel["to"].partition(".")[0]
+        facts.add(fact)
+        dims.add(dim)
+        related.add((dim, fact))
+    fact_cols = sorted(facts)
+    dim_rows = sorted(dims)
+
+    model_key = normalize_identifier(node.name)
+
+    def label(table: str) -> str:
+        other = graph.nodes.get(Node.make_id(NodeType.PBI_TABLE, model_key, table))
+        if other is not None:
+            return f"[{_cell(other.display)}]({doc_relpath(other)})"
+        return _cell(table)
+
+    lines.append(
+        "Facts (the *many* side of each relationship) are columns; dimensions "
+        f"(the *one* side) are rows. A {_RELATIONSHIP_DOT} marks a relationship."
+    )
+    lines.append("")
+    lines.append("| Dimension \\ Fact | " + " | ".join(label(f) for f in fact_cols) + " |")
+    lines.append("| --- | " + " | ".join([":---:"] * len(fact_cols)) + " |")
+    for dim in dim_rows:
+        cells = (_RELATIONSHIP_DOT if (dim, fact) in related else "" for fact in fact_cols)
+        lines.append(f"| {label(dim)} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def _existing_intent(path: Path) -> str:
     if not path.is_file():
         return _DEFAULT_INTENT
@@ -225,6 +281,8 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
             else []
         ),
         *([_contract_section(node), ""] if node.node_type in _CONTRACT_TYPES else []),
+        # fact × dimension relationship matrix, semantic models only
+        *([_relationship_grid(graph, node), ""] if node.node_type is NodeType.SEMANTIC_MODEL else []),
     ]
     # the defining SQL for tables/views/procs (no source_code -> no section)
     if node.source_code:

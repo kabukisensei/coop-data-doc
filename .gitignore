@@ -1,37 +1,43 @@
 # Secrets
 .env
 .env.*
+*.env
 *.pem
 *.key
 *.token
-*.env
 .envrc
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
+*.py[cod]
+*.egg-info/
+.eggs/
 dist/
 build/
-*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / lint / type caches
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
 
-# IDE
-.vscode/
-.idea/
-*.iml
+# coop-data-doc generated output (never commit built docs or local state)
+data-docs/
+data-docs-site/
+site/
+.coop-mkdocs.yml
+.lineage-cache.json
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Hermes
-.hermes/
-
-# Database (if any)
+# Databases
 *.db
 *.sqlite
 *.sqlite3
@@ -40,12 +46,24 @@ Thumbs.db
 *.log
 logs/
 
+# Editors / IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+*~
+
 # Backup files
 *.bak
 *.backup
 *.orig
-*.swp
-*~
+
+# OS cruft
+.DS_Store
+Thumbs.db
 
 # Node (if ever used)
 node_modules/
+
+# Local agent state
+.claude/
