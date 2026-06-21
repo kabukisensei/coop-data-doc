@@ -5,6 +5,8 @@ Start with `ARCHITECTURE.md` (pipeline, data model, design decisions), then
 `CONTRIBUTING.md` (rules). The `tasks/` briefs document each module's
 interface in depth.
 
+**For the machine-readable agent contract, see `AGENTS.md`.**
+
 ## Commands
 
 ```bash

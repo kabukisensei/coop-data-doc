@@ -391,6 +391,7 @@ markers is regenerated, so put your notes inside them.
 | Command | What it does |
 | --- | --- |
 | `coop-data-doc` | interactive menu (in scripts/CI it prints help instead) |
+| `coop-data-doc status` | **show project state** — config found? docs built? stale? |
 | `coop-data-doc setup [PATH]` | guided wizard — create or update the config (prefills current values) |
 | `coop-data-doc init [PATH] [--force]` | write a commented starter config to edit by hand |
 | `coop-data-doc update` | re-scan the repos and refresh all documentation |
@@ -400,12 +401,14 @@ markers is regenerated, so put your notes inside them.
 | `coop-data-doc upgrade [--check] [--yes]` | update the **tool itself** + dependency updates |
 | `coop-data-doc help [command]` | show help (same as `--help`) |
 
+**Config discovery:** `coop-data-doc` searches for `coop-data-doc.yml` in the current directory and walks up parent directories (like `git` finding `.git`). You can override with `--config PATH` or the `COOP_DATA_DOC_CONFIG` environment variable.
+
 Options for `build`/`update`: `--skip-html` (markdown only), `--serve` (live-preview
-the site). `scan`/`build`/`update` all accept `--non-interactive` (never prompt; for
-CI) and `--strict` (exit code 2 on unresolved references or risky parses). Every
-pipeline command accepts `--config PATH` (default: `./coop-data-doc.yml`). Global flags
-go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet) —
-e.g. `coop-data-doc -q update`.
+ the site). `scan`/`build`/`update` all accept `--non-interactive` (never prompt; for
+ CI) and `--strict` (exit code 2 on unresolved references or risky parses). Every
+ pipeline command accepts `--config PATH` (default: discover in cwd and parents). Global flags
+ go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet) —
+ e.g. `coop-data-doc -q update`.
 
 `scan`/`build`/`update` show progress bars on stderr while they work, but only in an
 interactive terminal — they're suppressed by `-q` and absent in CI or piped output, and
@@ -460,9 +463,9 @@ Ctrl+C.
 
 ## 🤖 For AI agents
 
-The Markdown output (`output.dir`, default `data-docs/`) is designed to be read by LLM
-agents without custom tooling. If you're an agent (or wiring one up), here's the
-contract:
+> **For the full machine-readable contract, see `AGENTS.md`.** It covers the JSON schema, CLI flags, exit codes, config discovery, and Python API.
+
+The Markdown output (`output.dir`, default `data-docs/`) is designed to be read by LLM agents without custom tooling. Here's the quick summary:
 
 **Entry points**
 
@@ -563,7 +566,7 @@ overwritten on the next `update`. To regenerate after source changes, run
 | `externally-managed-environment` during install (macOS) | Your Python is managed by Homebrew. Run `brew install pipx`, then `pipx ensurepath`, and retry. |
 | `coop-data-doc upgrade` fails on Windows with `[WinError 32] … being used by another process` (a `PermissionError` or `OSError` naming `coop-data-doc.exe`) | Windows can't replace the tool's launcher while it's running. The package may have already updated — check `coop-data-doc --version`. If it's still the old version, run `pipx upgrade coop-data-doc` in a **fresh** terminal (where the tool isn't running). v0.17.0+ detects this and prints the exact command instead of the raw error. |
 | `dependency conflicts … requires pyyaml==6.0.2, but you have 6.0.3` (or similar) | You installed into a shared system Python with plain `pip`, clashing with another tool. Fix: `pip uninstall -y coop-data-doc`, restore the other tool's pin (e.g. `pip install "pyyaml==6.0.2"`), then reinstall coop-data-doc with **pipx** (isolated): `pipx install coop-data-doc`. |
-| `Config file not found` | You're in the wrong folder. `cd` to the folder containing `coop-data-doc.yml`, or pass `--config path/to/coop-data-doc.yml`. |
+| `Config file not found` | No `coop-data-doc.yml` found in this folder or any parent. Run `coop-data-doc init` to scaffold one, or `cd` to the right folder. You can also pass `--config path/to/coop-data-doc.yml` or set `COOP_DATA_DOC_CONFIG`. |
 | `Repo 'sql' path does not exist` | The path in `coop-data-doc.yml` is wrong. Re-run `coop-data-doc setup` and fix it. |
 | `output.dir and output.site_dir must be separate folders` / mkdocs `'site_dir' should not be within the 'docs_dir'` | Your HTML folder is the same as — or inside — your Markdown folder. Point `output.site_dir` at a sibling (e.g. `dir: ./data-docs`, `site_dir: ./data-docs-site`), or re-run `coop-data-doc setup` and accept the suggested sibling. |
 | `dynamic_sql` warning | A stored proc builds SQL inside strings; lineage can't be traced safely so the tool refuses to guess. Document that proc by hand in its Business Intent block. |

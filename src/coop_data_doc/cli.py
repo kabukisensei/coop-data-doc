@@ -160,7 +160,17 @@ def _scan(
     return graph, diagnostics
 
 
-def _load_config(config_path: str) -> Config:
+def _load_config(config_path: str | None = None) -> Config:
+    """Load config, with discovery if no explicit path given."""
+    if config_path is None:
+        found = Config.find()
+        if found is None:
+            raise ConfigError(
+                f"No {DEFAULT_CONFIG} found in this folder or any parent. "
+                f"Run `coop-data-doc init` to scaffold one, or `coop-data-doc setup` "
+                f"for the interactive wizard."
+            )
+        config_path = str(found)
     return Config.load(Path(config_path))
 
 
@@ -218,9 +228,11 @@ def cli(ctx: click.Context, verbose: bool, quiet: bool, log_file: str | None) ->
 def _interactive_home(ctx: click.Context) -> None:
     """The menu shown when `coop-data-doc` is run bare in a terminal."""
     click.echo(f"coop-data-doc {__version__} — offline lineage docs for SQL + Power BI\n")
-    config_exists = Path(DEFAULT_CONFIG).is_file()
+    # Use discovery to find config, not just cwd
+    config_path = Config.find()
+    config_exists = config_path is not None
     if config_exists:
-        message = f"Found {DEFAULT_CONFIG} in this folder. What would you like to do?"
+        message = f"Found {config_path.name} at {config_path.parent}. What would you like to do?"
         choices = [
             questionary.Choice("Update the docs (scan repos + rebuild everything)", "update"),
             questionary.Choice("Scan only (refresh graph.json, no rendering)", "scan"),
@@ -230,7 +242,7 @@ def _interactive_home(ctx: click.Context) -> None:
             questionary.Choice("Exit", "exit"),
         ]
     else:
-        message = "No coop-data-doc.yml in this folder yet. What would you like to do?"
+        message = "No coop-data-doc.yml found in this folder or any parent. What would you like to do?"
         choices = [
             questionary.Choice("Set up interactively (recommended)", "setup"),
             questionary.Choice("Write a starter config to edit by hand", "init"),
@@ -285,6 +297,67 @@ def help_cmd(ctx: click.Context, command_name: str | None) -> None:
 
 
 @cli.command()
+@click.option(
+    "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."
+)
+@click.pass_context
+def status(ctx: click.Context, config_path: str | None) -> None:
+    """Show project status: config found? docs built? stale?"""
+    found = Config.find()
+    if found is None:
+        click.echo("status: no config found")
+        click.echo("  Run `coop-data-doc init` to scaffold a starter config.")
+        click.echo("  Or `coop-data-doc setup` for the interactive wizard.")
+        sys.exit(1)
+
+    click.echo(f"config:    {found}")
+    try:
+        config = Config.load(found)
+    except ConfigError as exc:
+        click.echo(f"status:    config exists but is invalid: {exc}")
+        sys.exit(1)
+
+    out_dir = config.output_dir()
+    site_dir = config.site_dir()
+    click.echo(f"markdown:  {out_dir} {'(exists)' if out_dir.is_dir() else '(missing)'}")
+    click.echo(f"html site: {site_dir} {'(exists)' if site_dir.is_dir() else '(missing)'}")
+
+    cache_path = config.base_dir / ".lineage-cache.json"
+    click.echo(f"cache:     {cache_path} {'(exists)' if cache_path.is_file() else '(missing)'}")
+
+    # Check freshness if docs exist
+    if out_dir.is_dir():
+        try:
+            graph, result, warnings = run_pipeline(config, interactive=False)
+            with tempfile.TemporaryDirectory() as tmp:
+                fresh = Path(tmp) / "docs"
+                shutil.copytree(out_dir, fresh)
+                render_markdown(graph, fresh, config.project_name)
+                to_json_file(graph, fresh / "graph.json")
+                stale = _tree_diff(out_dir, fresh)
+                if stale:
+                    click.echo(f"freshness: stale ({len(stale)} files differ)")
+                    click.echo("  Run `coop-data-doc build` to update.")
+                else:
+                    click.echo("freshness: up to date")
+        except Exception as exc:
+            click.echo(f"freshness: could not check ({exc})")
+    else:
+        click.echo("freshness: no docs yet — run `coop-data-doc build`")
+
+    # Summary of unresolved
+    if found:
+        try:
+            graph, result, _ = run_pipeline(config, interactive=False)
+            if result.unresolved:
+                click.echo(f"unresolved: {len(result.unresolved)} items (run interactively to resolve)")
+            else:
+                click.echo("unresolved: 0")
+        except Exception:
+            pass
+
+
+@cli.command()
 @click.argument("path", default=DEFAULT_CONFIG)
 @click.pass_context
 def setup(ctx: click.Context, path: str) -> None:
@@ -333,6 +406,15 @@ def init(path: str, force: bool) -> None:
     """Write a starter coop-data-doc.yml to edit by hand (see also: setup)."""
     target = Path(path)
     if target.exists() and not force:
+        # Check if it's a valid config — if so, suggest setup instead
+        try:
+            Config.load(target)
+            click.echo(f"{target} already exists and is valid.")
+            click.echo("  Run `coop-data-doc setup` to edit it interactively,")
+            click.echo("  or `coop-data-doc init --force` to overwrite.")
+            sys.exit(1)
+        except ConfigError:
+            pass
         raise click.ClickException(f"{target} already exists (use --force to overwrite)")
     try:
         if target.exists():
@@ -347,11 +429,13 @@ def init(path: str, force: bool) -> None:
 
 
 @cli.command()
-@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."
+)
 @click.option("--non-interactive", is_flag=True, help="Never prompt (CI mode).")
 @click.option("--strict", is_flag=True, help="Exit 2 on unresolved refs / risky parses.")
 @click.pass_context
-def scan(ctx: click.Context, config_path: str, non_interactive: bool, strict: bool) -> None:
+def scan(ctx: click.Context, config_path: str | None, non_interactive: bool, strict: bool) -> None:
     """Crawl, parse, and link both repos; write graph.json."""
     config = _load_config(config_path)
     progress = Progress(should_enable(ctx.obj["quiet"]))
@@ -399,7 +483,12 @@ def _run_build(
 
 
 _BUILD_OPTIONS = [
-    click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True),
+    click.option(
+        "--config",
+        "config_path",
+        default=None,
+        help="Config file path (default: discover in cwd and parents).",
+    ),
     click.option("--non-interactive", is_flag=True, help="Never prompt (CI mode)."),
     click.option("--strict", is_flag=True, help="Exit 2 on unresolved refs / risky parses."),
     click.option("--skip-html", is_flag=True, help="Markdown only; skip the mkdocs site."),
@@ -478,7 +567,9 @@ def upgrade(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."
+)
 @click.option(
     "--lenient",
     is_flag=True,
@@ -486,7 +577,7 @@ def upgrade(ctx: click.Context) -> None:
     "fail on unresolved references and stale docs.",
 )
 @click.pass_context
-def check(ctx: click.Context, config_path: str, lenient: bool) -> None:
+def check(ctx: click.Context, config_path: str | None, lenient: bool) -> None:
     """CI gate: fail when committed docs are stale, references are
     unresolved, or (unless --lenient) risky-parse warnings exist
     (regex_fallback / dynamic_sql). Exit 2 for pipeline problems, 1 for

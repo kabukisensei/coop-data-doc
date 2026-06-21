@@ -1,3 +1,12 @@
+# Secrets
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.token
+.envrc
+
 # Python
 __pycache__/
 *.py[cod]
@@ -28,15 +37,33 @@ site/
 .coop-mkdocs.yml
 .lineage-cache.json
 
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
 # Editors / IDEs
 .idea/
 .vscode/
+*.iml
 *.swp
 *~
+
+# Backup files
+*.bak
+*.backup
+*.orig
 
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Node (if ever used)
+node_modules/
 
 # Local agent state
 .claude/

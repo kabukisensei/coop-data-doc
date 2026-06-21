@@ -8,11 +8,14 @@ the structured warning type that every parser returns instead of printing.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
+
+DEFAULT_CONFIG = "coop-data-doc.yml"
 
 VALID_LAYERS = ("bronze", "silver", "gold")
 # Default site theme = the Cooptimize brand. Applied to every build unless the
@@ -169,6 +172,33 @@ class Config(BaseModel):
     def site_dir(self) -> Path:
         """Absolute HTML site output directory."""
         return (self._base_dir / self.output.site_dir).resolve()
+
+    @classmethod
+    def find(cls, start_dir: Path | str | None = None) -> Path | None:
+        """Search for coop-data-doc.yml in start_dir and parent directories.
+
+        Checks (in order):
+        1. Environment variable COOP_DATA_DOC_CONFIG
+        2. start_dir / DEFAULT_CONFIG (or cwd if start_dir is None)
+        3. Walk up parent directories until found or filesystem root
+
+        Returns the absolute path if found, None otherwise.
+        """
+        env_path = os.environ.get("COOP_DATA_DOC_CONFIG")
+        if env_path:
+            p = Path(env_path).resolve()
+            if p.is_file():
+                return p
+
+        start = Path(start_dir or ".").resolve()
+        if start.is_file():
+            start = start.parent
+
+        for directory in [start, *start.parents]:
+            candidate = directory / DEFAULT_CONFIG
+            if candidate.is_file():
+                return candidate.resolve()
+        return None
 
     @classmethod
     def load(cls, path: Path | str) -> "Config":
