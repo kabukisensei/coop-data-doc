@@ -16,7 +16,10 @@ interface in depth.
 .venv/bin/coop-data-doc build --non-interactive   # run the tool itself
 ```
 
-If `.venv` is missing: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`.
+If `.venv` is missing, build it with a CI-tested Python (3.10–3.13; 3.13
+recommended — 3.14 doesn't reliably honor the editable-install `.pth`, so the
+`coop-data-doc` console script fails to import):
+`python3.13 -m venv .venv && .venv/bin/pip install -e ".[dev]"`.
 
 ## Hard rules
 
