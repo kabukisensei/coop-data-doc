@@ -3,6 +3,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from coop_data_doc import __version__
 from coop_data_doc.cli import cli
 from coop_data_doc.render.mermaid import slug
 
@@ -322,6 +323,13 @@ def test_config_find_prefers_env_var(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(env_config))
     found = Config.find(start_dir=tmp_path)
     assert found == env_config
+
+
+def test_status_shows_version(tmp_path: Path):
+    """status prints the installed version (offline) with an upgrade hint."""
+    result = run(["status"], tmp_path)  # no config -> exit 1, but version prints first
+    assert __version__ in result.output
+    assert "upgrade" in result.output
 
 
 def test_status_no_config(tmp_path: Path):

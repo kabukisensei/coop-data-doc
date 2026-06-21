@@ -250,3 +250,25 @@ class LineageGraph(BaseModel):
             if edge.source_id in sub.nodes and edge.target_id in sub.nodes:
                 sub.edges.append(edge.model_copy(deep=True))
         return sub
+
+
+def merge_relationships(model_node: Node, new_rels: list[dict]) -> None:
+    """Merge Power BI relationship records onto a semantic-model node's
+    ``metadata["relationships"]``, deduped by (from, to) column endpoints and
+    deterministically sorted. Shared by the TMDL and BIM parsers so both emit
+    the identical shape: each record is
+    ``{"from", "to", "active": bool, "bidirectional": bool}`` (``from`` is the
+    many/fact side, ``to`` the one/dimension side). Later records win on
+    conflict, so a re-parse refreshes the flags rather than duplicating edges.
+    """
+    by_key: dict[tuple[str, str], dict] = {}
+    for rel in model_node.metadata.get("relationships", []):
+        by_key[(rel["from"], rel["to"])] = rel
+    for rel in new_rels:
+        by_key[(rel["from"], rel["to"])] = {
+            "from": rel["from"],
+            "to": rel["to"],
+            "active": bool(rel.get("active", True)),
+            "bidirectional": bool(rel.get("bidirectional", False)),
+        }
+    model_node.metadata["relationships"] = [by_key[key] for key in sorted(by_key)]

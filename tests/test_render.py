@@ -504,6 +504,9 @@ def test_semantic_model_relationship_grid(tmp_path: Path):
     render_markdown(g, tmp_path, "Test")
     page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
     assert "## Joel's Relationship Grid" in page
+    # count header + legend
+    assert "2 fact(s) × 2 dimension(s), 3 relationship(s) (3 active)" in page
+    assert "🟢 active" in page and "⚪ inactive" in page and "⇅ bidirectional" in page
     facts, rows = _parse_grid(page)
     # facts are columns (link text), dims are rows; both sorted by table name
     assert [f.split("]")[0] + "]" for f in facts] == ["[Fact Returns]", "[Fact Sales]"]
@@ -513,8 +516,39 @@ def test_semantic_model_relationship_grid(tmp_path: Path):
     fact_sales_col = next(c for c in facts if "Fact Sales" in c)
     fact_returns_col = next(c for c in facts if "Fact Returns" in c)
     # dim_customer relates only to fact_sales; dim_date relates to both
-    assert cust[fact_sales_col] == "🟢" and cust[fact_returns_col] == ""
-    assert date[fact_sales_col] == "🟢" and date[fact_returns_col] == "🟢"
+    assert "🟢" in cust[fact_sales_col] and cust[fact_returns_col] == ""
+    assert "🟢" in date[fact_sales_col] and "🟢" in date[fact_returns_col]
+    # each marker carries a tooltip with the joined columns
+    assert 'title="fact_sales.customer_id → dim_customer.customer_id"' in page
+
+
+def test_relationship_grid_marks_inactive_and_bidirectional(tmp_path: Path):
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Sales", display_name="Sales"))
+    for name, disp in [("fact_sales", "Fact Sales"), ("dim_date", "Dim Date"), ("dim_geo", "Dim Geo")]:
+        g.add_node(make_node(NodeType.PBI_TABLE, "sales", name, display_name=disp))
+    g.nodes["semantic_model:sales"].metadata["relationships"] = [
+        # role-playing date dimension: one active (order_date) + one inactive (ship_date)
+        {"from": "fact_sales.order_date", "to": "dim_date.date_id", "active": True, "bidirectional": False},
+        {"from": "fact_sales.ship_date", "to": "dim_date.date_id", "active": False, "bidirectional": False},
+        # bidirectional cross-filter to geo
+        {"from": "fact_sales.geo_id", "to": "dim_geo.geo_id", "active": True, "bidirectional": True},
+    ]
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
+    facts, rows = _parse_grid(page)
+    fs = next(c for c in facts if "Fact Sales" in c)
+    date = next(v for k, v in rows.items() if "Dim Date" in k)
+    geo = next(v for k, v in rows.items() if "Dim Geo" in k)
+    # the date cell shows both an active and an inactive marker (role-playing)
+    assert "🟢" in date[fs] and "⚪" in date[fs]
+    # the geo cell shows an active, bidirectional marker
+    assert "🟢" in geo[fs] and "⇅" in geo[fs]
+    # tooltips spell out the join columns and the inactive flag
+    assert 'title="fact_sales.ship_date → dim_date.date_id (inactive)"' in page
+    assert "(bidirectional)" in page
+    # 3 relationships, only 2 active
+    assert "3 relationship(s) (2 active)" in page
 
 
 def test_relationship_grid_escapes_brackets_in_table_name(tmp_path: Path):

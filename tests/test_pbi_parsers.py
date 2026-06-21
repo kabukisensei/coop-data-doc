@@ -146,7 +146,14 @@ def test_tmdl_model_structure():
     columns = {c.name: c.data_type for c in graph.nodes["pbi_table:sales.dim_customer"].columns}
     assert columns == {"customer_id": "int64", "customer_name": "string"}
     relationships = graph.nodes["semantic_model:sales"].metadata["relationships"]
-    assert relationships == [{"from": "fact_sales.customer_id", "to": "dim_customer.customer_id"}]
+    assert relationships == [
+        {
+            "from": "fact_sales.customer_id",
+            "to": "dim_customer.customer_id",
+            "active": True,
+            "bidirectional": False,
+        }
+    ]
 
 
 def test_tmdl_partition_sources():

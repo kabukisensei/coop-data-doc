@@ -8,6 +8,7 @@ regeneration verbatim.
 
 from __future__ import annotations
 
+import html
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -44,11 +45,12 @@ _CONTRACT_TYPES = frozenset(
 # composite model (Import cached vs. DirectQuery live vs. Dual).
 _STORAGE_LABELS = {"import": "Import", "directquery": "DirectQuery", "dual": "Dual"}
 
-# Marker dropped in a relationship-grid cell where a fact relates to a
-# dimension. A literal green-circle codepoint (not a Material emoji shortcode)
-# so it renders over file:// with no icon-font/CDN fetch — same offline-first
-# reasoning as the ⚠ used elsewhere in this module.
-_RELATIONSHIP_DOT = "🟢"
+# Relationship-grid cell markers. Literal codepoints (not Material emoji
+# shortcodes) so they render over file:// with no icon-font/CDN fetch — same
+# offline-first reasoning as the ⚠ used elsewhere in this module.
+_REL_ACTIVE = "🟢"  # active relationship
+_REL_INACTIVE = "⚪"  # inactive (e.g. role-playing) relationship
+_REL_BIDI = "⇅"  # appended when the relationship cross-filters both ways
 
 _TYPE_TITLES: dict[NodeType, str] = {
     NodeType.BRONZE_TABLE: "Source Tables (Bronze)",
@@ -87,6 +89,12 @@ def _link_text(value: str) -> str:
     otherwise close a `[text](url)` link early and leak the raw URL as text
     (Power BI object names can legally contain brackets)."""
     return _cell(value).replace("[", "\\[").replace("]", "\\]")
+
+
+def _attr(value: str) -> str:
+    """Safe value for an HTML attribute inside a Markdown table cell:
+    HTML-escape (quotes/angle brackets) and escape '|' so the cell can't break."""
+    return html.escape(value or "", quote=True).replace("|", "\\|")
 
 
 def _front_matter(graph: LineageGraph, node: Node) -> str:
@@ -198,13 +206,13 @@ def _relationship_grid(graph: LineageGraph, node: Node) -> str:
 
     facts: set[str] = set()
     dims: set[str] = set()
-    related: set[tuple[str, str]] = set()  # (dimension table, fact table)
+    by_cell: dict[tuple[str, str], list[dict]] = {}  # (dimension, fact) -> relationships
     for rel in relationships:
         fact = rel["from"].partition(".")[0]
         dim = rel["to"].partition(".")[0]
         facts.add(fact)
         dims.add(dim)
-        related.add((dim, fact))
+        by_cell.setdefault((dim, fact), []).append(rel)
     fact_cols = sorted(facts)
     dim_rows = sorted(dims)
 
@@ -216,15 +224,36 @@ def _relationship_grid(graph: LineageGraph, node: Node) -> str:
             return f"[{_link_text(other.display)}]({doc_relpath(other)})"
         return _link_text(table)
 
+    def cell(dim: str, fact: str) -> str:
+        marks = []
+        for rel in by_cell.get((dim, fact), ()):
+            active = rel.get("active", True)
+            glyph = (_REL_ACTIVE if active else _REL_INACTIVE) + (
+                _REL_BIDI if rel.get("bidirectional") else ""
+            )
+            flags = [
+                f for f, on in (("inactive", not active), ("bidirectional", rel.get("bidirectional"))) if on
+            ]
+            tip = f"{rel['from']} → {rel['to']}" + (f" ({', '.join(flags)})" if flags else "")
+            marks.append(f'<span title="{_attr(tip)}">{glyph}</span>')
+        return " ".join(marks)
+
+    active_count = sum(1 for rel in relationships if rel.get("active", True))
     lines.append(
-        "Facts (the *many* side of each relationship) are columns; dimensions "
-        f"(the *one* side) are rows. A {_RELATIONSHIP_DOT} marks a relationship."
+        f"{len(fact_cols)} fact(s) × {len(dim_rows)} dimension(s), {len(relationships)} "
+        f"relationship(s) ({active_count} active). Columns are facts (the *many* side), "
+        "rows are dimensions (the *one* side)."
+    )
+    lines.append("")
+    lines.append(
+        f"_Legend: {_REL_ACTIVE} active · {_REL_INACTIVE} inactive · {_REL_BIDI} bidirectional "
+        "cross-filter. Hover a marker for the joined columns._"
     )
     lines.append("")
     lines.append("| Dimension \\ Fact | " + " | ".join(label(f) for f in fact_cols) + " |")
     lines.append("| --- | " + " | ".join([":---:"] * len(fact_cols)) + " |")
     for dim in dim_rows:
-        cells = (_RELATIONSHIP_DOT if (dim, fact) in related else "" for fact in fact_cols)
+        cells = (cell(dim, fact) for fact in fact_cols)
         lines.append(f"| {label(dim)} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
