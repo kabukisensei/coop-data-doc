@@ -256,20 +256,25 @@ def _interactive_home(ctx: click.Context) -> None:
         return
     if action in (None, "exit"):
         return
+    # actions that read an existing config must use the DISCOVERED path (which
+    # may be in a parent dir), not the bare default filename — otherwise running
+    # the menu from a subdirectory advertises the parent config but fails to
+    # load it. setup/init create a new config and intentionally target cwd.
+    discovered = str(config_path) if config_path is not None else DEFAULT_CONFIG
     if action == "setup":
         ctx.invoke(setup, path=DEFAULT_CONFIG)
     elif action == "init":
         ctx.invoke(init, path=DEFAULT_CONFIG, force=False)
     elif action == "scan":
-        ctx.invoke(scan, config_path=DEFAULT_CONFIG, non_interactive=False, strict=False)
+        ctx.invoke(scan, config_path=discovered, non_interactive=False, strict=False)
     elif action == "check":
-        ctx.invoke(check, config_path=DEFAULT_CONFIG)
+        ctx.invoke(check, config_path=discovered)
     elif action == "upgrade":
         ctx.invoke(upgrade)
     elif action == "update":
         _run_build(
             ctx,
-            config_path=DEFAULT_CONFIG,
+            config_path=discovered,
             non_interactive=False,
             strict=False,
             skip_html=False,
@@ -303,12 +308,19 @@ def help_cmd(ctx: click.Context, command_name: str | None) -> None:
 @click.pass_context
 def status(ctx: click.Context, config_path: str | None) -> None:
     """Show project status: config found? docs built? stale?"""
-    found = Config.find()
-    if found is None:
-        click.echo("status: no config found")
-        click.echo("  Run `coop-data-doc init` to scaffold a starter config.")
-        click.echo("  Or `coop-data-doc setup` for the interactive wizard.")
-        sys.exit(1)
+    # honor an explicit --config; otherwise discover in cwd and parents
+    if config_path is not None:
+        found = Path(config_path)
+        if not found.is_file():
+            click.echo(f"status: config not found at {found}")
+            sys.exit(1)
+    else:
+        found = Config.find()
+        if found is None:
+            click.echo("status: no config found")
+            click.echo("  Run `coop-data-doc init` to scaffold a starter config.")
+            click.echo("  Or `coop-data-doc setup` for the interactive wizard.")
+            sys.exit(1)
 
     click.echo(f"config:    {found}")
     try:
@@ -325,14 +337,31 @@ def status(ctx: click.Context, config_path: str | None) -> None:
     cache_path = config.base_dir / ".lineage-cache.json"
     click.echo(f"cache:     {cache_path} {'(exists)' if cache_path.is_file() else '(missing)'}")
 
-    # Check freshness if docs exist
+    # Run the pipeline ONCE (it is the expensive part) and reuse it for both
+    # the freshness check and the unresolved summary.
+    try:
+        graph, result, warnings = run_pipeline(config, interactive=False)
+    except Exception as exc:
+        click.echo(f"status:    could not analyze repos ({exc})")
+        return
+
     if out_dir.is_dir():
         try:
-            graph, result, warnings = run_pipeline(config, interactive=False)
             with tempfile.TemporaryDirectory() as tmp:
                 fresh = Path(tmp) / "docs"
+                # copy the committed tree first so human-authored Business
+                # Intent blocks survive, then regenerate the SAME artifacts
+                # `check` compares (markdown, graph.json, diagnostics.json/.md)
+                # so the two commands can never disagree about staleness.
                 shutil.copytree(out_dir, fresh)
                 render_markdown(graph, fresh, config.project_name)
+                diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
+                write_diagnostics(fresh, diagnostics, config.project_name)
+                (fresh / "diagnostics.json").write_text(
+                    json.dumps(diagnostics.to_json(), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
                 to_json_file(graph, fresh / "graph.json")
                 stale = _tree_diff(out_dir, fresh)
                 if stale:
@@ -345,16 +374,11 @@ def status(ctx: click.Context, config_path: str | None) -> None:
     else:
         click.echo("freshness: no docs yet — run `coop-data-doc build`")
 
-    # Summary of unresolved
-    if found:
-        try:
-            graph, result, _ = run_pipeline(config, interactive=False)
-            if result.unresolved:
-                click.echo(f"unresolved: {len(result.unresolved)} items (run interactively to resolve)")
-            else:
-                click.echo("unresolved: 0")
-        except Exception:
-            pass
+    # Unresolved summary, from the single pipeline run above.
+    if result.unresolved:
+        click.echo(f"unresolved: {len(result.unresolved)} items (run interactively to resolve)")
+    else:
+        click.echo("unresolved: 0")
 
 
 @cli.command()
@@ -444,7 +468,7 @@ def scan(ctx: click.Context, config_path: str | None, non_interactive: bool, str
 
 def _run_build(
     ctx: click.Context,
-    config_path: str,
+    config_path: str | None,
     non_interactive: bool,
     strict: bool,
     skip_html: bool,
@@ -507,7 +531,7 @@ def _with_build_options(func):
 @click.pass_context
 def build(
     ctx: click.Context,
-    config_path: str,
+    config_path: str | None,
     non_interactive: bool,
     strict: bool,
     skip_html: bool,
@@ -522,7 +546,7 @@ def build(
 @click.pass_context
 def update(
     ctx: click.Context,
-    config_path: str,
+    config_path: str | None,
     non_interactive: bool,
     strict: bool,
     skip_html: bool,

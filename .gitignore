@@ -64,6 +64,7 @@ Thumbs.db
 
 # Node (if ever used)
 node_modules/
+.hermes/
 
 # Local agent state
 .claude/

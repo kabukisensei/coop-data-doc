@@ -389,3 +389,85 @@ def test_init_force_overwrites_valid_config(tmp_path: Path):
     result = run(["init", "--force"], tmp_path)
     assert result.exit_code == 0
     assert "Wrote" in result.output
+
+
+# a lineage cache that fully resolves the fixtures' ambiguous cross-repo refs,
+# so interactive runs (interactive=True) never stop to prompt in tests
+_FULL_CACHE = (
+    '{\n  "version": 1,\n  "mappings": {\n'
+    '    "pbi_table:sales.fact_sales": {\n'
+    '      "target": "gold_table:dbo.fact_sales",\n'
+    '      "method": "interactive"\n    },\n'
+    '    "pbi_table:sales.ext_unresolved": {\n'
+    '      "target": null,\n'
+    '      "method": "external"\n    }\n  }\n}\n'
+)
+
+
+def test_status_honors_explicit_config(tmp_path: Path):
+    """status --config <path> uses the given config, not discovery."""
+    setup_workspace(tmp_path)
+    # rename so nothing is discoverable — only the explicit --config can find it
+    explicit = tmp_path / "custom.yml"
+    (tmp_path / "coop-data-doc.yml").rename(explicit)
+    result = run(["status", "--config", str(explicit)], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert str(explicit) in result.output  # reported the explicit config
+    assert "no config found" not in result.output
+
+
+def test_status_explicit_config_missing(tmp_path: Path):
+    """status --config to a nonexistent path fails clearly (no silent discovery)."""
+    result = run(["status", "--config", str(tmp_path / "nope.yml")], tmp_path)
+    assert result.exit_code == 1
+    assert "config not found" in result.output
+
+
+def test_interactive_menu_from_subdir_uses_discovered_config(tmp_path: Path, monkeypatch):
+    """Running the menu from a SUBDIRECTORY must drive actions with the
+    discovered (parent) config, not the bare default filename."""
+    from coop_data_doc import cli as cli_module
+
+    setup_workspace(tmp_path)
+    (tmp_path / ".lineage-cache.json").write_text(_FULL_CACHE, encoding="utf-8")
+    nested = tmp_path / "sub" / "deep"
+    nested.mkdir(parents=True)
+
+    class FakeQuestionary:
+        class Choice:
+            def __init__(self, title, value):
+                self.title = title
+                self.value = value
+
+        @staticmethod
+        def select(message, choices):
+            assert "Found coop-data-doc.yml" in message  # only the menu prompts
+
+            class _Result:
+                @staticmethod
+                def unsafe_ask():
+                    return "scan"
+
+            return _Result()
+
+    monkeypatch.setattr(cli_module, "questionary", FakeQuestionary)
+    monkeypatch.setattr(cli_module, "_stdio_is_interactive", lambda: True)
+    result = run([], nested)
+    assert result.exit_code == 0, result.output
+    # scan ran against the discovered parent config -> output lands in the parent
+    assert (tmp_path / "data-docs" / "graph.json").is_file()
+
+
+def test_status_detects_staleness(tmp_path: Path):
+    """status reports stale when the committed docs no longer match a fresh render."""
+    setup_workspace(tmp_path)
+    (tmp_path / ".lineage-cache.json").write_text(_FULL_CACHE, encoding="utf-8")
+    assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
+    assert "up to date" in run(["status"], tmp_path).output
+    # an orphaned committed page (object no longer produced) makes docs stale
+    (tmp_path / "data-docs" / "view" / "dbo-v_ghost.md").write_text(
+        "---\nid: view:dbo.v_ghost\n---\n", encoding="utf-8"
+    )
+    result = run(["status"], tmp_path)
+    assert result.exit_code == 0  # status reports, never fails the way `check` does
+    assert "stale" in result.output
