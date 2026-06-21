@@ -517,6 +517,22 @@ def test_semantic_model_relationship_grid(tmp_path: Path):
     assert date[fact_sales_col] == "🟢" and date[fact_returns_col] == "🟢"
 
 
+def test_relationship_grid_escapes_brackets_in_table_name(tmp_path: Path):
+    # a ']' in a table display name must be escaped so the [text](url) link
+    # isn't closed early and the raw URL leaked as visible text
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "fact_odd", display_name="Fact [Odd]"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "dim_x", display_name="Dim X"))
+    g.nodes["semantic_model:sales"].metadata["relationships"] = [
+        {"from": "fact_odd.k", "to": "dim_x.k"},
+    ]
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
+    assert "[Fact \\[Odd\\]](../pbi_table/" in page  # brackets escaped, link intact
+    assert "Fact [Odd]](" not in page  # the unescaped, link-breaking form is gone
+
+
 def test_relationship_grid_placeholder_when_empty(tmp_path: Path):
     g = LineageGraph()
     g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Empty", display_name="Empty"))

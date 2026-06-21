@@ -82,6 +82,13 @@ def _cell(value: str) -> str:
     return (value or "").replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
+def _link_text(value: str) -> str:
+    """Cell-safe link label: `_cell` escaping plus '[' / ']', which would
+    otherwise close a `[text](url)` link early and leak the raw URL as text
+    (Power BI object names can legally contain brackets)."""
+    return _cell(value).replace("[", "\\[").replace("]", "\\]")
+
+
 def _front_matter(graph: LineageGraph, node: Node) -> str:
     lines = ["---"]
     lines.append(f"id: {_quote(node.id)}")
@@ -166,7 +173,8 @@ def _lineage_table(graph: LineageGraph, node: Node, ids: list[str], direction: s
         label = other.display if own_child else other.qualified_display
         evidence_file = evidence.split(":", 1)[0] if evidence else ""
         lines.append(
-            f"| [{label}]({doc_relpath(other)}) | {other.node_type.value} | {via} | {evidence_file} |"
+            f"| [{_link_text(label)}]({doc_relpath(other)}) | {other.node_type.value} "
+            f"| {_cell(via)} | {_cell(evidence_file)} |"
         )
     return "\n".join(lines)
 
@@ -205,8 +213,8 @@ def _relationship_grid(graph: LineageGraph, node: Node) -> str:
     def label(table: str) -> str:
         other = graph.nodes.get(Node.make_id(NodeType.PBI_TABLE, model_key, table))
         if other is not None:
-            return f"[{_cell(other.display)}]({doc_relpath(other)})"
-        return _cell(table)
+            return f"[{_link_text(other.display)}]({doc_relpath(other)})"
+        return _link_text(table)
 
     lines.append(
         "Facts (the *many* side of each relationship) are columns; dimensions "
