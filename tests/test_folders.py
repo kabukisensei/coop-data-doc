@@ -123,3 +123,48 @@ def test_set_folders_rejects_unknown_folder(tmp_path: Path):
     res = _run(["set-folders", "--repo", "sql", "--skip", "nope"], tmp_path)
     assert res.exit_code != 0
     assert "not top-level folders" in res.output
+
+
+# --- lineage query ----------------------------------------------------------
+
+
+def _scan(tmp_path: Path):
+    res = _run(["scan", "--non-interactive"], tmp_path)
+    assert res.exit_code == 0, res.output
+
+
+def test_lineage_exact_object(tmp_path: Path):
+    _workspace(tmp_path)
+    _scan(tmp_path)
+    res = _run(["lineage", "dbo.fact_sales"], tmp_path)
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["object"]["name"] == "dbo.fact_sales"
+    assert data["object"]["doc"].endswith(".md")
+    assert isinstance(data["upstream"], list)
+    assert isinstance(data["downstream"], list)
+
+
+def test_lineage_ambiguous_lists_candidates(tmp_path: Path):
+    _workspace(tmp_path)
+    _scan(tmp_path)
+    res = _run(["lineage", "fact_sales"], tmp_path)  # matches the gold table AND the pbi table
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["ambiguous"] is True
+    assert len(data["matches"]) >= 2
+
+
+def test_lineage_not_found_errors(tmp_path: Path):
+    _workspace(tmp_path)
+    _scan(tmp_path)
+    res = _run(["lineage", "no_such_object_xyz"], tmp_path)
+    assert res.exit_code != 0
+    assert "no object matching" in res.output
+
+
+def test_lineage_requires_built_graph(tmp_path: Path):
+    _workspace(tmp_path)  # no scan/build → no graph.json yet
+    res = _run(["lineage", "anything"], tmp_path)
+    assert res.exit_code != 0
+    assert "no built graph" in res.output

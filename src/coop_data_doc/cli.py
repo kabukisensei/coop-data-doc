@@ -605,6 +605,91 @@ def set_folders(config_path: str | None, repo: str, skip_csv: str) -> None:
     )
 
 
+def _doc_path(node) -> str:
+    """The object's generated Markdown page, relative to the docs root."""
+    from coop_data_doc.render.mermaid import slug
+
+    return f"{node.node_type.value}/{slug(node.id)}.md"
+
+
+def _node_ref(graph: LineageGraph, node_id: str) -> dict:
+    node = graph.nodes[node_id]
+    return {
+        "id": node.id,
+        "name": node.qualified_display,
+        "type": node.node_type.value,
+        "doc": _doc_path(node),
+    }
+
+
+def _match_nodes(graph: LineageGraph, query: str) -> list[str]:
+    """Node ids matching ``query`` — exact id, then exact name, then substring. Sorted."""
+    q = query.strip().lower()
+    if q in graph.nodes:
+        return [q]
+    exact = sorted(
+        nid
+        for nid, n in graph.nodes.items()
+        if q in {n.name.lower(), n.qualified_display.lower(), f"{n.schema_name}.{n.name}".lower()}
+    )
+    if exact:
+        return exact
+    return sorted(
+        nid for nid, n in graph.nodes.items() if q in n.name.lower() or q in n.qualified_display.lower()
+    )
+
+
+@cli.command()
+@click.argument("object_name")
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+@click.option("--depth", default=1, type=int, help="Lineage hops up- and downstream (default 1).")
+def lineage(object_name: str, config_path: str | None, depth: int) -> None:
+    """Print one object's lineage (upstream/downstream + relationships) as JSON.
+
+    Reads the BUILT graph.json so the agent can ground a change in an object's
+    immediate lineage without re-parsing the repos. Ambiguous names list the
+    candidates instead of guessing.
+    """
+    config = _load_config(config_path)
+    graph_path = config.output_dir() / "graph.json"
+    if not graph_path.is_file():
+        raise click.ClickException(f"no built graph at {graph_path} — run `coop-data-doc build` first.")
+    graph = LineageGraph.model_validate(json.loads(graph_path.read_text(encoding="utf-8")))
+    matches = _match_nodes(graph, object_name)
+    if not matches:
+        raise click.ClickException(f"no object matching '{object_name}' in the docs.")
+    if len(matches) > 1:
+        click.echo(
+            json.dumps(
+                {
+                    "query": object_name,
+                    "ambiguous": True,
+                    "matches": [_node_ref(graph, n) for n in matches],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    nid = matches[0]
+    node = graph.nodes[nid]
+    click.echo(
+        json.dumps(
+            {
+                "object": _node_ref(graph, nid),
+                "schema": node.schema_name,
+                "layer": node.metadata.get("layer", ""),
+                "source_file": node.source_file,
+                "upstream": [_node_ref(graph, x) for x in graph.upstream(nid, depth=depth)],
+                "downstream": [_node_ref(graph, x) for x in graph.downstream(nid, depth=depth)],
+                "relationships": node.metadata.get("relationships", []),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 @cli.command()
 @click.option(
     "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."
