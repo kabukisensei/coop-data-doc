@@ -142,10 +142,16 @@ def link_graph(
     config: Config,
     cache: LineageCache,
     interactive_mode: bool,
+    pending_out: list | None = None,
 ) -> tuple[ResolutionResult, list[ParseWarning]]:
     """Run the resolution ladder (cache -> exact -> config rule -> fuzzy ->
     interactive) for every Power BI table source; create feeds edges and
     return (result, warnings). Deterministic: items processed in sorted order.
+
+    When ``pending_out`` is a list, the interactive step does NOT prompt: each
+    ambiguous item (with its candidates) is appended to ``pending_out`` and left
+    unresolved. That's how `coop-data-doc resolve` exposes the choices so the agent
+    can present them and feed decisions back via `resolve-apply`.
     """
     result = ResolutionResult()
     warnings: list[ParseWarning] = list(cache.warnings)
@@ -208,6 +214,33 @@ def link_graph(
 
         node.metadata["unresolved"] = True
         result.unresolved.append(item.cache_key)
+
+    if pending_interactive and pending_out is not None:
+        # Collect mode (the `resolve` command): record each ambiguous item + its
+        # candidates for the agent to map, leave them unresolved, don't prompt.
+        for item, scored in pending_interactive:
+            node = graph.nodes[item.node_id]
+            source = f"{item.schema_name}.{item.object_name}" if item.schema_name else item.object_name
+            pending_out.append(
+                {
+                    "cache_key": item.cache_key,
+                    "pbi_table": node.qualified_display,
+                    "model": node.schema_name,
+                    "source": source,
+                    "candidates": [
+                        {
+                            "target": cid,
+                            "name": graph.nodes[cid].qualified_display if cid in graph.nodes else cid,
+                            "score": round(score, 4),
+                        }
+                        for cid, score in scored[:10]
+                    ],
+                }
+            )
+            node.metadata["unresolved"] = True
+            result.unresolved.append(item.cache_key)
+        result.unresolved.sort()
+        return result, warnings
 
     if pending_interactive:
         by_model: dict[str, list[tuple[_Item, list[tuple[str, float]]]]] = {}

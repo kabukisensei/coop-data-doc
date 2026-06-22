@@ -27,7 +27,7 @@ repos:
     exclude: ["**/archive/**"]
   powerbi:
     path: ./pbi-repo
-    include: ["**/*.tmdl"]
+    include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
 schema_mappings:
   - schema: sales
     model: Sales
@@ -108,7 +108,7 @@ def test_set_folders_writes_excludes_and_preserves_config(tmp_path: Path):
     assert loaded.project_name == "Test Estate"
     assert [m.schema_name for m in loaded.schema_mappings] == ["sales"]
     assert loaded.repos["powerbi"].path == "./pbi-repo"
-    assert loaded.repos["powerbi"].include == ["**/*.tmdl"]
+    assert loaded.repos["powerbi"].include[0] == "**/*.tmdl"  # untouched repo preserved
 
 
 def test_set_folders_empty_skip_documents_everything(tmp_path: Path):
@@ -226,3 +226,51 @@ def test_config_set_rejects_non_object(tmp_path: Path):
     res = _run(["config-set"], tmp_path, stdin="[]")
     assert res.exit_code != 0
     assert "JSON object" in res.output
+
+
+# --- resolve / resolve-apply (agent link resolution) ------------------------
+
+
+def test_resolve_lists_ambiguous_then_apply_resolves(tmp_path: Path):
+    _workspace(tmp_path)
+    # 1. resolve surfaces the ambiguous fact_sales link with scored candidates
+    res = _run(["resolve"], tmp_path)
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    item = next(u for u in data["unresolved"] if u["cache_key"] == "pbi_table:sales.fact_sales")
+    assert any(c["target"] == "gold_table:dbo.fact_sales" for c in item["candidates"])
+    assert all("score" in c and "target" in c for c in item["candidates"])
+
+    # 2. apply a decision mapping it to the gold table
+    decision = json.dumps(
+        {"decisions": [{"cache_key": "pbi_table:sales.fact_sales", "target": "gold_table:dbo.fact_sales"}]}
+    )
+    res2 = _run(["resolve-apply"], tmp_path, stdin=decision)
+    assert res2.exit_code == 0, res2.output
+    assert "Applied 1" in res2.output
+
+    # 3. resolve again: the decision is cached, so it's no longer pending
+    again = json.loads(_run(["resolve"], tmp_path).output)
+    assert "pbi_table:sales.fact_sales" not in {u["cache_key"] for u in again["unresolved"]}
+
+
+def test_resolve_apply_external_and_skip(tmp_path: Path):
+    _workspace(tmp_path)
+    payload = json.dumps(
+        {
+            "decisions": [
+                {"cache_key": "pbi_table:sales.ext_unresolved", "external": True},
+                {"cache_key": "pbi_table:sales.orders_native", "skip": True},
+            ]
+        }
+    )
+    res = _run(["resolve-apply"], tmp_path, stdin=payload)
+    assert res.exit_code == 0, res.output
+    assert "Applied 2" in res.output
+
+
+def test_resolve_apply_rejects_bad_payload(tmp_path: Path):
+    _workspace(tmp_path)
+    res = _run(["resolve-apply"], tmp_path, stdin='{"nope": 1}')
+    assert res.exit_code != 0
+    assert "decisions" in res.output

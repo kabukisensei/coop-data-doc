@@ -237,3 +237,20 @@ def test_is_no_terminal_error_detection():
     assert interactive._is_no_terminal_error(NoConsoleScreenBufferError())
     assert not interactive._is_no_terminal_error(ValueError())
     assert not interactive._is_no_terminal_error(KeyboardInterrupt())
+
+
+def test_collect_mode_records_candidates_without_prompting(tmp_path: Path, monkeypatch):
+    # pending_out -> record each ambiguous item + its candidates, leave unresolved,
+    # and never prompt (the `resolve` command path).
+    monkeypatch.setattr(interactive, "questionary", _RaisingQuestionary(AssertionError("must not prompt")))
+    graph = build_graph()
+    pending: list = []
+    result, _ = link_graph(
+        graph, make_config(), cache_at(tmp_path), interactive_mode=True, pending_out=pending
+    )
+
+    by_key = {p["cache_key"]: p for p in pending}
+    dcust = by_key[f"pbi_table:{MODEL_KEY}.dcust"]
+    assert dcust["candidates"]  # carries scored SQL targets
+    assert all("target" in c and "score" in c for c in dcust["candidates"])
+    assert f"pbi_table:{MODEL_KEY}.dcust" in result.unresolved

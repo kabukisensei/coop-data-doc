@@ -31,7 +31,7 @@ from coop_data_doc.diagnostics import Diagnostics
 from coop_data_doc.crawler import FileKind, crawl
 from coop_data_doc.graph.model import LineageGraph
 from coop_data_doc.graph.serialize import to_json_file
-from coop_data_doc.linker.cache import LineageCache
+from coop_data_doc.linker.cache import CacheEntry, LineageCache
 from coop_data_doc.linker.resolver import ResolutionResult, link_graph
 from coop_data_doc.parsers.bim import parse_bim
 from coop_data_doc.parsers.pbir import (
@@ -62,6 +62,7 @@ def run_pipeline(
     config: Config,
     interactive: bool,
     progress: Progress | None = None,
+    pending_out: list | None = None,
 ) -> tuple[LineageGraph, ResolutionResult, list[ParseWarning]]:
     """Execute the full crawl -> parse -> link pipeline and return
     (graph, resolution result, warnings). Shared by scan/build/check.
@@ -106,7 +107,7 @@ def run_pipeline(
         _log.debug("pruned %d nodes in system/ignored schemas", dropped)
     progress.line("Linking cross-repo references…")
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
-    result, link_warnings = link_graph(graph, config, cache, interactive)
+    result, link_warnings = link_graph(graph, config, cache, interactive, pending_out=pending_out)
     warnings += link_warnings
     # reports become downstream of their models, then visuals fold into pages
     link_reports_to_models(graph)
@@ -858,6 +859,62 @@ def config_set(config_path: str | None, json_src) -> None:
     except ConfigError as exc:
         status = f"saved, not runnable yet ({exc})"
     click.echo(f"Wrote {path} ({status}).")
+
+
+@cli.command()
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+def resolve(config_path: str | None) -> None:
+    """List ambiguous cross-repo links + their candidates as JSON (for agent mapping).
+
+    The interactive resolution step, exposed non-interactively: each item carries its
+    candidate SQL targets (with fuzzy scores). Present them to the user, then feed the
+    decisions to `resolve-apply`. Already-resolved/cached links don't appear.
+    """
+    config = _load_config(config_path)
+    pending: list[dict] = []
+    run_pipeline(config, interactive=True, pending_out=pending)
+    click.echo(json.dumps({"unresolved": pending}, indent=2, sort_keys=True))
+
+
+@cli.command("resolve-apply")
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+@click.option(
+    "--from-json", "json_src", type=click.File("r"), default="-", help="Decisions JSON (file or '-')."
+)
+def resolve_apply(config_path: str | None, json_src) -> None:
+    """Apply link decisions to the lineage cache, then build to use them (agent/CI).
+
+    Input: ``{"decisions": [{"cache_key": "...", "target": "view:sales.dim_customer"},
+    {"cache_key": "...", "external": true}, {"cache_key": "...", "skip": true}]}``.
+    A decision with neither target/external is treated as skip. The keys + targets
+    come from `resolve`.
+    """
+    try:
+        payload = json.load(json_src)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"invalid JSON: {exc}") from exc
+    decisions = payload.get("decisions") if isinstance(payload, dict) else payload
+    if not isinstance(decisions, list):
+        raise click.ClickException('expected {"decisions": [...]} (or a JSON list of decisions).')
+    config = _load_config(config_path)
+    cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
+    applied = 0
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            continue
+        key = decision.get("cache_key")
+        if not key:
+            continue
+        if decision.get("target"):
+            entry = CacheEntry(target=decision["target"], method="interactive")
+        elif decision.get("external"):
+            entry = CacheEntry(target=None, method="external")
+        else:
+            entry = CacheEntry(target=None, method="skip")
+        cache.put(key, entry)
+        applied += 1
+    cache.write()
+    click.echo(f"Applied {applied} decision(s) to {cache.path}. Run `coop-data-doc build` to use them.")
 
 
 @cli.command()
