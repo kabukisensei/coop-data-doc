@@ -690,6 +690,176 @@ def lineage(object_name: str, config_path: str | None, depth: int) -> None:
     )
 
 
+_DEFAULT_CONFIG_DICT = {
+    "project_name": "Data Estate",
+    "repos": {
+        "sql": {"path": "../sql-repo", "include": ["**/*.sql"], "exclude": []},
+        "powerbi": {"path": "../pbi-repo", "include": ["**/*"], "exclude": []},
+    },
+    "output": {"dir": "./data-docs", "site_dir": "./data-docs-site"},
+    "layers": {},
+    "schema_mappings": [],
+    "ignore_schemas": [],
+    "branding": {},
+    "sql_dialect": "tsql",
+}
+
+
+def _default_render_kwargs() -> dict:
+    """render_config_yaml kwargs for a brand-new config (no file yet)."""
+    return {
+        "project_name": "Data Estate",
+        "sql_path": "../sql-repo",
+        "pbi_path": "../pbi-repo",
+        "mappings": [],
+        "layers": {},
+        "ignore_schemas": [],
+        "branding": {},
+        "sql_include": None,
+        "sql_exclude": None,
+        "pbi_include": None,
+        "pbi_exclude": None,
+        "output_dir": "./data-docs",
+        "site_dir": "./data-docs-site",
+        "sql_dialect": "tsql",
+    }
+
+
+def _config_to_dict(config: Config) -> dict:
+    """A config as the JSON shape `show-config` prints / `config-set` accepts."""
+    branding: dict[str, str] = {}
+    brand = config.branding
+    if brand:
+        for key, val in (
+            ("logo", brand.logo),
+            ("favicon", brand.favicon),
+            ("primary_color", brand.primary_color),
+            ("accent_color", brand.accent_color),
+        ):
+            if val:
+                branding[key] = val
+    return {
+        "project_name": config.project_name,
+        "repos": {
+            k: {"path": r.path, "include": list(r.include), "exclude": list(r.exclude)}
+            for k, r in sorted(config.repos.items())
+        },
+        "output": {"dir": config.output.dir, "site_dir": config.output.site_dir},
+        "layers": {k: {"schemas": list(v.schemas), "paths": list(v.paths)} for k, v in config.layers.items()},
+        "schema_mappings": [{"schema": m.schema_name, "model": m.model} for m in config.schema_mappings],
+        "ignore_schemas": list(config.ignore_schemas),
+        "branding": branding,
+        "sql_dialect": config.sql_dialect,
+    }
+
+
+def _load_config_lenient(path: Path) -> Config:
+    """Load a config without the repo-path-existence check (so we can read/patch a
+    config whose repos aren't cloned yet — the 'saved but not runnable' state)."""
+    try:
+        return Config.load(path)
+    except ConfigError:
+        import yaml
+
+        return Config.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+
+
+def _apply_config_patch(kwargs: dict, patch: dict) -> None:
+    """Override render kwargs with the provided patch keys (partial update)."""
+    if "project_name" in patch:
+        kwargs["project_name"] = patch["project_name"]
+    for repo_key, prefix in (("sql", "sql"), ("powerbi", "pbi")):
+        repo_patch = patch.get("repos", {}).get(repo_key)
+        if not repo_patch:
+            continue
+        if "path" in repo_patch:
+            kwargs[f"{prefix}_path"] = repo_patch["path"]
+        if "include" in repo_patch:
+            kwargs[f"{prefix}_include"] = list(repo_patch["include"])
+        if "exclude" in repo_patch:
+            kwargs[f"{prefix}_exclude"] = list(repo_patch["exclude"])
+    output = patch.get("output", {})
+    if "dir" in output:
+        kwargs["output_dir"] = output["dir"]
+    if "site_dir" in output:
+        kwargs["site_dir"] = output["site_dir"]
+    if "layers" in patch:
+        kwargs["layers"] = {
+            k: {"schemas": list(v.get("schemas", [])), "paths": list(v.get("paths", []))}
+            for k, v in patch["layers"].items()
+        }
+    if "schema_mappings" in patch:
+        kwargs["mappings"] = [(m["schema"], m["model"]) for m in patch["schema_mappings"]]
+    if "ignore_schemas" in patch:
+        kwargs["ignore_schemas"] = list(patch["ignore_schemas"])
+    if "branding" in patch:
+        kwargs["branding"] = dict(patch["branding"])
+    if "sql_dialect" in patch:
+        kwargs["sql_dialect"] = patch["sql_dialect"]
+
+
+@cli.command("show-config")
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+def show_config(config_path: str | None) -> None:
+    """Print the current config as JSON (defaults if none) — the shape `config-set` takes."""
+    path = Path(config_path) if config_path else Config.find()
+    if path and path.is_file():
+        out = _config_to_dict(_load_config_lenient(path))
+        out["exists"] = True
+        out["path"] = str(path)
+    else:
+        out = dict(_DEFAULT_CONFIG_DICT)
+        out["exists"] = False
+        out["path"] = str(path) if path else DEFAULT_CONFIG
+    click.echo(json.dumps(out, indent=2, sort_keys=True))
+
+
+@cli.command("config-set")
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    help="Config file to write (default: discover or ./coop-data-doc.yml).",
+)
+@click.option(
+    "--from-json", "json_src", type=click.File("r"), default="-", help="JSON patch (file, or '-' for stdin)."
+)
+def config_set(config_path: str | None, json_src) -> None:
+    """Apply a JSON patch to coop-data-doc.yml non-interactively (agent/CI).
+
+    The patch shape matches `show-config`; only the keys you pass change, the rest are
+    preserved. Re-validated after writing. Lets the agent drive the whole setup
+    (repos, output, layers, schema mappings) via collected answers.
+    """
+    try:
+        patch = json.load(json_src)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"invalid JSON: {exc}") from exc
+    if not isinstance(patch, dict):
+        raise click.ClickException("config-set expects a JSON object.")
+    path = Path(config_path) if config_path else (Config.find() or Path(DEFAULT_CONFIG))
+    kwargs = (
+        _render_kwargs_from_config(_load_config_lenient(path)) if path.is_file() else _default_render_kwargs()
+    )
+    _apply_config_patch(kwargs, patch)
+    try:
+        rendered = render_config_yaml(**kwargs)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise click.ClickException(f"patch produced an invalid config: {exc}") from exc
+    try:
+        if path.parent != Path(""):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8", newline="\n")
+    except OSError as exc:
+        raise click.ClickException(f"could not write {path}: {exc}") from exc
+    try:
+        Config.load(path)
+        status = "validated"
+    except ConfigError as exc:
+        status = f"saved, not runnable yet ({exc})"
+    click.echo(f"Wrote {path} ({status}).")
+
+
 @cli.command()
 @click.option(
     "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."

@@ -40,12 +40,12 @@ output:
     return config
 
 
-def _run(args, cwd: Path):
+def _run(args, cwd: Path, stdin: str | None = None):
     runner = CliRunner()
     old = os.getcwd()
     os.chdir(cwd)
     try:
-        return runner.invoke(cli, args, obj={}, catch_exceptions=False)
+        return runner.invoke(cli, args, input=stdin, obj={}, catch_exceptions=False)
     finally:
         os.chdir(old)
 
@@ -168,3 +168,61 @@ def test_lineage_requires_built_graph(tmp_path: Path):
     res = _run(["lineage", "anything"], tmp_path)
     assert res.exit_code != 0
     assert "no built graph" in res.output
+
+
+# --- show-config / config-set (the rest of the setup surface) ---------------
+
+
+def test_show_config_json(tmp_path: Path):
+    _workspace(tmp_path)
+    res = _run(["show-config"], tmp_path)
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["exists"] is True
+    assert data["project_name"] == "Test Estate"
+    assert data["repos"]["sql"]["exclude"] == ["**/archive/**"]
+    assert data["schema_mappings"] == [{"schema": "sales", "model": "Sales"}]
+
+
+def test_show_config_defaults_when_none(tmp_path: Path):
+    res = _run(["show-config"], tmp_path)  # empty dir, no config
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["exists"] is False
+    assert "sql" in data["repos"] and "powerbi" in data["repos"]
+
+
+def test_config_set_patch_roundtrip_preserves_rest(tmp_path: Path):
+    config = _workspace(tmp_path)
+    patch = json.dumps(
+        {
+            "project_name": "Renamed",
+            "layers": {"gold": {"schemas": ["mart"], "paths": []}},
+            "schema_mappings": [{"schema": "sales", "model": "Sales"}, {"schema": "ops", "model": "Ops"}],
+        }
+    )
+    res = _run(["config-set"], tmp_path, stdin=patch)
+    assert res.exit_code == 0, res.output
+    loaded = Config.load(config)
+    assert loaded.project_name == "Renamed"
+    assert loaded.layers["gold"].schemas == ["mart"]
+    assert {m.schema_name for m in loaded.schema_mappings} == {"sales", "ops"}
+    # untouched fields survive
+    assert loaded.repos["sql"].exclude == ["**/archive/**"]
+    assert loaded.repos["sql"].include == ["**/*.sql"]
+
+
+def test_config_set_partial_repo_preserves_other_fields(tmp_path: Path):
+    config = _workspace(tmp_path)
+    res = _run(["config-set"], tmp_path, stdin=json.dumps({"repos": {"sql": {"path": "./sql-repo"}}}))
+    assert res.exit_code == 0, res.output
+    loaded = Config.load(config)
+    assert loaded.repos["sql"].include == ["**/*.sql"]  # only path was patched
+    assert loaded.repos["sql"].exclude == ["**/archive/**"]
+
+
+def test_config_set_rejects_non_object(tmp_path: Path):
+    _workspace(tmp_path)
+    res = _run(["config-set"], tmp_path, stdin="[]")
+    assert res.exit_code != 0
+    assert "JSON object" in res.output
