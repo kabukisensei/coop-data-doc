@@ -20,7 +20,13 @@ import click
 import questionary
 
 from coop_data_doc import __version__
-from coop_data_doc.config import Config, ConfigError, ParseWarning
+from coop_data_doc.config import Config, ConfigError, ParseWarning, render_config_yaml
+from coop_data_doc.folders import (
+    excludes_for_skips,
+    folder_states,
+    split_excludes,
+    top_level_folders,
+)
 from coop_data_doc.diagnostics import Diagnostics
 from coop_data_doc.crawler import FileKind, crawl
 from coop_data_doc.graph.model import LineageGraph
@@ -470,6 +476,133 @@ def init(path: str, force: bool) -> None:
         raise click.ClickException(f"could not write {target}: {exc}") from exc
     click.echo(f"Wrote {target}.")
     click.echo("Next: edit the two repo paths, then run `coop-data-doc build`.")
+
+
+def _render_kwargs_from_config(config: Config) -> dict:
+    """The ``render_config_yaml(**kwargs)`` that reproduces ``config`` — so a single
+    field can be changed and the file re-rendered the same way the wizard saves it
+    (deterministic, comments intact). Modeled fields only; unknown YAML keys aren't
+    preserved (same as re-running setup)."""
+    sql = config.repos.get("sql")
+    pbi = config.repos.get("powerbi")
+    branding: dict[str, str] = {}
+    brand = config.branding
+    if brand:
+        for key, val in (
+            ("logo", brand.logo),
+            ("favicon", brand.favicon),
+            ("primary_color", brand.primary_color),
+            ("accent_color", brand.accent_color),
+        ):
+            if val:
+                branding[key] = val
+    return {
+        "project_name": config.project_name,
+        "sql_path": sql.path if sql else "../sql-repo",
+        "pbi_path": pbi.path if pbi else "../pbi-repo",
+        "mappings": [(m.schema_name, m.model) for m in config.schema_mappings],
+        "layers": {k: {"schemas": list(v.schemas), "paths": list(v.paths)} for k, v in config.layers.items()},
+        "ignore_schemas": list(config.ignore_schemas),
+        "branding": branding,
+        "sql_include": list(sql.include) if sql else None,
+        "sql_exclude": list(sql.exclude) if sql else None,
+        "pbi_include": list(pbi.include) if pbi else None,
+        "pbi_exclude": list(pbi.exclude) if pbi else None,
+        "output_dir": config.output.dir,
+        "site_dir": config.output.site_dir,
+        "sql_dialect": config.sql_dialect,
+    }
+
+
+@cli.command()
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+def folders(config_path: str | None) -> None:
+    """List each repo's top-level folders and whether they're documented (JSON).
+
+    For agents / scripts: drive folder selection without the interactive checkbox,
+    then apply a choice with `set-folders`. Output is sorted/deterministic.
+    """
+    config = _load_config(config_path)
+    repos = []
+    for key in sorted(config.repos):
+        repo = config.repos[key]
+        repo_abs = (config.base_dir / Path(repo.path).expanduser()).resolve()
+        states, custom = folder_states(repo_abs, list(repo.exclude))
+        repos.append(
+            {
+                "repo": key,
+                "path": repo.path,
+                "exists": repo_abs.is_dir(),
+                "include": list(repo.include),
+                "folders": states,
+                "custom_excludes": custom,
+            }
+        )
+    click.echo(json.dumps({"repos": repos}, indent=2, sort_keys=True))
+
+
+@cli.command("set-folders")
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+@click.option("--repo", required=True, help="Repo key to update: 'sql' or 'powerbi'.")
+@click.option(
+    "--skip",
+    "skip_csv",
+    default="",
+    help="Comma-separated top-level folder names to SKIP; every other folder is documented.",
+)
+def set_folders(config_path: str | None, repo: str, skip_csv: str) -> None:
+    """Set which top-level folders a repo documents, non-interactively (agent/CI).
+
+    Writes a ``**/Name/**`` exclude for each skipped folder, preserving any hand-
+    written exclude patterns, then re-validates. The non-interactive twin of the
+    setup wizard's folder checkbox.
+    """
+    path = Path(config_path) if config_path else Config.find()
+    if path is None:
+        raise click.ClickException(
+            f"no {DEFAULT_CONFIG} found here or above — run `coop-data-doc init` or `setup` first."
+        )
+    try:
+        config = Config.load(path)
+    except ConfigError as exc:
+        raise click.ClickException(
+            f"config didn't validate ({exc}); fix it (or run `coop-data-doc setup`), then retry."
+        ) from exc
+    if repo not in config.repos:
+        raise click.ClickException(f"no repo '{repo}' in config (have: {', '.join(sorted(config.repos))}).")
+    if repo not in ("sql", "powerbi"):
+        raise click.ClickException(f"set-folders supports the 'sql' and 'powerbi' repos (got '{repo}').")
+
+    repo_cfg = config.repos[repo]
+    repo_abs = (config.base_dir / Path(repo_cfg.path).expanduser()).resolve()
+    available = top_level_folders(repo_abs)
+    if not available:
+        raise click.ClickException(
+            f"'{repo}' path {repo_abs} has no top-level folders on disk — nothing to pick. "
+            "Clone the repo there, or edit the exclude globs by hand."
+        )
+    skip = {s.strip() for s in skip_csv.split(",") if s.strip()}
+    unknown = sorted(skip - set(available))
+    if unknown:
+        raise click.ClickException(
+            f"not top-level folders of '{repo}': {', '.join(unknown)} (available: {', '.join(available)})."
+        )
+
+    _, custom = split_excludes(available, list(repo_cfg.exclude))
+    new_exclude = excludes_for_skips(available, skip, custom)
+    kwargs = _render_kwargs_from_config(config)
+    kwargs["sql_exclude" if repo == "sql" else "pbi_exclude"] = new_exclude
+    rendered = render_config_yaml(**kwargs)
+    try:
+        path.write_text(rendered, encoding="utf-8", newline="\n")
+    except OSError as exc:
+        raise click.ClickException(f"could not write {path}: {exc}") from exc
+    Config.load(path)  # re-validate what we wrote
+    documented = [f for f in available if f not in skip]
+    click.echo(
+        f"{repo}: documenting {len(documented)} folder(s), skipping {len(skip)} "
+        f"({', '.join(sorted(skip)) or 'none'}). Wrote {path}."
+    )
 
 
 @cli.command()

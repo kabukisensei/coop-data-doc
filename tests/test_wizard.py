@@ -348,7 +348,8 @@ def test_folder_skip_falls_back_to_text_when_repo_absent(tmp_path: Path, monkeyp
 
 def test_folder_name_from_glob_contract():
     # the parser that lets a re-run map a saved exclude back to a checkbox
-    f = wizard._folder_name_from_glob
+    from coop_data_doc.folders import folder_name_from_glob as f
+
     assert f("**/archive/**") == "archive"
     assert f("archive/**") == "archive"  # legacy prefix-less form
     assert f("archive/*") == "archive"  # legacy single-star form
