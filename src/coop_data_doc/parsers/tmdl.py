@@ -361,7 +361,12 @@ def parse_table_file(
 
 
 def parse_model_file(text: str, model_node: Node) -> None:
-    """Collect relationship blocks from model.tmdl onto the model node.
+    """Collect relationship blocks onto the model node.
+
+    Relationships live in ``model.tmdl`` (older serialization) or, in the
+    current Power BI Desktop default, a dedicated ``relationships.tmdl`` — this
+    parses a ``relationship`` block wherever it appears at indent 0, so the grid
+    populates either way.
 
     Each relationship records its column endpoints plus whether it is active
     (default ``true``) and whether it cross-filters in both directions, so the
@@ -492,9 +497,13 @@ def parse_tmdl(
                 warnings.append(ParseWarning(file=entry.path, message=str(exc), category="tmdl_parse"))
                 continue
             basename = PurePosixPath(entry.path).name.lower()
-            if basename == "model.tmdl":
+            # Relationships are serialized in model.tmdl (older style) or a
+            # dedicated relationships.tmdl (current default) — parse both.
+            if basename in ("model.tmdl", "relationships.tmdl"):
                 parse_model_file(text, model_node)
-                if not model_node.source_file:
+                # the model's home file is model.tmdl; fall back to a sibling
+                # relationships.tmdl only when an export has no model.tmdl.
+                if basename == "model.tmdl" or not model_node.source_file:
                     model_node.source_file = entry.path
             warnings += parse_table_file(text, model_name, model_node.id, entry, graph)
         link_measures(graph, model_name)

@@ -144,6 +144,21 @@ def test_version():
     assert "coop-data-doc" in result.output
 
 
+def test_python_m_invocation_works():
+    # `python -m coop_data_doc` is the documented "command not found" fallback —
+    # it must run the same CLI without depending on the console script / PATH.
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "coop_data_doc", "--version"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "coop-data-doc" in result.stdout
+
+
 def test_bare_invocation_without_tty_prints_help():
     runner = CliRunner()
     result = runner.invoke(cli, [], obj={})

@@ -112,9 +112,12 @@ def _flow_edges(graph: LineageGraph, ids: set[str]) -> list[tuple[str, str, str]
     return sorted(seen)
 
 
-def local_flowchart(graph: LineageGraph, node_id: str, up_depth: int = 2, down_depth: int = 2) -> str:
+def local_flowchart(
+    graph: LineageGraph, node_id: str, up_depth: int | None = 2, down_depth: int | None = 2
+) -> str:
     """Mermaid chart of a node's neighborhood (default 2 hops each way),
-    with click-through links and the focus node highlighted.
+    with click-through links and the focus node highlighted. ``up_depth`` /
+    ``down_depth`` of ``None`` means unbounded in that direction.
     """
     ids = (
         {node_id}
@@ -135,6 +138,15 @@ def local_flowchart(graph: LineageGraph, node_id: str, up_depth: int = 2, down_d
             lines.append(f'    click {alias[nid]} "{click_href(graph.nodes[nid])}"')
     lines.append(f"    style {alias[node_id]} stroke-width:3px")
     return "\n".join(lines)
+
+
+def upstream_flowchart(graph: LineageGraph, node_id: str) -> str:
+    """Full-depth upstream lineage of a node — every ancestor back to the source
+    roots — as a clickable Mermaid chart with the focal node highlighted. Powers
+    the "trace back to source" view a functional user follows backwards from a
+    report or model into the SQL behind it.
+    """
+    return local_flowchart(graph, node_id, up_depth=None, down_depth=0)
 
 
 def estate_flowchart(graph: LineageGraph) -> str | None:

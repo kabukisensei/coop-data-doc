@@ -1,0 +1,4 @@
+relationship a1b2c3d4-0000-0000-0000-000000000001
+	fromColumn: fact_sales.order_id
+	toColumn: orders_native.order_id
+	isActive: false

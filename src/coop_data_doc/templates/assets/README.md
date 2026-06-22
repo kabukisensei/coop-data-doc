@@ -11,3 +11,10 @@ when they aren't provided locally.
 
 To update: download the new pinned version, update this table, and bump
 the package version.
+
+## First-party assets
+
+| File | Purpose |
+| --- | --- |
+| `custom.css` | Site styling tweaks (nav, tables, mermaid zoom viewport). |
+| `mermaid-zoom.js` | Dependency-free pan/zoom for rendered Mermaid diagrams (drag to pan, Ctrl/Cmd+scroll to zoom, control bar). Hand-rolled rather than vendoring svg-pan-zoom to stay within the no-CDN rule. |

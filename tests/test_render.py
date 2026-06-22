@@ -286,20 +286,22 @@ def test_site_nav_nests_tables_and_measures_under_each_model():
     assert "Measures:" not in nav[res:]
 
 
-def test_site_nav_nests_pages_under_reports():
+def test_site_nav_nests_reports_under_their_model():
     from coop_data_doc.render.site import _nav_section
 
     g = LineageGraph()
-    rpt = g.add_node(make_node(NodeType.REPORT, "", "sales", display_name="Sales"))
-    pg = g.add_node(make_node(NodeType.REPORT_PAGE, "sales", "overview", display_name="Overview"))
-    g.add_edge(Edge(source_id=pg.id, target_id=rpt.id, edge_type=EdgeType.FEEDS))
+    model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    rpt = g.add_node(make_node(NodeType.REPORT, "", "dash", display_name="Sales Dashboard"))
+    # the model --feeds--> report edge (from link_reports_to_models) drives nesting
+    g.add_edge(Edge(source_id=model.id, target_id=rpt.id, edge_type=EdgeType.FEEDS))
     nav = _nav_section(g)
-    assert "- Reports:" in nav
-    assert '- "Sales":' in nav  # report
-    # the page nests under its report as a leaf link (visuals are folded away)
-    rpt_idx = nav.index('"Sales":')
-    assert "sales-overview" in nav and nav.index("sales-overview") > rpt_idx
-    assert '"Overview":' in nav  # the page's display name labels its nav entry
+    assert "- Semantic Models:" in nav
+    # the report nests under its model in a "Reports" subsection, not a top-level one
+    model_idx = nav.index('"Sales":')
+    reports_idx = nav.index("- Reports:")
+    assert reports_idx > model_idx
+    assert '"Sales Dashboard": report/' in nav  # labelled leaf link to the report page
+    assert nav.index("dash") > reports_idx
 
 
 def test_navkey_escapes_control_chars():
@@ -313,15 +315,233 @@ def test_navkey_escapes_control_chars():
     yaml.safe_load(f"{key}: x")  # loads without error
 
 
-def test_site_nav_keeps_orphan_page():
-    # a report_page whose report node is missing must still appear in nav
+def test_upstream_tree_on_model_facing_gold_objects(tmp_path: Path):
+    # the view + gold both feed the model, so both get a full back-to-source
+    # tree; the upstream silver source (a leaf) does not.
+    from coop_data_doc.render.mermaid import upstream_flowchart
+
+    g = build_graph()
+    render_markdown(g, tmp_path, "Test")
+    view_page = page_path(tmp_path, "view:sales.dim_customer").read_text(encoding="utf-8")
+    assert "## Upstream lineage" in view_page
+    # the tree recurses to the source: gold -> proc -> silver, each linked + typed
+    assert "[dbo.fact_sales](../gold_table/" in view_page and "`gold_table`" in view_page
+    assert "[dbo.usp_load](../stored_proc/" in view_page
+    assert "[silver.customers](../silver_table/" in view_page
+    # nesting deepens with each hop
+    gold_indent = (
+        view_page.index("[dbo.fact_sales]")
+        - view_page.rindex("\n", 0, view_page.index("[dbo.fact_sales]"))
+        - 1
+    )
+    silver_indent = (
+        view_page.index("[silver.customers]")
+        - view_page.rindex("\n", 0, view_page.index("[silver.customers]"))
+        - 1
+    )
+    assert silver_indent > gold_indent
+    # the section's mermaid is upstream-only: no downstream pbi_table/model/visual
+    chart = upstream_flowchart(g, "view:sales.dim_customer")
+    assert "fact_sales" in chart and "usp_load" in chart and "customers" in chart
+    assert "pbi_table" not in chart and "semantic_model" not in chart and "visual" not in chart
+
+    # a pure source (the silver table) is not a measure/gold/view -> no tree
+    silver_page = page_path(tmp_path, "silver_table:silver.customers").read_text(encoding="utf-8")
+    assert "## Upstream lineage" not in silver_page
+
+
+def test_unused_measure_detection(tmp_path: Path):
+    # a measure nothing references or shows is flagged on its own page and rolled
+    # up on the model page; a used measure (referenced by another) is not.
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.MEASURE, "sales", "total sales", display_name="Total Sales"))
+    g.add_node(make_node(NodeType.MEASURE, "sales", "orphan kpi", display_name="Orphan KPI"))
+    g.add_node(make_node(NodeType.REPORT, "", "dash", display_name="Dash"))
+    for mid in ("measure:sales.total sales", "measure:sales.orphan kpi"):
+        g.add_edge(Edge(source_id=mid, target_id="semantic_model:sales", edge_type=EdgeType.FEEDS))
+    # Total Sales is shown in a report -> used; Orphan KPI is referenced by nothing
+    g.add_edge(
+        Edge(source_id="report:dash", target_id="measure:sales.total sales", edge_type=EdgeType.VISUALIZES)
+    )
+    render_markdown(g, tmp_path, "Test")
+    model_page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
+    assert "## Unused measures" in model_page
+    # isolate just the section (the later Lineage table lists every measure)
+    section = model_page.split("## Unused measures", 1)[1].split("\n## ", 1)[0]
+    assert "[Orphan KPI](" in section
+    assert "[Total Sales](" not in section  # used -> not listed
+
+    orphan_page = page_path(tmp_path, "measure:sales.orphan kpi").read_text(encoding="utf-8")
+    assert "⚠ **Unused**" in orphan_page
+    used_page = page_path(tmp_path, "measure:sales.total sales").read_text(encoding="utf-8")
+    assert "Unused" not in used_page
+
+
+def test_upstream_tree_handles_cycle_and_diamond():
+    # the guard against DAG re-convergence / cycles is the only non-trivial
+    # logic in the tree; exercise both shapes directly so it can't regress.
+    from coop_data_doc.render.markdown import _direct_upstream, _upstream_tree_text
+
+    # cycle: view a reads b, view b reads a; focus gold c reads a
+    g = LineageGraph()
+    a = g.add_node(make_node(NodeType.VIEW, "s", "a"))
+    b = g.add_node(make_node(NodeType.VIEW, "s", "b"))
+    c = g.add_node(make_node(NodeType.GOLD_TABLE, "s", "c"))
+    g.add_edge(Edge(source_id=c.id, target_id=a.id, edge_type=EdgeType.READS))
+    g.add_edge(Edge(source_id=a.id, target_id=b.id, edge_type=EdgeType.READS))
+    g.add_edge(Edge(source_id=b.id, target_id=a.id, edge_type=EdgeType.READS))
+    text = "\n".join(_upstream_tree_text(g, c, _direct_upstream(g)))  # must terminate
+    assert text.count("s.a") >= 2  # a expanded once, then revisited in the cycle
+    assert "_(shown above)_" in text  # the cycle is cut, not looped
+
+    # diamond: two parents share one *non-leaf* node (`mid`, which has its own
+    # parent), so the shared subtree is expanded once and noted on the second path
+    g2 = LineageGraph()
+    base = g2.add_node(make_node(NodeType.SILVER_TABLE, "s", "base"))
+    mid = g2.add_node(make_node(NodeType.GOLD_TABLE, "s", "mid"))
+    focus = g2.add_node(make_node(NodeType.VIEW, "s", "focus"))
+    g2.add_edge(Edge(source_id=mid.id, target_id=base.id, edge_type=EdgeType.READS))
+    for p in ("p1", "p2"):
+        pnode = g2.add_node(make_node(NodeType.VIEW, "s", p))
+        g2.add_edge(Edge(source_id=focus.id, target_id=pnode.id, edge_type=EdgeType.READS))
+        g2.add_edge(Edge(source_id=pnode.id, target_id=mid.id, edge_type=EdgeType.READS))
+    text2 = "\n".join(_upstream_tree_text(g2, focus, _direct_upstream(g2)))
+    assert text2.count("s.mid") == 2  # appears under both p1 and p2
+    assert text2.count("_(shown above)_") == 1  # but its subtree is expanded only once
+    assert text2.count("s.base") == 1  # so base (under mid) is listed exactly once
+
+
+def test_site_nav_report_under_multiple_models():
+    # a report drawing from two models nests under BOTH, and is not also
+    # emitted as a top-level orphan
     from coop_data_doc.render.site import _nav_section
 
     g = LineageGraph()
-    g.add_node(make_node(NodeType.REPORT_PAGE, "ghost", "overview", display_name="Overview"))
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "finance", display_name="Finance"))
+    g.add_node(make_node(NodeType.REPORT, "", "exec", display_name="Exec Summary"))
+    g.add_edge(Edge(source_id="semantic_model:sales", target_id="report:exec", edge_type=EdgeType.FEEDS))
+    g.add_edge(Edge(source_id="semantic_model:finance", target_id="report:exec", edge_type=EdgeType.FEEDS))
+    nav = _nav_section(g)
+    assert nav.count(slug("report:exec")) == 2  # nested under both models
+    assert "  - Reports:" not in nav.splitlines()  # no top-level orphan Reports header
+
+
+def test_report_page_no_measures_fallback(tmp_path: Path):
+    # a bare report with no edges hits all three "" branches of _report_page
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.REPORT, "", "bare", display_name="Bare Report"))
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "report:bare").read_text(encoding="utf-8")
+    assert "_No measures statically resolvable from this report._" in page
+    assert "## Tables referenced" not in page
+    assert "_Draws from:" not in page
+
+
+def test_no_upstream_tree_when_gold_not_feeding_a_model(tmp_path: Path):
+    # the trace-to-source tree is only for objects connected to a model; a gold
+    # table with no PBI consumer (pure SQL sink) must NOT get the section
+    g = LineageGraph()
+    proc = g.add_node(make_node(NodeType.STORED_PROC, "dbo", "usp", source_file="p.sql"))
+    gold = g.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "audit", source_file="a.sql"))
+    silver = g.add_node(make_node(NodeType.SILVER_TABLE, "silver", "src"))
+    g.add_edge(Edge(source_id=proc.id, target_id=silver.id, edge_type=EdgeType.READS))
+    g.add_edge(Edge(source_id=proc.id, target_id=gold.id, edge_type=EdgeType.WRITES))
+    render_markdown(g, tmp_path, "Test")
+    gold_page = page_path(tmp_path, "gold_table:dbo.audit").read_text(encoding="utf-8")
+    assert "## Upstream lineage" not in gold_page
+
+
+def test_mkdocs_config_and_assets_deterministic(tmp_path: Path):
+    # the HTML-config path (skipped by the markdown determinism test) must also
+    # be idempotent: same inputs -> byte-identical config + copied assets
+    from coop_data_doc.render.site import write_mkdocs_config
+
+    g = build_graph()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# x", encoding="utf-8")
+    site = tmp_path / "site"
+    cfg = write_mkdocs_config(docs, site, "Test", g)
+    first_cfg = cfg.read_bytes()
+    zoom = docs / "assets" / "javascripts" / "vendor" / "mermaid-zoom.js"
+    first_zoom = zoom.read_bytes()
+    write_mkdocs_config(docs, site, "Test", g)  # rewrite same paths
+    assert cfg.read_bytes() == first_cfg
+    assert zoom.read_bytes() == first_zoom
+
+
+def test_measure_dependency_tree(tmp_path: Path):
+    # a measure's DAX dependency chain (MeasureLens-style) renders as the same
+    # upstream tree: Sales per Customer -> Total Sales -> fact_sales
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "fact_sales", display_name="fact_sales"))
+    g.add_node(make_node(NodeType.MEASURE, "sales", "total sales", display_name="Total Sales"))
+    g.add_node(make_node(NodeType.MEASURE, "sales", "sales per customer", display_name="Sales per Customer"))
+    # references: per-customer -> total sales -> fact_sales (REFERENCES reverses to data-flow)
+    g.add_edge(
+        Edge(
+            source_id="measure:sales.sales per customer",
+            target_id="measure:sales.total sales",
+            edge_type=EdgeType.REFERENCES,
+        )
+    )
+    g.add_edge(
+        Edge(
+            source_id="measure:sales.total sales",
+            target_id="pbi_table:sales.fact_sales",
+            edge_type=EdgeType.REFERENCES,
+        )
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "measure:sales.sales per customer").read_text(encoding="utf-8")
+    assert "## Upstream lineage" in page
+    assert "[sales.Total Sales](../measure/" in page
+    assert "[sales.fact_sales](../pbi_table/" in page
+
+
+def test_report_page_is_minimal_measures_referenced(tmp_path: Path):
+    # a report page lists only the model(s) it draws from and the measures /
+    # tables it references — no per-page/visual detail, no lineage tables/flow
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.MEASURE, "sales", "total sales", display_name="Total Sales"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "dim_customer", display_name="Dim Customer"))
+    g.add_node(make_node(NodeType.REPORT, "", "dash", display_name="Sales Dashboard"))
+    # post-collapse shape: model feeds report; report visualizes a measure + table
+    g.add_edge(Edge(source_id="semantic_model:sales", target_id="report:dash", edge_type=EdgeType.FEEDS))
+    g.add_edge(
+        Edge(source_id="report:dash", target_id="measure:sales.total sales", edge_type=EdgeType.VISUALIZES)
+    )
+    g.add_edge(
+        Edge(source_id="report:dash", target_id="pbi_table:sales.dim_customer", edge_type=EdgeType.VISUALIZES)
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "report:dash").read_text(encoding="utf-8")
+    assert "# Sales Dashboard" in page
+    assert "_Draws from:" in page and "sales-total-sales" not in page.split("Draws from")[0]
+    assert "## Measures referenced" in page
+    assert "[sales.Total Sales](" in page  # measure linked by qualified display
+    assert "## Tables referenced" in page
+    assert "[sales.Dim Customer](" in page
+    # the messy report internals are gone: no generic lineage tables or flow chart
+    assert "## Lineage" not in page
+    assert "```mermaid" not in page
+    assert "Local Flow" not in page
+
+
+def test_site_nav_keeps_orphan_report():
+    # a report not linked to any semantic model must still appear, in a
+    # top-level Reports section, so nothing is lost
+    from coop_data_doc.render.site import _nav_section
+
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.REPORT, "", "ghost", display_name="Ghost"))
     nav = _nav_section(g)
     assert "- Reports:" in nav
-    assert "ghost-overview" in nav  # the orphan page is not dropped
+    assert '"Ghost": report/' in nav  # the orphan report is not dropped
 
 
 def test_source_section_embeds_sql(tmp_path: Path):
@@ -448,7 +668,9 @@ def test_reports_downstream_of_models_and_visuals_collapsed():
     keys = {(e.source_id, e.target_id, e.edge_type.value) for e in g.edges}
     assert ("semantic_model:sales", "report:dash", "feeds") in keys  # report downstream of model
     assert "visual:dash.v1" not in g.nodes  # visual folded away
-    assert ("report_page:dash.p1", "pbi_table:sales.orders", "visualizes") in keys  # rewired onto the page
+    assert "report_page:dash.p1" not in g.nodes  # page folded into the report too
+    # the visualizes edge is rewired all the way up onto the report (one node per report)
+    assert ("report:dash", "pbi_table:sales.orders", "visualizes") in keys
 
 
 def test_semantic_model_page_drops_child_prefix(tmp_path: Path):
@@ -626,6 +848,20 @@ def test_mermaid_click_targets_html():
     clicks = [ln for ln in chart.splitlines() if ln.strip().startswith("click")]
     assert clicks
     assert all(".html" in ln and ".md" not in ln for ln in clicks)
+
+
+def test_mermaid_zoom_asset_copied_and_referenced(tmp_path: Path):
+    from coop_data_doc.render.site import write_mkdocs_config
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# x", encoding="utf-8")
+    cfg = write_mkdocs_config(docs, tmp_path / "site", "Test", build_graph())
+    # the dependency-free zoom script is vendored next to mermaid and loaded after it
+    assert (docs / "assets" / "javascripts" / "vendor" / "mermaid-zoom.js").is_file()
+    text = cfg.read_text(encoding="utf-8")
+    assert "assets/javascripts/vendor/mermaid-zoom.js" in text
+    assert text.index("mermaid.min.js") < text.index("mermaid-zoom.js")  # mermaid loads first
 
 
 def test_display_name_schema_qualified_original_case(tmp_path: Path):

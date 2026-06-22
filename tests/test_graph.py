@@ -27,6 +27,18 @@ def test_make_id_normalizes_brackets_and_case():
     assert Node.make_id(NodeType.GOLD_TABLE, "[dbo]", "[Fact Sales]") == "gold_table:dbo.fact sales"
 
 
+def test_normalize_strips_power_bi_single_quotes():
+    # Power BI wraps names containing spaces in single quotes; a TMDL
+    # relationship endpoint like 'Fact Sales'.Amount must normalize to the
+    # same form as the (already-unquoted) table node id so the two match.
+    from coop_data_doc.graph.model import normalize_identifier
+
+    assert normalize_identifier("'Fact Sales'.Amount") == "fact sales.amount"
+    assert normalize_identifier("'Fact Sales'") == "fact sales"  # literal, not self-referential
+    # and that literal is exactly what the table node id is built from (the match it enables)
+    assert Node.make_id(NodeType.PBI_TABLE, "sales", "Fact Sales") == "pbi_table:sales.fact sales"
+
+
 def test_add_node_merges_columns_and_metadata():
     g = LineageGraph()
     g.add_node(

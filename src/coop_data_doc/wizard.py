@@ -180,13 +180,22 @@ def run_setup(config_path: Path) -> Config | None:
         or "Coop BI Estate"
     )
 
+    # These two prompts are the step users most often click past without
+    # understanding — spell out that a *folder path* is expected, with examples.
+    print(
+        "\nNext, point the tool at your two source folders (the repos cloned on\n"
+        "this computer). For each, enter the path to the folder — for example\n"
+        "  /Users/you/code/sql-warehouse   or   C:\\Users\\you\\code\\PowerBI\n"
+        "Relative paths are resolved against the config file's folder.\n",
+        file=sys.stderr,
+    )
     sql_path = _ask_repo_path(
-        "SQL repo path (procs, tables, views)",
+        "SQL repo path — the folder with your procs, tables, views",
         _repo_default(existing, "sql", "../sql-repo"),
         base_dir,
     )
     pbi_path = _ask_repo_path(
-        "Power BI repo path (semantic models, reports)",
+        "Power BI repo path — the folder with your semantic models and reports",
         _repo_default(existing, "powerbi", "../pbi-repo"),
         base_dir,
     )

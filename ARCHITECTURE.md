@@ -63,13 +63,23 @@ this diagram — read it first when tracing behavior.
   | --- | --- | --- |
   | `reads` | proc/view → table it reads | target → source |
   | `writes` | proc → table it writes | source → target |
-  | `feeds` | view → pbi_table; pbi_table → model; visual → page → report | source → target |
+  | `feeds` | view → pbi_table; pbi_table → model; model → report | source → target |
   | `defines` | proc → table it CREATEs | source → target |
   | `references` | measure → measure/table; proc → proc (EXEC) | target → source |
-  | `visualizes` | visual → pbi_table/measure | target → source |
+  | `visualizes` | report → pbi_table/measure | target → source |
 
   All traversal (`upstream()` / `downstream()`) uses `flow()`, so callers
   never think about authoring direction.
+
+  **Reports are collapsed to one node.** Power BI report internals (pages,
+  visuals) get messy fast and add little lineage value, so `pbir.parse_*`
+  builds the full report→page→visual tree, the linker resolves each visual's
+  field bindings, then `link_reports_to_models` adds a `model → report` edge
+  per model a report draws from and `collapse_visuals` folds every page/visual
+  into the report — re-pointing each `visualizes` edge up to the report and
+  deleting the `report_page`/`visual` nodes. So the *final* graph has exactly
+  one node per report, downstream of its model(s), with `report → measure/table`
+  `visualizes` edges. (The table above shows that post-collapse shape.)
 
 ## Key design decisions
 
@@ -119,11 +129,29 @@ YAML front-matter (`id`, `type`, `name`, `schema`, `source_file`, `path`,
 without heuristics; `manifest.json` is the whole serialized graph for
 programmatic consumers. Page filenames come from `slug()` (filesystem-safe,
 length-bounded, hash-suffixed for uniqueness — not derivable from the id), so
-the `path` field is the source of truth for where a node's page lives. `render/site.py` synthesizes a Material config and
-post-processes the built HTML so the portal works over `file://` with zero
-network: vendored `mermaid.min.js` (Material skips its CDN fetch when
-`window.mermaid` exists), vendored iframe-worker shim (URL rewritten in the
-HTML), `font: false`, `use_directory_urls: false`.
+the `path` field is the source of truth for where a node's page lives. Beyond
+the contract + lineage tables, pages carry purpose-built sections, all
+deterministic:
+
+- **Joel's Relationship Grid** (semantic models) — a fact × dimension matrix
+  from the model's parsed relationships (TMDL `relationships.tmdl` or the older
+  inline `model.tmdl`, and `.bim`), marking active/inactive/bidirectional edges.
+- **Upstream lineage** (measures + the gold tables/views that feed a model) — a
+  "trace back to source" view as a clickable indented text tree *and* a
+  full-depth Mermaid diagram, so a functional user can walk a report number
+  back to the SQL behind it.
+- **Unused measures** (semantic models) — a cleanup roll-up of measures nothing
+  references or shows, with a matching advisory badge on each measure's page.
+- **Report pages are deliberately minimal** — just the model(s) a report draws
+  from and the measures/tables it references (no per-visual detail); the nav
+  nests each report under every model it draws from.
+
+`render/site.py` synthesizes a Material config and post-processes the built
+HTML so the portal works over `file://` with zero network: vendored
+`mermaid.min.js` (Material skips its CDN fetch when `window.mermaid` exists),
+the first-party dependency-free `mermaid-zoom.js` (drag-pan / Ctrl+scroll zoom
+for large diagrams), vendored iframe-worker shim (URL rewritten in the HTML),
+`font: false`, `use_directory_urls: false`.
 
 **Human content survives regeneration.** Each page has a Business Intent
 block between `<!-- intent:begin/end -->` markers; the renderer carries the
@@ -137,10 +165,10 @@ re-rendering for the same reason.
   `downstream_dependents`, follow each page's front-matter transitively
   (or walk `manifest.json` edges with the
   flow table above).
-- *"Where does this report number come from?"* — visual page →
-  `visualizes` → measure (DAX shown on the measure page) → `references` →
-  pbi_table → `feeds` → view → `reads` → gold table → `writes` ← proc →
-  `reads` → silver sources.
+- *"Where does this report number come from?"* — report page lists the
+  measures it references → measure page's **Upstream lineage** tree walks it the
+  whole way back: measure → `references` → pbi_table → `feeds` → view → `reads`
+  → gold table → `writes` ← proc → `reads` → silver sources.
 - Trust levels: edges carry `evidence`; nodes parsed via fallback carry
   `metadata.parse_quality = "regex_fallback"`; DAX/measure edges are
   heuristic (`dax_refs_heuristic`).
@@ -161,7 +189,7 @@ src/coop_data_doc/
 ├── wizard.py         interactive `setup` (repos, layers, ignore, mappings)
 ├── upgrade.py        `upgrade` — the only networked command (PyPI/git); on Windows, defers to a fresh shell rather than replace its own running launcher
 ├── render/           markdown.py, mermaid.py, site.py (layer-grouped nav)
-└── templates/assets/ vendored mermaid + iframe-worker + custom.css
+└── templates/assets/ vendored mermaid + iframe-worker + first-party mermaid-zoom.js + custom.css
 tasks/                original builder briefs — double as interface docs
 tests/                fixtures/repo_sql + fixtures/repo_pbi drive everything
 ```

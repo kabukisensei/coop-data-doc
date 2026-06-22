@@ -20,7 +20,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from coop_data_doc.graph.model import LineageGraph, Node, NodeType, normalize_identifier
+from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.render.mermaid import slug
 
 _MAX_BRAND_BYTES = 8 * 1024 * 1024  # don't copy oversized logo/favicon files
@@ -101,6 +101,7 @@ markdown_extensions:
 
 extra_javascript:
   - assets/javascripts/vendor/mermaid.min.js
+  - assets/javascripts/vendor/mermaid-zoom.js
 
 extra_css:
   - assets/stylesheets/custom.css
@@ -138,11 +139,16 @@ def _navkey(title: str) -> str:
     return '"' + escaped + '"'
 
 
-def _grouped_section(nodes, container, title, children) -> list[str]:
-    """Nav for `container` nodes (semantic_model / report) with their child
-    objects nested underneath, keyed by the child's schema_name == the
-    container's normalized name. Children whose container is missing get
-    their own subsection keyed by the bare name."""
+def _grouped_section(nodes, container, title, children, extra_groups=()) -> list[str]:
+    """Nav for `container` nodes (semantic_model) with their child objects nested
+    underneath, keyed by the child's schema_name == the container's normalized
+    name. Children whose container is missing get their own subsection keyed by
+    the bare name.
+
+    ``extra_groups`` is an optional list of ``(subsection_title, {container_key:
+    [node_id, ...]})`` rendered as additional labelled leaf-link subsections
+    under each container — used to nest each report under every model it draws
+    from."""
     # group child ids by their container key
     grouped: dict[str, dict[str, list[str]]] = {}
     for nid, node in nodes.items():
@@ -154,7 +160,8 @@ def _grouped_section(nodes, container, title, children) -> list[str]:
         (nid for nid, n in nodes.items() if n.node_type is container),
         key=lambda nid: nodes[nid].display.lower(),
     )
-    if not containers and not grouped:
+    extra_keys = {key for _title, members in extra_groups for key in members}
+    if not containers and not grouped and not extra_keys:
         return []
 
     def block(section_title: str, key: str, container_id: str | None) -> list[str]:
@@ -167,6 +174,15 @@ def _grouped_section(nodes, container, title, children) -> list[str]:
                 continue
             out.append(f"          - {child_title}:")
             out.extend(f"              - {_page(nodes[nid], nid)}" for nid in ids)
+        for sub_title, members in extra_groups:
+            ids = sorted(members.get(key, []), key=lambda nid: nodes[nid].display.lower())
+            if not ids:
+                continue
+            out.append(f"          - {sub_title}:")
+            # labelled links: a report's display name isn't its H1 page title key
+            out.extend(
+                f"              - {_navkey(nodes[nid].display)}: {_page(nodes[nid], nid)}" for nid in ids
+            )
         return out
 
     lines = [f"  - {title}:"]
@@ -176,51 +192,44 @@ def _grouped_section(nodes, container, title, children) -> list[str]:
         key = normalize_identifier(nodes[cid].name)
         seen.add(key)
         lines.extend(block(nodes[cid].display, key, cid))
-    for key in sorted(set(grouped) - seen):  # children with no container node
+    for key in sorted((set(grouped) | extra_keys) - seen):  # children with no container node
         lines.extend(block(key, key, None))
     return lines
 
 
-def _report_section(graph: LineageGraph) -> list[str]:
-    """Nav for reports as a tree: Report -> Pages. Each report's pages nest
-    under it as leaf links; the report's own page is its 'Overview'. (Visuals
-    are folded into their page by collapse_visuals, so they're not listed.)
-    Reports with no pages, and pages whose report node is missing, still
-    appear so no node is lost."""
+def _reports_by_model(graph: LineageGraph) -> tuple[dict[str, list[str]], set[str]]:
+    """Map each semantic-model key -> the report ids that draw from it (via the
+    ``model --feeds--> report`` edges from link_reports_to_models), plus the set
+    of every report id that landed under at least one model. A report drawing
+    from several models is listed under each."""
     nodes = graph.nodes
-    pages_by_report: dict[str, list[str]] = {}  # keyed by report's normalized name
-    for nid, n in nodes.items():
-        if n.node_type is NodeType.REPORT_PAGE:
-            pages_by_report.setdefault(n.schema_name, []).append(nid)
+    by_model: dict[str, list[str]] = {}
+    placed: set[str] = set()
+    for edge in graph.edges:
+        if edge.edge_type is not EdgeType.FEEDS:
+            continue
+        src, tgt = nodes.get(edge.source_id), nodes.get(edge.target_id)
+        if src is None or tgt is None:
+            continue
+        if src.node_type is NodeType.SEMANTIC_MODEL and tgt.node_type is NodeType.REPORT:
+            by_model.setdefault(normalize_identifier(src.name), []).append(tgt.id)
+            placed.add(tgt.id)
+    return {key: sorted(set(ids)) for key, ids in by_model.items()}, placed
 
-    reports = sorted(
-        (nid for nid, n in nodes.items() if n.node_type is NodeType.REPORT),
+
+def _orphan_reports_section(graph: LineageGraph, placed: set[str]) -> list[str]:
+    """Top-level nav for reports not attached to any semantic model, so a report
+    whose model couldn't be resolved is never lost. Reports linked to a model
+    are nested under it instead (see _reports_by_model)."""
+    nodes = graph.nodes
+    orphans = sorted(
+        (nid for nid, n in nodes.items() if n.node_type is NodeType.REPORT and nid not in placed),
         key=lambda nid: nodes[nid].display.lower(),
     )
-    report_id_by_key = {nodes[rid].name: rid for rid in reports}
-    keys = set(report_id_by_key) | set(pages_by_report)
-    if not keys:
+    if not orphans:
         return []
-
-    def report_block(key: str) -> list[str]:
-        rid = report_id_by_key.get(key)
-        out = [f"      - {_navkey(nodes[rid].display if rid is not None else key)}:"]
-        if rid is not None:
-            out.append(f"          - Overview: {_page(nodes[rid], rid)}")
-        for pid in sorted(pages_by_report.get(key, []), key=lambda p: nodes[p].display.lower()):
-            out.append(f"          - {_navkey(nodes[pid].display)}: {_page(nodes[pid], pid)}")
-        return out
-
-    # reports with a node first (by display), then keys with only orphan pages
-    # (no report node); both deterministically ordered
-    with_node = sorted(
-        (k for k in keys if k in report_id_by_key),
-        key=lambda k: nodes[report_id_by_key[k]].display.lower(),
-    )
-    without_node = sorted(k for k in keys if k not in report_id_by_key)
     lines = ["  - Reports:"]
-    for key in with_node + without_node:
-        lines.extend(report_block(key))
+    lines.extend(f"      - {_navkey(nodes[nid].display)}: {_page(nodes[nid], nid)}" for nid in orphans)
     return lines
 
 
@@ -249,17 +258,19 @@ def _nav_section(graph: LineageGraph) -> str:
                 lines.extend(f"              - {_page(nodes[nid], nid)}" for nid in sub)
 
     # Power BI: nest each semantic model's tables + measures under the model,
-    # and each report's pages + visuals under the report (a flat list of
-    # hundreds of measures/visuals is unusable).
+    # and each report under every model it draws from (a flat list of hundreds
+    # of measures is unusable, and reports belong with their model).
+    reports_by_model, placed_reports = _reports_by_model(graph)
     lines.extend(
         _grouped_section(
             nodes,
             container=NodeType.SEMANTIC_MODEL,
             title="Semantic Models",
             children=(("Tables", NodeType.PBI_TABLE), ("Measures", NodeType.MEASURE)),
+            extra_groups=[("Reports", reports_by_model)],
         )
     )
-    lines.extend(_report_section(graph))
+    lines.extend(_orphan_reports_section(graph, placed_reports))
 
     # anything unlayered (views/procs no rule covered) — don't lose them
     other = sorted(
@@ -342,7 +353,7 @@ def write_mkdocs_config(
     docs_dir = Path(docs_dir).resolve()
     vendor_dir = docs_dir / _VENDOR_REL
     vendor_dir.mkdir(parents=True, exist_ok=True)
-    for asset in ("mermaid.min.js", "iframe-worker-shim.js"):
+    for asset in ("mermaid.min.js", "mermaid-zoom.js", "iframe-worker-shim.js"):
         shutil.copyfile(_VENDOR_SRC / asset, vendor_dir / asset)
     css_dir = docs_dir / _CSS_REL
     css_dir.mkdir(parents=True, exist_ok=True)

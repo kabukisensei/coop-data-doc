@@ -138,6 +138,48 @@ def test_cursor_proc_traced():
     assert not any("event_cur" in node_id for node_id in graph.nodes)
 
 
+def test_regex_fallback_resolves_cte_shadowed_and_bracketed_tables():
+    """The regex fallback (used for statements sqlglot can't parse) must keep a
+    *schema-qualified* table even when a CTE shares its bare name, and must not
+    truncate bracketed names that contain spaces. Tested directly because
+    forcing a specific statement onto the fallback path via a fixture is
+    sqlglot-version-sensitive; the bug lived entirely in regex_extract."""
+    from coop_data_doc.parsers.sql_common import regex_extract
+
+    # a CTE named `orders` must not hide the real `dbo.orders` it selects from
+    shadowed = regex_extract(
+        "WITH orders AS (SELECT * FROM dbo.orders) INSERT INTO dbo.fact SELECT * FROM orders"
+    )
+    assert ("dbo", "orders") in shadowed.reads
+    assert ("dbo", "fact") in shadowed.writes
+    assert ("dbo", "orders") not in shadowed.writes  # the CTE alias isn't a write target
+
+    # a CTE named `tgt` must not hide the real `dbo.tgt` it writes to
+    write_collision = regex_extract(
+        "WITH tgt AS (SELECT * FROM dbo.src) INSERT INTO dbo.tgt SELECT * FROM tgt"
+    )
+    assert ("dbo", "tgt") in write_collision.writes
+    assert ("dbo", "src") in write_collision.reads
+
+    # bracketed identifiers with spaces are captured whole, not truncated
+    bracketed = regex_extract(
+        "INSERT INTO dbo.fact SELECT * FROM dbo.[Order Details] od JOIN [sales].[Line Items] li ON 1 = 1"
+    )
+    assert ("dbo", "order details") in bracketed.reads
+    assert ("sales", "line items") in bracketed.reads
+    assert not any(name in {"my", "order", "line"} for _schema, name in bracketed.reads)
+
+    # an explicit CTE column list `(a, b)` must not leak the alias as a table
+    collist = regex_extract("WITH c (a, b) AS (SELECT x, y FROM dbo.src) INSERT INTO dbo.tgt SELECT * FROM c")
+    assert collist.reads == {("dbo", "src")}
+    assert collist.writes == {("dbo", "tgt")}
+
+    # bracketed table aliases (with spaces) must not leak as phantom tables
+    aliased = regex_extract("SELECT * FROM dbo.orders AS [my alias] JOIN dbo.lines [other alias] ON 1 = 1")
+    assert ("dbo", "orders") in aliased.reads and ("dbo", "lines") in aliased.reads
+    assert not any(name in {"my", "alias", "other"} for _schema, name in aliased.reads)
+
+
 def test_dynamic_sql_warned_not_guessed():
     graph, warnings = parse_all()
     assert any(w.category == "dynamic_sql" for w in warnings)

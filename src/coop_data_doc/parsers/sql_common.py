@@ -18,7 +18,15 @@ from coop_data_doc.graph.model import normalize_identifier
 GO_RE = re.compile(r"^\s*GO\s*;?\s*$", re.IGNORECASE | re.MULTILINE)
 PROC_HEADER_RE = re.compile(r"\bCREATE\s+(?:OR\s+ALTER\s+)?PROC(?:EDURE)?\s+([\w\[\].]+)", re.IGNORECASE)
 DYNAMIC_SQL_RE = re.compile(r"\bsp_executesql\b|\bEXEC(?:UTE)?\s*\(", re.IGNORECASE)
-EXEC_RE = re.compile(r"^\s*EXEC(?:UTE)?\s+([\w\[\].]+)", re.IGNORECASE)
+
+# A (possibly multi-part) SQL identifier: each part is either a bracketed
+# segment — which may contain spaces, e.g. `[Order Details]` — or a bare
+# word, joined by dots. Using one pattern everywhere keeps the regex fallback
+# from truncating a spaced, bracketed name at its first space (which used to
+# leak a phantom table like `[my` -> `my`).
+_IDENT = r"(?:\[[^\]]+\]|[#@\w]+)(?:\.(?:\[[^\]]+\]|[#@\w]+))*"
+
+EXEC_RE = re.compile(rf"^\s*EXEC(?:UTE)?\s+({_IDENT})", re.IGNORECASE)
 
 # lines that only drive cursor mechanics; their identifiers are cursors,
 # not tables, so they must never reach the regex table extractor
@@ -26,20 +34,25 @@ _CURSOR_LINE_RE = re.compile(r"^\s*(?:FETCH|OPEN|CLOSE|DEALLOCATE)\b.*$", re.IGN
 _BEGIN_END_LINE_RE = re.compile(r"^\s*(?:BEGIN|END)\s*;?\s*$", re.IGNORECASE | re.MULTILINE)
 
 _WRITE_RX = [
-    re.compile(r"\bINSERT\s+INTO\s+([#@\w\[\].]+)", re.IGNORECASE),
-    re.compile(r"\bMERGE\s+(?:INTO\s+)?([#@\w\[\].]+)", re.IGNORECASE),
-    re.compile(r"\bUPDATE\s+([#@\w\[\].]+)", re.IGNORECASE),
-    re.compile(r"\bINTO\s+([#@\w\[\].]+)", re.IGNORECASE),
-    re.compile(r"\bDELETE\s+FROM\s+([#@\w\[\].]+)", re.IGNORECASE),
-    re.compile(r"\bTRUNCATE\s+TABLE\s+([#@\w\[\].]+)", re.IGNORECASE),
+    re.compile(rf"\bINSERT\s+INTO\s+({_IDENT})", re.IGNORECASE),
+    re.compile(rf"\bMERGE\s+(?:INTO\s+)?({_IDENT})", re.IGNORECASE),
+    re.compile(rf"\bUPDATE\s+({_IDENT})", re.IGNORECASE),
+    re.compile(rf"\bINTO\s+({_IDENT})", re.IGNORECASE),
+    re.compile(rf"\bDELETE\s+FROM\s+({_IDENT})", re.IGNORECASE),
+    re.compile(rf"\bTRUNCATE\s+TABLE\s+({_IDENT})", re.IGNORECASE),
 ]
 _READ_RX = [
-    re.compile(r"\bFROM\s+([#@\w\[\].]+)", re.IGNORECASE),
-    re.compile(r"\bJOIN\s+([#@\w\[\].]+)", re.IGNORECASE),
-    re.compile(r"\bUSING\s+([#@\w\[\].]+)", re.IGNORECASE),
+    re.compile(rf"\bFROM\s+({_IDENT})", re.IGNORECASE),
+    re.compile(rf"\bJOIN\s+({_IDENT})", re.IGNORECASE),
+    re.compile(rf"\bUSING\s+({_IDENT})", re.IGNORECASE),
 ]
-_CTE_RX = re.compile(r"\bWITH\s+([\w\[\]]+)\s+AS\s*\(|,\s*([\w\[\]]+)\s+AS\s*\(", re.IGNORECASE)
-_ALIAS_RX = re.compile(r"\b(?:FROM|JOIN)\s+([\w\[\].]+)\s+(?:AS\s+)?([\w\[\]]+)", re.IGNORECASE)
+# A CTE alias: the name after WITH or a following comma, optionally bracketed
+# (so it may contain spaces) and optionally followed by an explicit column list
+# `(a, b)` before AS. Both alternatives are needed because a WITH block can
+# define several CTEs (`WITH a AS (...), b AS (...)`).
+_CTE_NAME = r"(\[[^\]]+\]|[\w]+)\s*(?:\([^)]*\))?"
+_CTE_RX = re.compile(rf"\bWITH\s+{_CTE_NAME}\s+AS\s*\(|,\s*{_CTE_NAME}\s+AS\s*\(", re.IGNORECASE)
+_ALIAS_RX = re.compile(rf"\b(?:FROM|JOIN)\s+({_IDENT})\s+(?:AS\s+)?(\[[^\]]+\]|[\w]+)", re.IGNORECASE)
 _KEYWORDS = frozenset(
     "on where inner left right full outer cross join group order set when as with select".split()
 )
@@ -237,10 +250,15 @@ def regex_extract(statement: str) -> StatementLineage:
             if is_temp(normalize_identifier(raw)) or is_temp(raw):
                 continue
             schema, name = qualify(raw)
-            if name in ctes:
-                continue
-            if "." not in normalize_identifier(raw) and name in aliases:
-                schema, name = aliases[name]
+            # A CTE/alias only shadows a *bare* name; a schema-qualified table
+            # (dbo.tgt) is a real object even when a CTE happens to share its
+            # name (`WITH tgt AS (...) ... INSERT INTO dbo.tgt`).
+            qualified = "." in normalize_identifier(raw)
+            if not qualified:
+                if name in ctes:
+                    continue
+                if name in aliases:
+                    schema, name = aliases[name]
             lineage.writes.add((schema, name))
     for rx in _READ_RX:
         for match in rx.finditer(text):
@@ -248,7 +266,9 @@ def regex_extract(statement: str) -> StatementLineage:
             if is_temp(normalize_identifier(raw)) or is_temp(raw):
                 continue
             schema, name = qualify(raw)
-            if name in ctes or name in aliases and "." not in normalize_identifier(raw):
+            # same rule on the read side: drop a CTE/alias only when unqualified,
+            # so `FROM dbo.orders` survives even with a CTE also named `orders`.
+            if (name in ctes or name in aliases) and "." not in normalize_identifier(raw):
                 continue
             lineage.reads.add((schema, name))
     lineage.reads -= lineage.writes

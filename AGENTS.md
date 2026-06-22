@@ -22,6 +22,11 @@ coop-data-doc build --non-interactive --strict
 coop-data-doc check --lenient
 ```
 
+> **PATH-independent invocation.** Every command also runs as
+> `python -m coop_data_doc <command>` (e.g. `python -m coop_data_doc build
+> --non-interactive`). Use this when the `coop-data-doc` console script isn't on
+> `PATH` — same entry point, no install-location dependency.
+
 ## CLI Contract for Agents
 
 All commands exit with these codes:
@@ -164,6 +169,10 @@ From `manifest.json` edges (authoring direction → data-flow direction):
 
 Front-matter `upstream_inputs`/`downstream_dependents` are already flow-normalized — prefer them when reading pages.
 
+> **Reports are collapsed.** The final graph has one node per report (no
+> `report_page`/`visual` nodes): a report is downstream of its model(s) via
+> `feeds`, and references measures/tables via `report → … visualizes` edges.
+
 ## Common Agent Tasks
 
 ### "What breaks if I change X?"
@@ -233,4 +242,4 @@ graph, result, warnings = run_pipeline(config, interactive=False)
 
 ## Version
 
-This contract matches `coop-data-doc` version `0.4.0`.
+This contract matches `coop-data-doc` version `0.24.0`.

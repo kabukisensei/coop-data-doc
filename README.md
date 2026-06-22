@@ -102,7 +102,13 @@ coop-data-doc --version
 
 You should see `coop-data-doc, version 0.17.0` (or newer). If the terminal says
 *"command not found"* (macOS) or *"the term 'coop-data-doc' is not recognized…"*
-(Windows), see [Troubleshooting](#troubleshooting).
+(Windows), the install location just isn't on your PATH yet — see
+[Troubleshooting](#troubleshooting) to fix it permanently.
+
+**Always-works fallback:** every `coop-data-doc …` command also runs as
+`python3 -m coop_data_doc …` (Windows: `python -m coop_data_doc …`). This invokes
+the exact same tool through Python directly, so it works even before the PATH is
+fixed — e.g. `python3 -m coop_data_doc --version` or `python3 -m coop_data_doc setup`.
 
 <details>
 <summary>Other ways to install (click to expand)</summary>
@@ -562,7 +568,7 @@ overwritten on the next `update`. To regenerate after source changes, run
 
 | Symptom | What it means / what to do |
 | --- | --- |
-| `command not found: coop-data-doc` (macOS) or `the term 'coop-data-doc' is not recognized…` (Windows) | The install location isn't on your PATH. Run `python3 -m pipx ensurepath` (Windows: `python -m pipx ensurepath`), then close and reopen the terminal. |
+| `command not found: coop-data-doc` (macOS) or `the term 'coop-data-doc' is not recognized…` (Windows) | The install location isn't on your PATH. Run `python3 -m pipx ensurepath` (Windows: `python -m pipx ensurepath`), then close and reopen the terminal. **Need it working right now?** Run the tool through Python instead — `python3 -m coop_data_doc <command>` (Windows: `python -m coop_data_doc <command>`) — which never depends on PATH. |
 | `externally-managed-environment` during install (macOS) | Your Python is managed by Homebrew. Run `brew install pipx`, then `pipx ensurepath`, and retry. |
 | `coop-data-doc upgrade` fails on Windows with `[WinError 32] … being used by another process` (a `PermissionError` or `OSError` naming `coop-data-doc.exe`) | Windows can't replace the tool's launcher while it's running. The package may have already updated — check `coop-data-doc --version`. If it's still the old version, run `pipx upgrade coop-data-doc` in a **fresh** terminal (where the tool isn't running). v0.17.0+ detects this and prints the exact command instead of the raw error. |
 | `dependency conflicts … requires pyyaml==6.0.2, but you have 6.0.3` (or similar) | You installed into a shared system Python with plain `pip`, clashing with another tool. Fix: `pip uninstall -y coop-data-doc`, restore the other tool's pin (e.g. `pip install "pyyaml==6.0.2"`), then reinstall coop-data-doc with **pipx** (isolated): `pipx install coop-data-doc`. |

@@ -13,13 +13,14 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-from coop_data_doc.graph.model import LineageGraph, Node, NodeType, normalize_identifier
+from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.graph.serialize import to_json_str
 from coop_data_doc.render.mermaid import (
     doc_relpath,
     estate_flowchart,
     local_flowchart,
     slug,
+    upstream_flowchart,
 )
 
 INTENT_BEGIN = "<!-- intent:begin -->"
@@ -52,6 +53,9 @@ _REL_ACTIVE = "🟢"  # active relationship
 _REL_INACTIVE = "⚪"  # inactive (e.g. role-playing) relationship
 _REL_BIDI = "⇅"  # appended when the relationship cross-filters both ways
 
+# Display titles per node type. report_page / visual never reach the renderer
+# (collapse_visuals folds them into the report before rendering) but are kept
+# here so any intermediate/pre-collapse graph still renders rather than KeyErrors.
 _TYPE_TITLES: dict[NodeType, str] = {
     NodeType.BRONZE_TABLE: "Source Tables (Bronze)",
     NodeType.SILVER_TABLE: "Tables (Silver)",
@@ -258,6 +262,174 @@ def _relationship_grid(graph: LineageGraph, node: Node) -> str:
     return "\n".join(lines)
 
 
+def _direct_upstream(graph: LineageGraph) -> dict[str, list[str]]:
+    """node id -> sorted ids of its *direct* upstream sources (data-flow
+    direction, so READS/REFERENCES/VISUALIZES are already reversed by flow())."""
+    up: dict[str, set[str]] = {}
+    for edge in graph.edges:
+        upstream_id, downstream_id = edge.flow()
+        up.setdefault(downstream_id, set()).add(upstream_id)
+    return {key: sorted(value) for key, value in up.items()}
+
+
+_UPSTREAM_TREE_MAX_DEPTH = 60  # backstop against a pathological chain
+
+
+def _upstream_tree_text(graph: LineageGraph, node: Node, up: dict[str, list[str]]) -> list[str]:
+    """Indented, clickable ancestry tree: each object's direct upstream sources
+    nested beneath it, recursing to the source roots. A node reachable by
+    several paths is expanded once — later occurrences link to it with
+    '(shown above)' — so a DAG can't blow up and a cycle can't loop forever.
+    ``up`` is the precomputed direct-upstream map (see :func:`_direct_upstream`).
+    """
+    out: list[str] = []
+    expanded: set[str] = set()
+
+    def walk(node_id: str, depth: int) -> None:
+        other = graph.nodes.get(node_id)
+        if other is None:
+            return
+        indent = "    " * depth
+        link = f"[{_link_text(other.qualified_display)}]({doc_relpath(other)}) `{other.node_type.value}`"
+        parents = up.get(node_id, [])
+        if parents and (node_id in expanded or depth >= _UPSTREAM_TREE_MAX_DEPTH):
+            note = "_(shown above)_" if node_id in expanded else "_(…)_"
+            out.append(f"{indent}- {link} {note}")
+            return
+        out.append(f"{indent}- {link}")
+        expanded.add(node_id)
+        for parent in parents:
+            walk(parent, depth + 1)
+
+    for parent in up.get(node.id, []):
+        walk(parent, 0)
+    return out
+
+
+def _wants_upstream_tree(graph: LineageGraph, node: Node) -> bool:
+    """Pages that carry the full 'trace back to source' tree: measures (their
+    DAX dependency chain) and the gold tables/views that feed a semantic model —
+    the objects a functional user reaches working backwards from a report or
+    model, where they may not know the SQL that produced them."""
+    if node.node_type is NodeType.MEASURE:
+        return any(edge.flow()[1] == node.id for edge in graph.edges)
+    if node.node_type in (NodeType.GOLD_TABLE, NodeType.VIEW):
+        return any(
+            (dn := graph.nodes.get(d)) is not None
+            and dn.node_type in (NodeType.PBI_TABLE, NodeType.SEMANTIC_MODEL)
+            for d in graph.downstream(node.id)
+        )
+    return False
+
+
+def _upstream_section(graph: LineageGraph, node: Node, up: dict[str, list[str]]) -> str:
+    """A 'trace back to source' section: a readable text ancestry tree plus the
+    same lineage as a full-depth, zoomable Mermaid diagram."""
+    tree = _upstream_tree_text(graph, node, up)
+    lines = ["## Upstream lineage", ""]
+    if not tree:
+        lines.append("_No upstream objects — this is a source._")
+        return "\n".join(lines)
+    lines.append(
+        "_Trace this object back to its sources. The tree lists each upstream "
+        "dependency to the roots; the diagram below is the same lineage — click a node to open it._"
+    )
+    lines.append("")
+    lines.extend(tree)
+    lines += ["", "```mermaid", upstream_flowchart(graph, node.id), "```"]
+    return "\n".join(lines)
+
+
+def _used_measure_ids(graph: LineageGraph) -> set[str]:
+    """Ids of measures that something depends on: referenced by another measure
+    (REFERENCES) or shown in a report (VISUALIZES). A measure's ``feeds`` edge
+    to its own model is deliberately ignored — every measure has that, so it
+    can't distinguish a used measure from a dead one.
+    """
+    used: set[str] = set()
+    for edge in graph.edges:
+        if edge.edge_type in (EdgeType.REFERENCES, EdgeType.VISUALIZES):
+            target = graph.nodes.get(edge.target_id)
+            if target is not None and target.node_type is NodeType.MEASURE:
+                used.add(edge.target_id)
+    return used
+
+
+_UNUSED_MEASURE_CAVEAT = (
+    "not referenced by any other measure or shown in any parsed report. "
+    "RLS, calculation groups, field parameters, and external/paginated use "
+    "aren't tracked, so confirm before deleting."
+)
+
+
+def _unused_measures_section(graph: LineageGraph, node: Node, used: set[str]) -> str:
+    """Roll-up on a semantic-model page listing its measures that nothing
+    depends on — MeasureLens-style dead-measure detection for cleanup. Returns
+    "" (no section) when every measure is used, to keep healthy models clean.
+    ``used`` is the precomputed set from :func:`_used_measure_ids`.
+    """
+    model_key = normalize_identifier(node.name)
+    unused = sorted(
+        (
+            other
+            for other in graph.nodes.values()
+            if other.node_type is NodeType.MEASURE and other.schema_name == model_key and other.id not in used
+        ),
+        key=lambda m: m.display.lower(),
+    )
+    if not unused:
+        return ""
+    lines = ["## Unused measures", ""]
+    lines.append(f"_Defined in this model but {_UNUSED_MEASURE_CAVEAT}_")
+    lines.append("")
+    lines.extend(f"- [{_link_text(m.display)}]({doc_relpath(m)})" for m in unused)
+    return "\n".join(lines)
+
+
+def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
+    """Deliberately minimal report page: the model(s) it draws from and the
+    measures / tables it references — nothing else. Power BI report internals
+    (pages, visuals) are folded away by ``collapse_visuals`` because that detail
+    gets messy fast and adds little lineage value.
+    """
+    models: list[Node] = []
+    measures: list[Node] = []
+    tables: list[Node] = []
+    for edge in graph.edges:
+        if edge.edge_type is EdgeType.FEEDS and edge.target_id == node.id:
+            src = graph.nodes.get(edge.source_id)
+            if src is not None and src.node_type is NodeType.SEMANTIC_MODEL:
+                models.append(src)
+        elif edge.edge_type is EdgeType.VISUALIZES and edge.source_id == node.id:
+            tgt = graph.nodes.get(edge.target_id)
+            if tgt is None:
+                continue
+            if tgt.node_type is NodeType.MEASURE:
+                measures.append(tgt)
+            elif tgt.node_type is NodeType.PBI_TABLE:
+                tables.append(tgt)
+
+    def link(n: Node) -> str:
+        return f"[{_link_text(n.qualified_display)}]({doc_relpath(n)})"
+
+    def dedup_sorted(ns: list[Node]) -> list[Node]:
+        return sorted({n.id: n for n in ns}.values(), key=lambda n: n.qualified_display.lower())
+
+    parts = [_front_matter(graph, node), "", f"# {node.qualified_display}", ""]
+    if models:
+        parts += ["_Draws from: " + ", ".join(link(m) for m in dedup_sorted(models)) + "_", ""]
+    parts += ["## Measures referenced", ""]
+    if measures:
+        parts += [f"- {link(m)}" for m in dedup_sorted(measures)]
+    else:
+        parts.append("_No measures statically resolvable from this report._")
+    if tables:
+        parts += ["", "## Tables referenced", ""]
+        parts += [f"- {link(t)}" for t in dedup_sorted(tables)]
+    parts += ["", "## Business Intent", "", INTENT_BEGIN, _existing_intent(out_path), INTENT_END, ""]
+    return "\n".join(parts)
+
+
 def _existing_intent(path: Path) -> str:
     if not path.is_file():
         return _DEFAULT_INTENT
@@ -297,10 +469,27 @@ def _source_section(node: Node) -> str:
     return "\n".join(lines)
 
 
-def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
+def render_node_page(
+    graph: LineageGraph,
+    node: Node,
+    out_path: Path,
+    *,
+    used_measures: set[str] | None = None,
+    direct_upstream: dict[str, list[str]] | None = None,
+) -> str:
     """Full markdown page for one node, carrying forward any existing
     Business Intent block from out_path.
+
+    ``used_measures`` / ``direct_upstream`` are whole-graph computations that
+    :func:`render_markdown` precomputes once and threads in; when omitted (a
+    standalone call) they're derived on demand.
     """
+    if used_measures is None:
+        used_measures = _used_measure_ids(graph)
+    if direct_upstream is None:
+        direct_upstream = _direct_upstream(graph)
+    if node.node_type is NodeType.REPORT:
+        return _report_page(graph, node, out_path)
     parts = [
         _front_matter(graph, node),
         "",
@@ -317,9 +506,24 @@ def render_node_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
             if node.node_type is NodeType.PBI_TABLE and (mode := node.metadata.get("storage_mode"))
             else []
         ),
+        # advisory badge on a measure nothing references or shows
+        *(
+            [f"> ⚠ **Unused** — {_UNUSED_MEASURE_CAVEAT}", ""]
+            if node.node_type is NodeType.MEASURE and node.id not in used_measures
+            else []
+        ),
         *([_contract_section(node), ""] if node.node_type in _CONTRACT_TYPES else []),
         # fact × dimension relationship matrix, semantic models only
         *([_relationship_grid(graph, node), ""] if node.node_type is NodeType.SEMANTIC_MODEL else []),
+        # dead-measure roll-up for cleanup, semantic models only ("" when none)
+        *(
+            [unused_section, ""]
+            if node.node_type is NodeType.SEMANTIC_MODEL
+            and (unused_section := _unused_measures_section(graph, node, used_measures))
+            else []
+        ),
+        # full "trace back to source" tree on measures + model-facing gold objects
+        *([_upstream_section(graph, node, direct_upstream), ""] if _wants_upstream_tree(graph, node) else []),
     ]
     # the defining SQL for tables/views/procs (no source_code -> no section)
     if node.source_code:
@@ -436,6 +640,9 @@ def render_markdown(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # whole-graph scans hoisted out of the per-node loop (computed once, not per page)
+    used_measures = _used_measure_ids(graph)
+    direct_upstream = _direct_upstream(graph)
     written: list[Path] = []
     for node_id in sorted(graph.nodes):
         node = graph.nodes[node_id]
@@ -444,7 +651,13 @@ def render_markdown(
         page_dir = out_dir / node.node_type.value
         page_dir.mkdir(parents=True, exist_ok=True)
         page_path = page_dir / f"{slug(node_id)}.md"
-        page_path.write_text(render_node_page(graph, node, page_path), encoding="utf-8", newline="\n")
+        page_path.write_text(
+            render_node_page(
+                graph, node, page_path, used_measures=used_measures, direct_upstream=direct_upstream
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
         written.append(page_path)
 
     index_path = out_dir / "index.md"

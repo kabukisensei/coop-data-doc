@@ -145,6 +145,9 @@ def test_tmdl_model_structure():
         assert (node_id, "semantic_model:sales", "feeds") in edge_keys(graph)
     columns = {c.name: c.data_type for c in graph.nodes["pbi_table:sales.dim_customer"].columns}
     assert columns == {"customer_id": "int64", "customer_name": "string"}
+    # relationships come from two files: the active one from model.tmdl
+    # (older style) and the inactive one from a dedicated relationships.tmdl
+    # (current Power BI default), merged and sorted by (from, to).
     relationships = graph.nodes["semantic_model:sales"].metadata["relationships"]
     assert relationships == [
         {
@@ -152,8 +155,36 @@ def test_tmdl_model_structure():
             "to": "dim_customer.customer_id",
             "active": True,
             "bidirectional": False,
-        }
+        },
+        {
+            "from": "fact_sales.order_id",
+            "to": "orders_native.order_id",
+            "active": False,
+            "bidirectional": False,
+        },
     ]
+
+
+def test_tmdl_relationships_without_model_file(tmp_path):
+    # an export with relationships.tmdl but NO model.tmdl: relationships are
+    # still collected, and the model's source_file falls back to it
+    from coop_data_doc.parsers.tmdl import parse_tmdl
+
+    defn = tmp_path / "Solo.SemanticModel" / "definition"
+    (defn / "tables").mkdir(parents=True)
+    (defn / "relationships.tmdl").write_text(
+        "relationship abc\n\tfromColumn: fact.k\n\ttoColumn: dim.k\n", encoding="utf-8"
+    )
+    (defn / "tables" / "fact.tmdl").write_text("table fact\n\tcolumn k\n", encoding="utf-8")
+    config = Config(repos={"pbi": RepoConfig(path=str(tmp_path), include=["**/*.tmdl"])})
+    inventory, _ = crawl(config)
+    g = LineageGraph()
+    parse_tmdl(inventory.by_kind(FileKind.TMDL), g)
+    model = g.nodes["semantic_model:solo"]
+    assert model.metadata["relationships"] == [
+        {"from": "fact.k", "to": "dim.k", "active": True, "bidirectional": False}
+    ]
+    assert model.source_file.endswith("relationships.tmdl")
 
 
 def test_tmdl_partition_sources():

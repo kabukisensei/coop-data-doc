@@ -59,13 +59,19 @@ class EdgeType(str, Enum):
 #   visualizes  visual -> pbi_table/measure    data flows target -> source
 _REVERSED_FLOW = frozenset({EdgeType.READS, EdgeType.REFERENCES, EdgeType.VISUALIZES})
 
-_IDENT_JUNK = re.compile(r'[\[\]"`]')
+# Identifier delimiters stripped before matching: SQL brackets/double-quotes/
+# backticks and the single quotes Power BI wraps around names containing spaces
+# (e.g. a TMDL relationship endpoint `'Fact Sales'.Amount`). Stripping the
+# single quote here keeps such endpoints matchable against the table node id,
+# which is built from the already-unquoted name.
+_IDENT_JUNK = re.compile(r"[\[\]\"`']")
 
 
 def normalize_identifier(raw: str) -> str:
     """Lowercase an identifier and strip bracket/quote characters.
 
-    ``[dbo].[Fact Sales]`` -> ``dbo.fact sales``
+    ``[dbo].[Fact Sales]`` -> ``dbo.fact sales``;
+    ``'Fact Sales'.Amount`` -> ``fact sales.amount``
     """
     return _IDENT_JUNK.sub("", raw).strip().lower()
 
