@@ -190,3 +190,50 @@ def test_unknown_cache_version_ignored(tmp_path: Path):
     assert cache.mappings == {}
     assert any(w.category == "cache_invalid" for w in cache.warnings)
     assert path.read_text().startswith('{"version": 99')  # file untouched
+
+
+class _RaisingQuestionary(FakeQuestionary):
+    """questionary stand-in whose prompt raises — mimics questionary's no-TTY
+    OSError / prompt_toolkit's Windows NoConsoleScreenBufferError."""
+
+    def __init__(self, exc):
+        super().__init__(None)
+        self._exc = exc
+
+    def select(self, message, choices):
+        self.calls += 1
+        exc = self._exc
+
+        class _Result:
+            @staticmethod
+            def ask():
+                raise exc
+
+        return _Result()
+
+
+class NoConsoleScreenBufferError(Exception):
+    """Name-matches prompt_toolkit's Windows error (which is detected by class name)."""
+
+
+@pytest.mark.parametrize("exc", [OSError("no tty"), NoConsoleScreenBufferError()])
+def test_no_terminal_degrades_instead_of_crashing(tmp_path: Path, monkeypatch, exc):
+    # interactive_mode=True, but the only terminal is unavailable (run by the agent /
+    # another program): the build must NOT crash — it leaves the ambiguous link
+    # unresolved and warns, so the docs still generate.
+    monkeypatch.setattr(interactive, "questionary", _RaisingQuestionary(exc))
+    graph = build_graph()
+    cache = cache_at(tmp_path)
+
+    result, warnings = link_graph(graph, make_config(), cache, interactive_mode=True)
+
+    assert f"pbi_table:{MODEL_KEY}.dcust" in result.unresolved
+    assert any(w.category == "interactive_unavailable" for w in warnings)
+    assert cache.mappings == {}  # nothing cached — a later terminal run can still resolve it
+
+
+def test_is_no_terminal_error_detection():
+    assert interactive._is_no_terminal_error(OSError())
+    assert interactive._is_no_terminal_error(NoConsoleScreenBufferError())
+    assert not interactive._is_no_terminal_error(ValueError())
+    assert not interactive._is_no_terminal_error(KeyboardInterrupt())

@@ -214,21 +214,49 @@ def link_graph(
         for item, scored in pending_interactive:
             model = graph.nodes[item.node_id].schema_name
             by_model.setdefault(model, []).append((item, scored))
-        for model in sorted(by_model):
-            group = by_model[model]
-            interactive.print_group_header(model, len(group))
-            for item, scored in group:
-                node = graph.nodes[item.node_id]
-                entry = interactive.prompt_resolution(node, f"{item.schema_name}.{item.object_name}", scored)
-                cache.put(item.cache_key, entry)  # immediately — crash-safe
-                if entry.target is not None:
-                    _apply(graph, item, entry.target, "interactive", result)
-                elif entry.method == "external":
-                    node.metadata["external_source"] = True
-                    result.count("external")
-                else:
-                    node.metadata["unresolved"] = True
-                    result.unresolved.append(item.cache_key)
+        handled: set[str] = set()
+        try:
+            for model in sorted(by_model):
+                group = by_model[model]
+                interactive.print_group_header(model, len(group))
+                for item, scored in group:
+                    node = graph.nodes[item.node_id]
+                    entry = interactive.prompt_resolution(
+                        node, f"{item.schema_name}.{item.object_name}", scored
+                    )
+                    handled.add(item.cache_key)
+                    cache.put(item.cache_key, entry)  # immediately — crash-safe
+                    if entry.target is not None:
+                        _apply(graph, item, entry.target, "interactive", result)
+                    elif entry.method == "external":
+                        node.metadata["external_source"] = True
+                        result.count("external")
+                    else:
+                        node.metadata["unresolved"] = True
+                        result.unresolved.append(item.cache_key)
+        except interactive.TerminalUnavailable as exc:
+            # No usable terminal (e.g. launched by the coop agent / another program).
+            # Don't crash the build: leave every still-pending ambiguous link
+            # unresolved and warn, so the docs still generate and a human can map
+            # them later by re-running in a terminal.
+            remaining = 0
+            for item, _scored in pending_interactive:
+                if item.cache_key in handled:
+                    continue
+                graph.nodes[item.node_id].metadata["unresolved"] = True
+                result.unresolved.append(item.cache_key)
+                remaining += 1
+            warnings.append(
+                ParseWarning(
+                    file="<interactive>",
+                    message=(
+                        f"no interactive terminal ({exc}); {remaining} ambiguous "
+                        "cross-repo link(s) left unresolved — run `coop-data-doc setup` "
+                        "or `coop-data-doc build` in a terminal to map them"
+                    ),
+                    category="interactive_unavailable",
+                )
+            )
 
     result.unresolved.sort()
     return result, warnings

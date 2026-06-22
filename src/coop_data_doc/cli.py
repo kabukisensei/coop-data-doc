@@ -131,7 +131,20 @@ def _scan(
     quiet: bool,
     progress: Progress | None = None,
 ) -> tuple[LineageGraph, Diagnostics]:
-    graph, result, warnings = run_pipeline(config, interactive=not non_interactive, progress=progress)
+    # Only prompt when stdin/stdout are a real terminal. Run as a subprocess (e.g.
+    # by the coop agent or another program), questionary/prompt_toolkit can't open a
+    # console and would otherwise crash the build — so fall back to non-interactive
+    # there, build everything that resolves automatically, and tell the user how to
+    # finish the ambiguous links (and pick folders) from a terminal.
+    interactive = not non_interactive and _stdio_is_interactive()
+    if not non_interactive and not interactive and not quiet:
+        click.echo(
+            "Not a terminal — building everything that resolves automatically. To map "
+            "ambiguous cross-repo links or pick which folders to document, run "
+            "`coop-data-doc setup` (or `build`) in a terminal.",
+            err=True,
+        )
+    graph, result, warnings = run_pipeline(config, interactive=interactive, progress=progress)
     out_dir = config.output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     to_json_file(graph, out_dir / "graph.json")
@@ -399,10 +412,15 @@ def setup(ctx: click.Context, path: str) -> None:
     except KeyboardInterrupt:
         click.echo("\nSetup cancelled — nothing was written.", err=True)
         sys.exit(130)
-    except OSError:
+    except Exception as exc:  # noqa: BLE001 — re-raised below unless it's a no-terminal error
+        from coop_data_doc.linker.interactive import _is_no_terminal_error
+
+        if not _is_no_terminal_error(exc):
+            raise
         click.echo(
-            "setup needs an interactive terminal. In CI or scripts, edit "
-            "coop-data-doc.yml directly or scaffold one with `coop-data-doc init`.",
+            "setup needs an interactive terminal (no console available here). Run "
+            "`coop-data-doc setup` directly in a terminal, or scaffold a config to edit "
+            "by hand with `coop-data-doc init`.",
             err=True,
         )
         sys.exit(1)
