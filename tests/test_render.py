@@ -575,6 +575,23 @@ def test_no_source_section_when_no_code(tmp_path: Path):
     assert "## DAX" in page  # measures still show their DAX
 
 
+def test_dax_includes_measure_name(tmp_path: Path):
+    # the DAX block shows the full `Measure Name = <expr>`, not just the expression
+    g = LineageGraph()
+    g.add_node(
+        make_node(
+            NodeType.MEASURE,
+            "sales",
+            "actual sales",
+            display_name="Actual Sales",
+            metadata={"dax": "SUM(fact_sales[amount])"},
+        )
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "measure:sales.actual sales").read_text(encoding="utf-8")
+    assert "Actual Sales = SUM(fact_sales[amount])" in page
+
+
 def test_build_site_on_page_ticks_per_page(tmp_path: Path, monkeypatch):
     # build_site streams mkdocs -v output and ticks once per "Building page" line.
     from coop_data_doc.render import site as site_module
@@ -857,10 +874,13 @@ def test_mermaid_zoom_asset_copied_and_referenced(tmp_path: Path):
     docs.mkdir()
     (docs / "index.md").write_text("# x", encoding="utf-8")
     cfg = write_mkdocs_config(docs, tmp_path / "site", "Test", build_graph())
-    # the dependency-free zoom script is vendored next to mermaid and loaded after it
-    assert (docs / "assets" / "javascripts" / "vendor" / "mermaid-zoom.js").is_file()
+    # the dependency-free zoom + tree scripts are vendored next to mermaid
+    vendor = docs / "assets" / "javascripts" / "vendor"
+    assert (vendor / "mermaid-zoom.js").is_file()
+    assert (vendor / "doc-tree.js").is_file()
     text = cfg.read_text(encoding="utf-8")
     assert "assets/javascripts/vendor/mermaid-zoom.js" in text
+    assert "assets/javascripts/vendor/doc-tree.js" in text
     assert text.index("mermaid.min.js") < text.index("mermaid-zoom.js")  # mermaid loads first
 
 

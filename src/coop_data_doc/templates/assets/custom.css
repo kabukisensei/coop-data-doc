@@ -21,6 +21,54 @@
   overflow-x: auto;
 }
 
+/* Joel's Relationship Grid: real gridlines on every cell (scoped to the
+   .rel-grid wrapper so the wide lineage/contract tables keep their lighter
+   row-only look). */
+.md-typeset .rel-grid table {
+  border: 1px solid var(--md-default-fg-color--light);
+}
+.md-typeset .rel-grid table th,
+.md-typeset .rel-grid table td {
+  border: 1px solid var(--md-default-fg-color--lighter);
+}
+.md-typeset .rel-grid table th {
+  background: var(--md-default-fg-color--lightest);
+}
+
+/* collapsible upstream-lineage trees (doc-tree.js). Inert until that script
+   adds .tree-root, so the plain Markdown nested list is unaffected. */
+.md-typeset .tree-root,
+.md-typeset .tree-root ul {
+  list-style: none;
+  margin-left: 0;
+  padding-left: 1.1rem;
+}
+.md-typeset .tree-root li {
+  position: relative;
+}
+.md-typeset .tree-root li:not(.tree-branch) {
+  padding-left: 1.25em; /* align leaf labels under branch labels (no toggle) */
+}
+.tree-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  margin-right: 0.25rem;
+  width: 1em;
+  font: inherit;
+  line-height: inherit;
+  color: var(--md-accent-fg-color);
+}
+.tree-branch.tree-collapsed > .tree-toggle::before {
+  content: "\25B8"; /* ▸ */
+}
+.tree-branch:not(.tree-collapsed) > .tree-toggle::before {
+  content: "\25BE"; /* ▾ */
+}
+
 /* mermaid-zoom.js turns each rendered diagram into a bounded pan/zoom viewport
    so big estate/lineage charts stay readable. Styles are inert until that
    script adds the .mermaid-zoom-host class, so non-JS / plain Markdown is

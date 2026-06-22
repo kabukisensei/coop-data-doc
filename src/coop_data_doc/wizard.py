@@ -11,6 +11,7 @@ everything else in the codebase stays pure.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -156,6 +157,66 @@ def _repo_default(existing: Config | None, key: str, fallback: str) -> str:
     return fallback
 
 
+_MODEL_FOLDER_RE = re.compile(r"(?:\*\*/)?(?P<name>[^/*]+\.SemanticModel)/", re.IGNORECASE)
+
+
+def _discover_semantic_models(pbi_abs: Path) -> list[str]:
+    """Sorted names of every ``*.SemanticModel`` folder under the PBI repo."""
+    if not pbi_abs.is_dir():
+        return []
+    return sorted({p.name for p in pbi_abs.rglob("*.SemanticModel") if p.is_dir()}, key=str.lower)
+
+
+def _semantic_model_includes(model_folders: list[str]) -> list[str]:
+    """Include globs scoped to the chosen ``.SemanticModel`` folders, plus all
+    reports (which nest under whichever model they draw from). ``.pbix`` /
+    ``.pbip`` / loose files are deliberately left out. fnmatch's ``*`` crosses
+    ``/``, so ``**/<name>.SemanticModel/**/*.tmdl`` matches however deep the
+    folder sits."""
+    globs: list[str] = []
+    for folder in model_folders:
+        globs.append(f"**/{folder}/**/*.tmdl")
+        globs.append(f"**/{folder}/**/*.bim")
+    globs += ["**/report.json", "**/visual.json", "**/page.json"]
+    return globs
+
+
+def _previously_selected_models(includes: list[str] | None) -> set[str]:
+    """The ``.SemanticModel`` folder names an existing config's include globs
+    already scope to, so re-running setup pre-checks the same models."""
+    found: set[str] = set()
+    for glob in includes or []:
+        match = _MODEL_FOLDER_RE.match(glob)
+        if match:
+            found.add(match.group("name"))
+    return found
+
+
+def _ask_semantic_models(pbi_abs: Path, existing_includes: list[str] | None) -> list[str] | None:
+    """Let the user pick which ``.SemanticModel`` folders to document. Returns the
+    selected folder names, or None when none are found on disk (the repo isn't
+    cloned yet, or it has no TMDL models) so the caller falls back to manual
+    include globs."""
+    found = _discover_semantic_models(pbi_abs)
+    if not found:
+        return None
+    print(
+        f"\nFound {len(found)} semantic model folder(s) in the Power BI repo. Pick which to\n"
+        "document — only the selected *.SemanticModel folders are crawled (reports are\n"
+        "still included; .pbix / .pbip and other loose files are left out).",
+        file=sys.stderr,
+    )
+    prev = _previously_selected_models(existing_includes)
+    choices = [questionary.Choice(name, checked=(name in prev) if prev else True) for name in found]
+    selected = _ask(
+        questionary.checkbox(
+            "Semantic models to include (Space toggles, Enter confirms):",
+            choices=choices,
+        )
+    )
+    return list(selected) if selected else found  # unchecking everything keeps all
+
+
 def run_setup(config_path: Path) -> Config | None:
     """Run the wizard, write the config, and return the validated result.
 
@@ -259,10 +320,18 @@ def run_setup(config_path: Path) -> Config | None:
         sql_repo.exclude if sql_repo else [],
         "SQL — folders to SKIP (optional, e.g. **/archive/**, **/Deployment/** — blank for none):",
     )
-    pbi_include = _ask_csv(
-        "Power BI — files/patterns to INCLUDE (comma-separated globs):",
-        pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
-    )
+    # If the PBI repo is on disk, let the user pick which .SemanticModel folders
+    # to document (scoping the include globs to those + reports); otherwise fall
+    # back to manual include globs.
+    pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
+    selected_models = _ask_semantic_models(pbi_abs, pbi_repo.include if pbi_repo else None)
+    if selected_models is not None:
+        pbi_include = _semantic_model_includes(selected_models)
+    else:
+        pbi_include = _ask_csv(
+            "Power BI — files/patterns to INCLUDE (comma-separated globs):",
+            pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
+        )
     pbi_exclude = _ask_folders_to_skip(
         "Power BI",
         pbi_path,

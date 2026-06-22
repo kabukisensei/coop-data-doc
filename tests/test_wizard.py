@@ -156,6 +156,34 @@ def test_wizard_reprompts_when_site_dir_nested(tmp_path: Path, monkeypatch):
     assert sum("HTML site" in msg for _, msg, _ in fake.calls) == 2
 
 
+def test_wizard_scopes_to_selected_semantic_models(tmp_path: Path, monkeypatch):
+    # when the PBI repo has .SemanticModel folders, the wizard lets the user pick
+    # which to document and scopes the include globs to those (plus reports)
+    (tmp_path / "sql-repo").mkdir()
+    pbi = tmp_path / "pbi-repo"
+    (pbi / "Sales.SemanticModel" / "definition").mkdir(parents=True)
+    (pbi / "Finance.SemanticModel" / "definition").mkdir(parents=True)
+    (pbi / "Sales.Report" / "definition").mkdir(parents=True)
+    answers = {
+        "Project name": "Scoped",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "Semantic models to include": ["Sales.SemanticModel"],  # Finance deselected
+        "Gold layer — schemas": "mart",
+    }
+    fake = RoutedQuestionary(default_router(answers))
+    monkeypatch.setattr(wizard, "questionary", fake)
+    config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
+    assert config is not None
+    inc = config.repos["powerbi"].include
+    assert "**/Sales.SemanticModel/**/*.tmdl" in inc
+    assert not any("Finance.SemanticModel" in g for g in inc)  # the deselected model is gone
+    assert "**/report.json" in inc and "**/visual.json" in inc  # reports still included
+    assert not any(".pbix" in g for g in inc)  # .pbix / loose files excluded
+
+
 def test_skip_bronze_and_silver(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
     answers = {

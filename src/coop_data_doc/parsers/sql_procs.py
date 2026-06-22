@@ -93,8 +93,14 @@ def _extract_statement(statement: exp.Expression) -> tuple[StatementLineage, lis
             target = target.this
         if isinstance(target, exp.Table) and not is_temp_table(target):
             lineage.writes.add(table_parts(target))
-        if statement.expression is not None:
-            lineage.reads |= collect_source_tables(statement.expression)
+        # Walk the WHOLE Insert, not just `.expression`: sqlglot hangs a
+        # `WITH … INSERT INTO … SELECT` CTE block off the Insert node's `with_`
+        # arg, so `.expression` (the inner SELECT) both misses the real base
+        # tables inside the CTE bodies and leaks the CTE names as phantom
+        # tables (collect_source_tables can only exclude CTE aliases it can see
+        # on the node it's given). The write target is removed below via
+        # `reads -= writes`, mirroring the Merge branch.
+        lineage.reads |= collect_source_tables(statement)
 
     elif isinstance(statement, exp.Merge):
         target = statement.this

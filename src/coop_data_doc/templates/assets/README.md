@@ -16,5 +16,6 @@ the package version.
 
 | File | Purpose |
 | --- | --- |
-| `custom.css` | Site styling tweaks (nav, tables, mermaid zoom viewport). |
+| `custom.css` | Site styling tweaks (nav, relationship-grid gridlines, mermaid zoom viewport, collapsible trees). |
 | `mermaid-zoom.js` | Dependency-free pan/zoom for rendered Mermaid diagrams (drag to pan, Ctrl/Cmd+scroll to zoom, control bar). Hand-rolled rather than vendoring svg-pan-zoom to stay within the no-CDN rule. |
+| `doc-tree.js` | Dependency-free collapsible "Upstream lineage" trees (each branch starts collapsed; click ▸/▾ to drill down). Degrades to the full Markdown list with no JS. |

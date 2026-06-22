@@ -93,6 +93,7 @@ plugins:
 markdown_extensions:
   - admonition
   - tables
+  - md_in_html
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -102,6 +103,7 @@ markdown_extensions:
 extra_javascript:
   - assets/javascripts/vendor/mermaid.min.js
   - assets/javascripts/vendor/mermaid-zoom.js
+  - assets/javascripts/vendor/doc-tree.js
 
 extra_css:
   - assets/stylesheets/custom.css
@@ -353,7 +355,7 @@ def write_mkdocs_config(
     docs_dir = Path(docs_dir).resolve()
     vendor_dir = docs_dir / _VENDOR_REL
     vendor_dir.mkdir(parents=True, exist_ok=True)
-    for asset in ("mermaid.min.js", "mermaid-zoom.js", "iframe-worker-shim.js"):
+    for asset in ("mermaid.min.js", "mermaid-zoom.js", "doc-tree.js", "iframe-worker-shim.js"):
         shutil.copyfile(_VENDOR_SRC / asset, vendor_dir / asset)
     css_dir = docs_dir / _CSS_REL
     css_dir.mkdir(parents=True, exist_ok=True)

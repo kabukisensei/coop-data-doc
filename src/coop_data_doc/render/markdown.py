@@ -254,11 +254,17 @@ def _relationship_grid(graph: LineageGraph, node: Node) -> str:
         "cross-filter. Hover a marker for the joined columns._"
     )
     lines.append("")
+    # wrap the matrix so the site can give it real gridlines (md_in_html keeps
+    # the inner Markdown table — links and marker <span>s — fully processed)
+    lines.append('<div class="rel-grid" markdown="1">')
+    lines.append("")
     lines.append("| Dimension \\ Fact | " + " | ".join(label(f) for f in fact_cols) + " |")
     lines.append("| --- | " + " | ".join([":---:"] * len(fact_cols)) + " |")
     for dim in dim_rows:
         cells = (cell(dim, fact) for fact in fact_cols)
         lines.append(f"| {label(dim)} | " + " | ".join(cells) + " |")
+    lines.append("")
+    lines.append("</div>")
     return "\n".join(lines)
 
 
@@ -549,13 +555,15 @@ def render_node_page(
         "",
     ]
     if node.node_type is NodeType.MEASURE and node.metadata.get("dax"):
-        dax = node.metadata["dax"]
+        # show the full DAX as authored — `Measure Name = <expression>` — not
+        # just the bare expression (the stored metadata["dax"] is the RHS only).
+        full_dax = f"{node.display} = {node.metadata['dax']}"
         # size the fence to the content so any stray backticks in the DAX
         # can't terminate the block early (mirrors _source_section)
-        fence = _code_fence(dax)
+        fence = _code_fence(full_dax)
         parts.insert(
             parts.index("## Lineage"),
-            f"## DAX\n\n{fence}dax\n{dax}\n{fence}\n",
+            f"## DAX\n\n{fence}dax\n{full_dax}\n{fence}\n",
         )
     return "\n".join(parts)
 

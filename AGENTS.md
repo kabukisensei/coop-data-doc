@@ -242,4 +242,4 @@ graph, result, warnings = run_pipeline(config, interactive=False)
 
 ## Version
 
-This contract matches `coop-data-doc` version `0.24.0`.
+This contract matches `coop-data-doc` version `0.25.0`.

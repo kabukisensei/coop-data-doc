@@ -56,6 +56,7 @@ def test_expected_nodes():
         "silver_table:silver.sales_orders",
         "silver_table:silver.customers",
         "silver_table:silver.events",
+        "silver_table:silver.invoices",  # read only inside a WITH ... INSERT ... SELECT CTE
     }
     assert set(graph.nodes) == expected
 
@@ -68,9 +69,12 @@ def test_main_proc_edges():
     assert (proc, "silver_table:silver.customers", "reads") in keys
     assert (proc, "gold_table:dbo.fact_sales", "writes") in keys
     assert (proc, "stored_proc:dbo.usp_audit_load", "references") in keys
+    # a source read only inside a WITH ... INSERT INTO ... SELECT CTE is traced
+    assert (proc, "silver_table:silver.invoices", "reads") in keys
     # temp tables and CTE aliases must never become nodes/edges
     assert not any("staged_orders" in node_id for node_id in graph.nodes)
     assert not any("ranked_customers" in node_id for node_id in graph.nodes)
+    assert not any("billable" in node_id for node_id in graph.nodes)  # Insert-CTE name, not a table
 
 
 def test_view_edges_and_columns():

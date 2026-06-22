@@ -37,6 +37,17 @@ BEGIN
         ON c.customer_id = f.customer_id
     WHERE f.customer_name IS NULL;
 
+    -- WITH ... INSERT INTO ... SELECT: sqlglot hangs the CTE block off the
+    -- Insert node, so silver.invoices (read only inside the CTE) must still be
+    -- traced and the CTE name `billable` must NOT leak as a phantom table.
+    WITH billable AS (
+        SELECT invoice_id, customer_id, order_total
+        FROM silver.invoices
+        WHERE status = 'billable'
+    )
+    INSERT INTO dbo.fact_sales (order_id, customer_id, order_total)
+    SELECT invoice_id, customer_id, order_total FROM billable;
+
     DROP TABLE #staged_orders;
 
     EXEC dbo.usp_audit_load;
