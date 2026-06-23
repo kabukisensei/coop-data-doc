@@ -2,9 +2,14 @@
    Shipped with the tool and copied into every generated site at build time.
    Safe to extend here for visual tweaks — the site is rebuilt each `build`. */
 
-/* slightly wider content column for the wide lineage tables */
+/* Hide the right-hand table of contents site-wide and give the freed width to
+   the content column, so the wide lineage tables and the relationship grid have
+   room to breathe (the generated pages are short — the TOC adds little). */
+.md-sidebar--secondary {
+  display: none !important;
+}
 .md-grid {
-  max-width: 70rem;
+  max-width: 88rem;
 }
 
 /* bolder left-nav section headers so the Bronze/Silver/Gold grouping reads clearly */

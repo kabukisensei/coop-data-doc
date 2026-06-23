@@ -12,7 +12,7 @@ SQL repo (stored procedures, tables, views) and your Power BI repo (semantic mod
 reports) — and it maps how data flows through everything:
 
 ```
-silver table → stored proc → gold table → view → semantic model → measure → report visual
+silver table → stored proc → gold table → view → semantic model → measure → report
 ```
 
 …then writes two kinds of documentation from that map:
@@ -151,11 +151,19 @@ Because there's no configuration here yet, it offers to walk you through setup. 
   falls back to asking for skip globs as text.) Each unchecked folder becomes a
   `**/Name/**` entry under `repos.<key>.exclude`; nested skip patterns you've added by
   hand are kept as-is on a re-run.
+- **Which semantic models to document** (Power BI repo) — the wizard finds every
+  `*.SemanticModel` folder and shows them as a checkbox. Pick the ones you want; only
+  those are crawled (their reports come along automatically, and `.pbix`/`.pbip` and other
+  loose files are left out). You don't need the `.pbip` file — everything is read from the
+  `.SemanticModel/definition/` TMDL.
 - **Output folders** — press Enter to accept the defaults.
-- **"Add a view-schema → semantic-model mapping?"** — this is a hint like *"the
-  `sales` schema feeds the Sales Analytics model"*. If you know one,
-  add it; **if you're not sure, answer No (type `n`)** — you can always add hints
-  later, and the tool will simply ask you about specific tables during the build.
+- **Connecting Power BI tables to their SQL sources** — if both repos are on disk, the
+  wizard does a quick **read-only scan** and reports how many Power BI tables already link
+  to a SQL object automatically. For any that don't, it works out which SQL schema the
+  table's name actually lives in and asks you to confirm a one-line mapping (e.g. *"Map
+  Sales Analytics → mart?"*) — no typing schema names blind. A table whose name matches no
+  SQL object is left unresolved rather than guessed, and a re-scan confirms the mappings
+  took. (When the repos aren't cloned yet, it falls back to asking for mappings as text.)
 
 **Step 3 — build the docs.** Run the bare command again and choose
 **"Update the docs"** — or run `coop-data-doc update`. (If the tool suggests
@@ -186,8 +194,13 @@ xdg-open data-docs-site/index.html    # Linux
 ```
 
 You'll get a searchable site with a page per table, view, stored procedure, semantic
-model, measure, and report — each with its columns, where its data comes from, what
-depends on it, and a clickable flowchart.
+model, measure, and report — each with its defining SQL/DAX up top, its columns, where
+its data comes from, what depends on it, and a clickable flowchart (drag to pan,
+Ctrl/Cmd+scroll to zoom). Model-facing pages add extras: a **collapsible "trace back to
+source" tree** that walks a measure or gold table all the way down to its bronze sources,
+**Joel's Relationship Grid** (a fact × dimension matrix) on each semantic model, an
+**Unused measures** roll-up for cleanup, and reports nested under the model they draw
+from.
 
 **Step 5 (recommended) — commit everything.** One command at a time:
 
@@ -360,9 +373,15 @@ your rule, not the schema's name.
 
 ## When it asks you questions
 
-When a Power BI table's source can't be matched to a SQL object automatically, the tool
-shows a pick-list: the most likely candidates with similarity scores, plus *"Mark as
-external source"* (for data that doesn't live in these repos) and *"Skip for now"*.
+Most cross-repo links resolve on their own (an exact schema-and-name match needs no
+configuration). `setup` proposes the few **schema mappings** that are genuinely needed up
+front — derived from a dry-run scan, so you confirm rather than type (see the first-run
+walkthrough above). With those in place, a build rarely needs to ask anything.
+
+When a Power BI table's source *still* can't be matched to a SQL object — names are close
+but not identical — the build shows a pick-list: the most likely candidates with
+similarity scores, plus *"Mark as external source"* (for data that doesn't live in these
+repos) and *"Skip for now"*.
 
 Every answer — including skips — is saved instantly to **`.lineage-cache.json`**, which
 lives **next to `coop-data-doc.yml`** (it's a hidden file; `git add -A` picks it up even
@@ -502,12 +521,11 @@ non-empty lists in block style (empty lists render as `[]`):
 ---
 id: "view:sales.dim_customer"
 type: "view"                              # silver_table | gold_table | view | stored_proc |
-                                          # semantic_model | pbi_table | measure | report |
-                                          # report_page | visual
+                                          # semantic_model | pbi_table | measure | report
+                                          # (report pages/visuals fold into the report)
 name: "dim_customer"
 schema: "sales"                         # SQL schema; for pbi_table/measure nodes it's the
-                                          # (lowercased) model name; for report_page/visual
-                                          # it's the report name; "" for report/semantic_model
+                                          # (lowercased) model name; "" for report/semantic_model
 source_file: "views/sales/dim_customer.sql"   # repo-relative; cite this as evidence
 path: "view/sales-dim_customer-<hash>.md"     # this page's location under data-docs/ (read it, don't compute it)
 upstream_inputs:                          # direct (depth-1) data sources, flow-normalized
@@ -594,8 +612,10 @@ hold anyway. The tool tells you when it hits an opaque model.
 ## Third-party assets
 
 The package vendors `mermaid.min.js` 11.15.0 and `iframe-worker` 1.0.4 (both MIT) so
-generated sites render diagrams and search over `file://` with no network. See
-`src/coop_data_doc/templates/assets/README.md` for provenance.
+generated sites render diagrams and search over `file://` with no network, plus two
+small first-party scripts — `mermaid-zoom.js` (drag-pan / Ctrl-scroll zoom on diagrams)
+and `doc-tree.js` (collapsible lineage trees) — hand-rolled rather than vendored to stay
+within the no-CDN rule. See `src/coop_data_doc/templates/assets/README.md` for provenance.
 
 ## Development
 
