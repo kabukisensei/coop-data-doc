@@ -217,6 +217,183 @@ def _ask_semantic_models(pbi_abs: Path, existing_includes: list[str] | None) -> 
     return list(selected) if selected else found  # unchecking everything keeps all
 
 
+def _ask_manual_schema(default: str) -> str | None:
+    raw = str(_ask(questionary.text("SQL schema this model reads from:", default=default))).strip()
+    return raw or None
+
+
+def _autosuggest_mappings(
+    *,
+    base_dir: Path,
+    project_name: str,
+    sql_path: str,
+    pbi_path: str,
+    sql_include: list[str],
+    sql_exclude: list[str],
+    pbi_include: list[str],
+    pbi_exclude: list[str],
+    layers: dict[str, dict[str, list[str]]],
+    ignore_schemas: list[str],
+    sql_dialect: str,
+    mappings: list[tuple[str, str]],
+) -> list[tuple[str, str]] | None:
+    """Dry-run the pipeline and propose the schema_mappings actually needed to
+    link Power BI tables to their SQL sources, deriving each from where the
+    unresolved tables' object names really live (confirm, don't type). Returns
+    the final ``[(schema, model)]`` list, or ``None`` when the repos aren't on
+    disk yet so the caller falls back to manual entry. ``mappings`` seeds the
+    working set (prefilled/kept rows).
+    """
+    import logging
+    from collections import Counter
+
+    from coop_data_doc.config import Config
+    from coop_data_doc.graph.model import NodeType, normalize_identifier
+
+    sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
+    pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
+    if not (sql_abs.is_dir() and pbi_abs.is_dir()):
+        return None  # nothing to scan; caller does manual entry
+
+    from coop_data_doc.cli import run_pipeline  # lazy: avoid the wizard<->cli import cycle
+
+    def build_config(working: list[tuple[str, str]]) -> Config:
+        rendered = render_config_yaml(
+            project_name=project_name,
+            sql_path=sql_path,
+            pbi_path=pbi_path,
+            mappings=working,
+            layers=layers,
+            ignore_schemas=ignore_schemas,
+            branding={},
+            sql_include=sql_include,
+            sql_exclude=sql_exclude,
+            pbi_include=pbi_include,
+            pbi_exclude=pbi_exclude,
+            sql_dialect=sql_dialect,
+        )
+        config = Config.model_validate(yaml.safe_load(rendered))
+        config._base_dir = base_dir
+        return config
+
+    logging.getLogger("sqlglot").setLevel(logging.ERROR)  # the dry-run shouldn't spam parse notes
+    print(
+        "\nScanning your repos to connect Power BI tables to their SQL sources (read-only, a few seconds)…",
+        file=sys.stderr,
+    )
+    graph, result, _ = run_pipeline(build_config(mappings), interactive=False)
+
+    # index: normalized SQL object name -> set of schemas that contain it
+    obj_schemas: dict[str, set[str]] = {}
+    model_label: dict[str, str] = {}
+    for node in graph.nodes.values():
+        if node.node_type in (NodeType.VIEW, NodeType.GOLD_TABLE, NodeType.SILVER_TABLE):
+            obj_schemas.setdefault(node.name, set()).add(node.schema_name)
+        elif node.node_type is NodeType.SEMANTIC_MODEL:
+            model_label[node.name] = node.display
+
+    # unresolved Power BI tables, grouped by model -> the object names they read
+    by_model: dict[str, list[str]] = {}
+    for node in graph.nodes.values():
+        if node.node_type is not NodeType.PBI_TABLE or not node.metadata.get("unresolved"):
+            continue
+        source = node.metadata.get("partition_source") or {}
+        objects = (
+            [source["object"]]
+            if source.get("object")
+            else [q.split(".", 1)[-1] for q in (node.metadata.get("native_query_tables") or [])]
+        )
+        for obj in objects:
+            if obj:
+                by_model.setdefault(node.schema_name, []).append(normalize_identifier(obj))
+
+    linked = sum(result.methods.get(m, 0) for m in ("exact", "config_rule", "cache", "fuzzy"))
+    print(f"  ✓ {linked} Power BI table(s) linked to SQL automatically.", file=sys.stderr)
+    if not by_model:
+        print("  Nothing else needs a schema mapping.", file=sys.stderr)
+        return list(mappings)
+
+    pending = sum(len(set(v)) for v in by_model.values())
+    print(
+        f"  {pending} table(s) in {len(by_model)} model(s) didn't match a SQL object — let's connect them:",
+        file=sys.stderr,
+    )
+
+    def candidates(objects: list[str]) -> list[tuple[str, int]]:
+        votes: Counter[str] = Counter()
+        for obj in set(objects):
+            for schema in obj_schemas.get(obj, ()):
+                votes[schema] += 1
+        return sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    for model_key in sorted(by_model):
+        label = model_label.get(model_key, model_key)
+        remaining = sorted(set(by_model[model_key]))
+        while remaining:
+            ranked = candidates(remaining)
+            if not ranked:
+                print(
+                    f"  • {label}: {len(remaining)} table(s) match no SQL object by name "
+                    "— likely external or renamed; left unresolved.",
+                    file=sys.stderr,
+                )
+                break
+            total = len(remaining)
+            top_schema = ranked[0][0]
+            single = len(ranked) == 1 or ranked[0][1] > ranked[1][1]
+            chosen: str | None
+            if single:
+                if _ask(
+                    questionary.confirm(
+                        f"Model '{label}' has {total} unresolved table(s); their names live in "
+                        f"SQL schema '{top_schema}'. Map {label} → {top_schema}?",
+                        default=True,
+                        auto_enter=False,
+                    )
+                ):
+                    chosen = top_schema
+                else:
+                    chosen = _ask_manual_schema(top_schema)
+            else:
+                options = [questionary.Choice(f"{s} — covers {c}/{total}", value=s) for s, c in ranked]
+                options.append(questionary.Choice("Type a schema name myself", value="__manual__"))
+                options.append(questionary.Choice("Skip this model", value="__skip__"))
+                picked = str(
+                    _ask(
+                        questionary.select(
+                            f"Model '{label}' has {total} unresolved tables across schemas — "
+                            "pick which to map:",
+                            choices=options,
+                        )
+                    )
+                )
+                chosen = (
+                    None
+                    if picked == "__skip__"
+                    else _ask_manual_schema(top_schema)
+                    if picked == "__manual__"
+                    else picked
+                )
+            if not chosen:
+                break
+            mappings.append((chosen, label))
+            remaining = [obj for obj in remaining if chosen not in obj_schemas.get(obj, ())]
+
+    # verify re-scan: re-run with the new mappings so the user knows they took
+    print("\n  Re-checking with your mappings…", file=sys.stderr)
+    _, verified, _ = run_pipeline(build_config(mappings), interactive=False)
+    left = len(verified.unresolved)
+    if left == 0:
+        print("  ✓ All Power BI tables now link to a SQL object.", file=sys.stderr)
+    else:
+        print(
+            f"  {left} table(s) still unresolved (external/renamed, or no schema rule fits) — "
+            "map them per-table on build, or mark them external.",
+            file=sys.stderr,
+        )
+    return list(mappings)
+
+
 def run_setup(config_path: Path) -> Config | None:
     """Run the wizard, write the config, and return the validated result.
 
@@ -452,7 +629,8 @@ def run_setup(config_path: Path) -> Config | None:
         branding["favicon"] = existing_brand.favicon
 
     # --- schema → semantic-model hints ---
-    print("\n── Power BI: which view schema feeds which model ──", file=sys.stderr)
+    print("\n── Power BI: connecting tables to their SQL sources ──", file=sys.stderr)
+    sql_dialect = existing.sql_dialect if existing else "tsql"
     mappings: list[tuple[str, str]] = []
     if existing is not None and existing.schema_mappings:
         current = ", ".join(f"{m.schema_name} → {m.model}" for m in existing.schema_mappings)
@@ -462,15 +640,35 @@ def run_setup(config_path: Path) -> Config | None:
         if keep:
             mappings = [(m.schema_name, m.model) for m in existing.schema_mappings]
 
-    while _ask(
-        questionary.confirm(
-            "Add a view-schema → semantic-model mapping?", default=not mappings, auto_enter=False
-        )
-    ):
-        schema = str(_ask(questionary.text("View schema (e.g. sales):"))).strip()
-        model = str(_ask(questionary.text("Semantic model it feeds (e.g. Sales Analytics):"))).strip()
-        if schema and model:
-            mappings.append((schema, model))
+    # When the repos are on disk, dry-run the pipeline and auto-derive the schema
+    # mappings that are actually needed (confirm, don't type). Falls back to
+    # manual entry when the repos aren't cloned yet.
+    auto = _autosuggest_mappings(
+        base_dir=base_dir,
+        project_name=project_name,
+        sql_path=sql_path,
+        pbi_path=pbi_path,
+        sql_include=sql_include,
+        sql_exclude=sql_exclude,
+        pbi_include=pbi_include,
+        pbi_exclude=pbi_exclude,
+        layers=layers,
+        ignore_schemas=ignore_schemas,
+        sql_dialect=sql_dialect,
+        mappings=mappings,
+    )
+    if auto is not None:
+        mappings = auto
+    else:
+        while _ask(
+            questionary.confirm(
+                "Add a view-schema → semantic-model mapping?", default=not mappings, auto_enter=False
+            )
+        ):
+            schema = str(_ask(questionary.text("SQL schema (e.g. mart):"))).strip()
+            model = str(_ask(questionary.text("Semantic model it feeds (e.g. Sales Analytics):"))).strip()
+            if schema and model:
+                mappings.append((schema, model))
 
     rendered = render_config_yaml(
         project_name=project_name,
@@ -486,7 +684,7 @@ def run_setup(config_path: Path) -> Config | None:
         pbi_exclude=pbi_exclude,
         output_dir=output_dir,
         site_dir=site_dir,
-        sql_dialect=existing.sql_dialect if existing else "tsql",
+        sql_dialect=sql_dialect,
     )
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)

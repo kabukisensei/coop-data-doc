@@ -199,14 +199,14 @@ def _grouped_section(nodes, container, title, children, extra_groups=()) -> list
     return lines
 
 
-def _reports_by_model(graph: LineageGraph) -> tuple[dict[str, list[str]], set[str]]:
+def _reports_by_model(graph: LineageGraph) -> dict[str, list[str]]:
     """Map each semantic-model key -> the report ids that draw from it (via the
-    ``model --feeds--> report`` edges from link_reports_to_models), plus the set
-    of every report id that landed under at least one model. A report drawing
-    from several models is listed under each."""
+    ``model --feeds--> report`` edges from link_reports_to_models). A report
+    drawing from several models is listed under each. Reports with no model link
+    don't appear in the nav (there's no separate top-level Reports section) —
+    they still have a page, reachable via search and the model's lineage."""
     nodes = graph.nodes
     by_model: dict[str, list[str]] = {}
-    placed: set[str] = set()
     for edge in graph.edges:
         if edge.edge_type is not EdgeType.FEEDS:
             continue
@@ -215,24 +215,7 @@ def _reports_by_model(graph: LineageGraph) -> tuple[dict[str, list[str]], set[st
             continue
         if src.node_type is NodeType.SEMANTIC_MODEL and tgt.node_type is NodeType.REPORT:
             by_model.setdefault(normalize_identifier(src.name), []).append(tgt.id)
-            placed.add(tgt.id)
-    return {key: sorted(set(ids)) for key, ids in by_model.items()}, placed
-
-
-def _orphan_reports_section(graph: LineageGraph, placed: set[str]) -> list[str]:
-    """Top-level nav for reports not attached to any semantic model, so a report
-    whose model couldn't be resolved is never lost. Reports linked to a model
-    are nested under it instead (see _reports_by_model)."""
-    nodes = graph.nodes
-    orphans = sorted(
-        (nid for nid, n in nodes.items() if n.node_type is NodeType.REPORT and nid not in placed),
-        key=lambda nid: nodes[nid].display.lower(),
-    )
-    if not orphans:
-        return []
-    lines = ["  - Reports:"]
-    lines.extend(f"      - {_navkey(nodes[nid].display)}: {_page(nodes[nid], nid)}" for nid in orphans)
-    return lines
+    return {key: sorted(set(ids)) for key, ids in by_model.items()}
 
 
 def _nav_section(graph: LineageGraph) -> str:
@@ -261,18 +244,17 @@ def _nav_section(graph: LineageGraph) -> str:
 
     # Power BI: nest each semantic model's tables + measures under the model,
     # and each report under every model it draws from (a flat list of hundreds
-    # of measures is unusable, and reports belong with their model).
-    reports_by_model, placed_reports = _reports_by_model(graph)
+    # of measures is unusable, and reports belong with their model). There's no
+    # separate top-level Reports section.
     lines.extend(
         _grouped_section(
             nodes,
             container=NodeType.SEMANTIC_MODEL,
             title="Semantic Models",
             children=(("Tables", NodeType.PBI_TABLE), ("Measures", NodeType.MEASURE)),
-            extra_groups=[("Reports", reports_by_model)],
+            extra_groups=[("Reports", _reports_by_model(graph))],
         )
     )
-    lines.extend(_orphan_reports_section(graph, placed_reports))
 
     # anything unlayered (views/procs no rule covered) — don't lose them
     other = sorted(

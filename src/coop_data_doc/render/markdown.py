@@ -20,7 +20,6 @@ from coop_data_doc.render.mermaid import (
     estate_flowchart,
     local_flowchart,
     slug,
-    upstream_flowchart,
 )
 
 INTENT_BEGIN = "<!-- intent:begin -->"
@@ -329,20 +328,20 @@ def _wants_upstream_tree(graph: LineageGraph, node: Node) -> bool:
 
 
 def _upstream_section(graph: LineageGraph, node: Node, up: dict[str, list[str]]) -> str:
-    """A 'trace back to source' section: a readable text ancestry tree plus the
-    same lineage as a full-depth, zoomable Mermaid diagram."""
+    """A 'trace back to source' section: a readable, collapsible text ancestry
+    tree to the source roots. (The page's Local Flow chart covers the visual
+    neighborhood, so this stays text-only — no second diagram.)"""
     tree = _upstream_tree_text(graph, node, up)
     lines = ["## Upstream lineage", ""]
     if not tree:
         lines.append("_No upstream objects — this is a source._")
         return "\n".join(lines)
     lines.append(
-        "_Trace this object back to its sources. The tree lists each upstream "
-        "dependency to the roots; the diagram below is the same lineage — click a node to open it._"
+        "_Trace this object back to its sources. Each node links to its page; "
+        "branches start collapsed in the HTML — expand to drill down._"
     )
     lines.append("")
     lines.extend(tree)
-    lines += ["", "```mermaid", upstream_flowchart(graph, node.id), "```"]
     return "\n".join(lines)
 
 
@@ -475,6 +474,15 @@ def _source_section(node: Node) -> str:
     return "\n".join(lines)
 
 
+def _dax_section(node: Node) -> str:
+    """A measure's defining DAX as `Measure Name = <expression>` (the stored
+    metadata["dax"] is the RHS only). Fence sized to the content so a stray
+    backtick can't close the block early (mirrors _source_section)."""
+    full_dax = f"{node.display} = {node.metadata['dax']}"
+    fence = _code_fence(full_dax)
+    return f"## DAX\n\n{fence}dax\n{full_dax}\n{fence}"
+
+
 def render_node_page(
     graph: LineageGraph,
     node: Node,
@@ -496,6 +504,7 @@ def render_node_page(
         direct_upstream = _direct_upstream(graph)
     if node.node_type is NodeType.REPORT:
         return _report_page(graph, node, out_path)
+    has_dax = node.node_type is NodeType.MEASURE and node.metadata.get("dax")
     parts = [
         _front_matter(graph, node),
         "",
@@ -512,6 +521,10 @@ def render_node_page(
             if node.node_type is NodeType.PBI_TABLE and (mode := node.metadata.get("storage_mode"))
             else []
         ),
+        # defining code right under the description: SQL for tables/views/procs,
+        # DAX for measures — the first thing a reader wants on the page.
+        *([_source_section(node), ""] if node.source_code else []),
+        *([_dax_section(node), ""] if has_dax else []),
         # advisory badge on a measure nothing references or shows
         *(
             [f"> ⚠ **Unused** — {_UNUSED_MEASURE_CAVEAT}", ""]
@@ -531,9 +544,6 @@ def render_node_page(
         # full "trace back to source" tree on measures + model-facing gold objects
         *([_upstream_section(graph, node, direct_upstream), ""] if _wants_upstream_tree(graph, node) else []),
     ]
-    # the defining SQL for tables/views/procs (no source_code -> no section)
-    if node.source_code:
-        parts += [_source_section(node), ""]
     parts += [
         "## Lineage",
         "",
@@ -554,17 +564,6 @@ def render_node_page(
         INTENT_END,
         "",
     ]
-    if node.node_type is NodeType.MEASURE and node.metadata.get("dax"):
-        # show the full DAX as authored — `Measure Name = <expression>` — not
-        # just the bare expression (the stored metadata["dax"] is the RHS only).
-        full_dax = f"{node.display} = {node.metadata['dax']}"
-        # size the fence to the content so any stray backticks in the DAX
-        # can't terminate the block early (mirrors _source_section)
-        fence = _code_fence(full_dax)
-        parts.insert(
-            parts.index("## Lineage"),
-            f"## DAX\n\n{fence}dax\n{full_dax}\n{fence}\n",
-        )
     return "\n".join(parts)
 
 

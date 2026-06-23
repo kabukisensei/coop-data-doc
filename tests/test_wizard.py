@@ -184,6 +184,60 @@ def test_wizard_scopes_to_selected_semantic_models(tmp_path: Path, monkeypatch):
     assert not any(".pbix" in g for g in inc)  # .pbix / loose files excluded
 
 
+def test_wizard_autosuggests_schema_mapping_from_dry_run(tmp_path: Path, monkeypatch):
+    # a model whose M-code reads schema "sales" but whose object actually lives
+    # in SQL schema "mart" is unresolved; the wizard dry-run derives "mart" from
+    # where the name lives and the user confirms — no blind typing.
+    sql = tmp_path / "sql-repo"
+    sql.mkdir()
+    (sql / "fact.sql").write_text(
+        "CREATE VIEW mart.fact_sales AS SELECT a FROM mart.base;\nGO\n", encoding="utf-8"
+    )
+    defn = tmp_path / "pbi-repo" / "X.SemanticModel" / "definition"
+    (defn / "tables").mkdir(parents=True)
+    (defn / "model.tmdl").write_text("model Model\n\tculture: en-US\n", encoding="utf-8")
+    (defn / "tables" / "fact_sales.tmdl").write_text(
+        "table fact_sales\n"
+        "\tcolumn a\n"
+        "\t\tdataType: int64\n"
+        "\tpartition fact_sales = m\n"
+        "\t\tmode: import\n"
+        "\t\tsource =\n"
+        "\t\t\t\tlet\n"
+        '\t\t\t\t    Source = Sql.Database("srv", "wh"),\n'
+        '\t\t\t\t    d = Source{[Schema="sales",Item="fact_sales"]}[Data]\n'
+        "\t\t\t\tin\n"
+        "\t\t\t\t    d\n",
+        encoding="utf-8",
+    )
+
+    def router(kind, message, kwargs):
+        m = message.lower()
+        if "project name" in m:
+            return "MapTest"
+        if "sql repo path" in m:
+            return "./sql-repo"
+        if "power bi repo path" in m:
+            return "./pbi-repo"
+        if "markdown output" in m:
+            return "./docs"
+        if "html site" in m:
+            return "./site"
+        if "map x" in m and kind == "confirm":  # "Map X → mart?"
+            return True
+        if kind == "confirm":
+            return False
+        if kind == "checkbox":
+            return [c.value for c in kwargs.get("choices", [])]
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
+    assert config is not None
+    rules = {(m.schema_name, m.model) for m in config.schema_mappings}
+    assert ("mart", "X") in rules  # derived + confirmed, not typed
+
+
 def test_skip_bronze_and_silver(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
     answers = {

@@ -318,8 +318,6 @@ def test_navkey_escapes_control_chars():
 def test_upstream_tree_on_model_facing_gold_objects(tmp_path: Path):
     # the view + gold both feed the model, so both get a full back-to-source
     # tree; the upstream silver source (a leaf) does not.
-    from coop_data_doc.render.mermaid import upstream_flowchart
-
     g = build_graph()
     render_markdown(g, tmp_path, "Test")
     view_page = page_path(tmp_path, "view:sales.dim_customer").read_text(encoding="utf-8")
@@ -340,10 +338,11 @@ def test_upstream_tree_on_model_facing_gold_objects(tmp_path: Path):
         - 1
     )
     assert silver_indent > gold_indent
-    # the section's mermaid is upstream-only: no downstream pbi_table/model/visual
-    chart = upstream_flowchart(g, "view:sales.dim_customer")
-    assert "fact_sales" in chart and "usp_load" in chart and "customers" in chart
-    assert "pbi_table" not in chart and "semantic_model" not in chart and "visual" not in chart
+    # the upstream section is text-tree only — no second mermaid diagram (the
+    # page keeps just the Local Flow chart)
+    upstream_section = view_page.split("## Upstream lineage", 1)[1].split("\n## ", 1)[0]
+    assert "```mermaid" not in upstream_section
+    assert view_page.count("```mermaid") == 1  # only Local Flow remains
 
     # a pure source (the silver table) is not a measure/gold/view -> no tree
     silver_page = page_path(tmp_path, "silver_table:silver.customers").read_text(encoding="utf-8")
@@ -532,16 +531,16 @@ def test_report_page_is_minimal_measures_referenced(tmp_path: Path):
     assert "Local Flow" not in page
 
 
-def test_site_nav_keeps_orphan_report():
-    # a report not linked to any semantic model must still appear, in a
-    # top-level Reports section, so nothing is lost
+def test_site_nav_has_no_separate_reports_section():
+    # there's no top-level Reports section: a report linked to no model simply
+    # doesn't appear in the nav (it still has a page, reachable via search)
     from coop_data_doc.render.site import _nav_section
 
     g = LineageGraph()
     g.add_node(make_node(NodeType.REPORT, "", "ghost", display_name="Ghost"))
     nav = _nav_section(g)
-    assert "- Reports:" in nav
-    assert '"Ghost": report/' in nav  # the orphan report is not dropped
+    assert "- Reports:" not in nav  # no top-level (or any) Reports section for an orphan
+    assert "ghost" not in nav
 
 
 def test_source_section_embeds_sql(tmp_path: Path):

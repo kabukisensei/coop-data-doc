@@ -140,15 +140,6 @@ def local_flowchart(
     return "\n".join(lines)
 
 
-def upstream_flowchart(graph: LineageGraph, node_id: str) -> str:
-    """Full-depth upstream lineage of a node — every ancestor back to the source
-    roots — as a clickable Mermaid chart with the focal node highlighted. Powers
-    the "trace back to source" view a functional user follows backwards from a
-    report or model into the SQL behind it.
-    """
-    return local_flowchart(graph, node_id, up_depth=None, down_depth=0)
-
-
 def estate_flowchart(graph: LineageGraph) -> str | None:
     """Whole-estate chart grouped by layer; None when above the node cap."""
     ids = {nid for nid, node in graph.nodes.items() if node.node_type in _ESTATE_TYPES}
