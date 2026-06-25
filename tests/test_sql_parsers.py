@@ -2,9 +2,9 @@ from pathlib import Path
 
 from coop_data_doc.config import Config, RepoConfig
 from coop_data_doc.crawler import FileEntry, FileKind, crawl
-from coop_data_doc.graph import LineageGraph, NodeType, to_json_str
+from coop_data_doc.graph import LineageGraph, to_json_str
+from coop_data_doc.layering import assign_layers
 from coop_data_doc.parsers.sql_procs import (
-    classify_silver,
     parse_sql_procs,
     resolve_stub_references,
 )
@@ -13,8 +13,8 @@ from coop_data_doc.parsers.sql_objects import parse_sql_objects
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def sql_entries() -> list[FileEntry]:
-    config = Config(
+def sql_config() -> Config:
+    return Config(
         repos={
             "sql": RepoConfig(
                 path=str(FIXTURES / "repo_sql"),
@@ -23,7 +23,10 @@ def sql_entries() -> list[FileEntry]:
             )
         }
     )
-    inventory, _ = crawl(config)
+
+
+def sql_entries() -> list[FileEntry]:
+    inventory, _ = crawl(sql_config())
     return inventory.by_kind(FileKind.SQL_FILE)
 
 
@@ -33,7 +36,11 @@ def parse_all() -> tuple[LineageGraph, list]:
     warnings = parse_sql_objects(entries, graph)
     warnings += parse_sql_procs(entries, graph)
     resolve_stub_references(graph)
-    classify_silver(graph)
+    # the live gold->silver classification lives in layering.assign_layers
+    # (pass 2: a table never written/created in the repo becomes a silver
+    # source). Run it here (with no layer rules declared) so the fixture
+    # mirrors the pipeline instead of the removed classify_silver helper.
+    assign_layers(graph, sql_config())
     return graph, warnings
 
 
@@ -49,8 +56,11 @@ def test_expected_nodes():
         "stored_proc:dbo.usp_dynamic_refresh",
         "stored_proc:dbo.usp_audit_load",  # stub from EXEC
         "gold_table:dbo.fact_sales",
-        "gold_table:dbo.agg_sales_daily",
-        "gold_table:dbo.audit_log",  # written but never defined: stays gold
+        # a CTAS table emits only reads (no WRITES/DEFINES edge), so the
+        # layering heuristic treats it as a read-only source -> silver, matching
+        # the live pipeline (run_pipeline -> assign_layers pass 2).
+        "silver_table:dbo.agg_sales_daily",
+        "gold_table:dbo.audit_log",  # written (WRITES edge) but never defined: stays gold
         "view:sales.dim_customer",
         "view:sales.v_orders_star",
         "silver_table:silver.sales_orders",
@@ -124,12 +134,14 @@ def test_create_table_columns():
 
 def test_ctas_reads_source():
     graph, _ = parse_all()
+    # a CTAS table reads its source and (having no WRITES/DEFINES edge) is
+    # classified silver by the layering heuristic, as in the live pipeline.
     assert (
-        "gold_table:dbo.agg_sales_daily",
+        "silver_table:dbo.agg_sales_daily",
         "gold_table:dbo.fact_sales",
         "reads",
     ) in edge_keys(graph)
-    assert graph.nodes["gold_table:dbo.agg_sales_daily"].source_file
+    assert graph.nodes["silver_table:dbo.agg_sales_daily"].source_file
 
 
 def test_cursor_proc_traced():
@@ -184,6 +196,25 @@ def test_regex_fallback_resolves_cte_shadowed_and_bracketed_tables():
     assert not any(name in {"my", "alias", "other"} for _schema, name in aliased.reads)
 
 
+def test_qualify_respects_bracketed_dots():
+    """A literal dot *inside* brackets must not be split into schema.name:
+    `[my.proc]` is the object `my.proc` in the default `dbo` schema, and
+    `[dbo].[my.weird.table]` keeps the whole bracketed segment as the name."""
+    from coop_data_doc.parsers.sql_common import original_name, qualify
+
+    # bracketed names containing a literal dot stay intact
+    assert qualify("[my.proc]") == ("dbo", "my.proc")
+    assert qualify("[dbo].[my.weird.table]") == ("dbo", "my.weird.table")
+    assert original_name("[dbo].[my.weird.table]") == "my.weird.table"
+
+    # ordinary cases still behave
+    assert qualify("dbo.t") == ("dbo", "t")
+    assert qualify("[dbo].[t]") == ("dbo", "t")
+    assert qualify("t") == ("dbo", "t")
+    assert qualify("db.dbo.t") == ("dbo", "t")  # db part dropped from 3-part name
+    assert original_name("[dim].[Practice]") == "Practice"  # original case preserved
+
+
 def test_dynamic_sql_warned_not_guessed():
     graph, warnings = parse_all()
     assert any(w.category == "dynamic_sql" for w in warnings)
@@ -192,19 +223,6 @@ def test_dynamic_sql_warned_not_guessed():
     # and the gap must be visible to doc consumers, not just the console
     proc = graph.nodes["stored_proc:dbo.usp_dynamic_refresh"]
     assert proc.metadata["dynamic_sql_untraced"] is True
-
-
-def test_classify_silver():
-    graph, _ = parse_all()
-    for node_id in (
-        "silver_table:silver.sales_orders",
-        "silver_table:silver.customers",
-        "silver_table:silver.events",
-    ):
-        assert graph.nodes[node_id].node_type is NodeType.SILVER_TABLE
-    # written-but-undefined stays gold; defined tables stay gold
-    assert graph.nodes["gold_table:dbo.audit_log"].node_type is NodeType.GOLD_TABLE
-    assert graph.nodes["gold_table:dbo.fact_sales"].node_type is NodeType.GOLD_TABLE
 
 
 def test_view_reading_view_resolves_stub(tmp_path: Path):

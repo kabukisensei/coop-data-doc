@@ -125,6 +125,23 @@ def test_retype_node_rewrites_edges():
     assert g2.edges[0].target_id == new_id
 
 
+def test_retype_node_dedupes_collided_edges():
+    # a proc reads two same-named tables in different layers; retyping gold ->
+    # silver makes both 'reads' edges point at the same silver id, so they must
+    # collapse to ONE edge (with evidence merged) rather than leaving a dup key.
+    g = LineageGraph()
+    proc = g.add_node(make_node(NodeType.STORED_PROC, "dbo", "usp_load"))
+    gold = g.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "t"))
+    silver = g.add_node(make_node(NodeType.SILVER_TABLE, "dbo", "t"))
+    g.add_edge(Edge(source_id=proc.id, target_id=gold.id, edge_type=EdgeType.READS, evidence="gold.sql"))
+    g.add_edge(Edge(source_id=proc.id, target_id=silver.id, edge_type=EdgeType.READS, evidence="silver.sql"))
+    new_id = g.retype_node(gold.id, NodeType.SILVER_TABLE)
+    assert new_id == silver.id
+    reads = [e for e in g.edges if e.edge_type is EdgeType.READS and e.target_id == silver.id]
+    assert len(reads) == 1
+    assert reads[0].evidence  # surviving edge keeps evidence (merged, not dropped)
+
+
 def test_subgraph():
     g, silver, proc, gold, view, pbit, vis = build_chain()
     sub = g.subgraph({gold.id, view.id, pbit.id})

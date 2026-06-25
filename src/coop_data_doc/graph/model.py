@@ -207,6 +207,15 @@ class LineageGraph(BaseModel):
                 edge.source_id = new_id
             if edge.target_id == node_id:
                 edge.target_id = new_id
+        # the in-place rewrite can collide a rewritten edge with an existing
+        # identical (source, target, type) edge; rebuild through the idempotent
+        # adder so duplicates merge (and self-edges drop), mirroring
+        # resolve_stub_references.
+        edges = self.edges
+        self.edges = []
+        for edge in edges:
+            if edge.source_id != edge.target_id:
+                self.add_edge(edge)
         # merge if a node with the new id already existed
         return self.add_node(node).id
 

@@ -8,9 +8,10 @@
 **Files to create:** `src/coop_data_doc/cli.py`, `tests/test_cli.py`.
 
 **Inputs you can rely on:** every prior module's public API:
-`Config.load/scaffold`, `crawl(config)`, `parse_sql_objects/parse_sql_procs/classify_silver`,
-the M3 parser entrypoints, `LineageCache`, `link_graph`, `run_interactive_session`,
-`render_markdown`, `write_mkdocs_config`, `build_site`, `graph.serialize`.
+`Config.load/scaffold`, `crawl(config)`, `parse_sql_objects/parse_sql_procs`,
+`layering.prune_schemas/assign_layers`, the M3 parser entrypoints, `LineageCache`,
+`link_graph`, `run_interactive_session`, `render_markdown`, `write_mkdocs_config`,
+`build_site`, `graph.serialize`.
 
 ## Commands (`coop-data-doc`, console-script already wired in pyproject)
 
@@ -25,7 +26,8 @@ coop-data-doc --version
 - **`init`** — `Config.scaffold("coop-data-doc.yml")`; exists without `--force` → friendly error,
   exit 1. Print next-steps hint ("edit repo paths, then run `coop-data-doc build`").
 - **`scan`** — pipeline through Module 4: load config → crawl → SQL parsers → PBI parsers →
-  `classify_silver` → cache load/prune → `link_graph` (interactive unless `--non-interactive`)
+  `prune_schemas` → `assign_layers` (its pass 2 retypes gold→silver for tables never written/
+  defined) → cache load/prune → `link_graph` (interactive unless `--non-interactive`)
   → write `graph.json` to `output.dir`. Then print a **warning summary table** to stderr:
   count per warning category, plus the top 5 files by warning count. `--strict`: exit 2 if any
   unresolved references or warnings of category `regex_fallback`/`dynamic_sql` exist.

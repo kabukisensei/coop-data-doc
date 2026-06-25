@@ -265,6 +265,12 @@ layers:                             # medallion layers (all optional)
 
 ignore_schemas: [staging, scratch]  # schemas to drop entirely (never documented)
 
+branding:                           # optional HTML-site branding (all optional)
+  logo: ./assets/logo.png           # paths resolve against THIS file's folder
+  favicon: ./assets/favicon.ico
+  primary_color: "#004060"          # header / nav / links (defaults to this)
+  accent_color: "#e04020"           # hover / active (defaults to this)
+
 output:
   dir: ./data-docs                  # the markdown (agents read this)
   site_dir: ./data-docs-site        # the website (humans read this) — must be a
@@ -318,6 +324,10 @@ upstream link.
 | `layers.<bronze\|silver\|gold>.schemas` | list | Schemas assigned to that layer. |
 | `layers.<bronze\|silver\|gold>.paths` | list of globs | File paths assigned to that layer. A node matches the first layer (gold → silver → bronze) hit by schema **or** path. |
 | `ignore_schemas` | list | Schemas dropped entirely. System schemas are always dropped on top of these. |
+| `branding.logo` | string (path) | Logo image for the HTML site header; relative paths resolve against the config file. Optional. |
+| `branding.favicon` | string (path) | Favicon for the HTML site; relative paths resolve against the config file. Optional. |
+| `branding.primary_color` | string (CSS color) | Header / nav / link color. Hex (`#rgb`/`#rrggbb`/`#rrggbbaa`), `rgb()`/`rgba()`/`hsl()`, or a CSS color name. Defaults to the Cooptimize theme (`#004060`). |
+| `branding.accent_color` | string (CSS color) | Hover / active color, same accepted forms. Defaults to `#e04020`. |
 | `output.dir` | string | Where the Markdown (agent docs) is written. |
 | `output.site_dir` | string | Where the HTML site is built. **Must be a separate folder from `output.dir`** — not the same folder and not nested inside it (each build wipes `site_dir`, which would clobber your Markdown). Side-by-side like `./data-docs` + `./data-docs-site` is the convention. |
 | `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
@@ -423,7 +433,7 @@ markers is regenerated, so put your notes inside them.
 | `coop-data-doc build` | identical to `update` — two names for the same command |
 | `coop-data-doc scan` | crawl + parse + link only; writes `graph.json`, no rendering |
 | `coop-data-doc check [--lenient]` | CI gate — fails on stale docs, unresolved references, or risky parses (`--lenient` tolerates the latter) |
-| `coop-data-doc upgrade [--check] [--yes]` | update the **tool itself** + dependency updates |
+| `coop-data-doc upgrade` | check for a newer release and print the exact upgrade command (does **not** self-update) |
 | `coop-data-doc help [command]` | show help (same as `--help`) |
 
 **Config discovery:** `coop-data-doc` searches for `coop-data-doc.yml` in the current directory and walks up parent directories (like `git` finding `.git`). You can override with `--config PATH` or the `COOP_DATA_DOC_CONFIG` environment variable.
@@ -432,8 +442,26 @@ Options for `build`/`update`: `--skip-html` (markdown only), `--serve` (live-pre
  the site). `scan`/`build`/`update` all accept `--non-interactive` (never prompt; for
  CI) and `--strict` (exit code 2 on unresolved references or risky parses). Every
  pipeline command accepts `--config PATH` (default: discover in cwd and parents). Global flags
- go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet) —
- e.g. `coop-data-doc -q update`.
+ go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet), and
+ `--log-file PATH` (write a verbose debug log to a file, leaving the console at warning
+ level) — e.g. `coop-data-doc -q update` or `coop-data-doc --log-file build.log build`.
+
+### Agent / CI commands
+
+Beyond the commands above, the CLI exposes a non-interactive surface for agents and CI
+(every one emits sorted/deterministic JSON or writes the config, and takes `--config PATH`):
+
+| Command | What it does |
+| --- | --- |
+| `coop-data-doc folders` | list each repo's top-level folders + whether they're documented (JSON) |
+| `coop-data-doc set-folders --repo KEY --skip A,B` | set which top-level folders a repo documents (the non-interactive twin of the wizard's checkbox) |
+| `coop-data-doc lineage OBJECT [--depth N]` | print one object's lineage from the built `graph.json` (JSON) |
+| `coop-data-doc show-config` | print the current config as JSON (the shape `config-set` accepts) |
+| `coop-data-doc config-set --from-json -` | apply a JSON patch to `coop-data-doc.yml` non-interactively |
+| `coop-data-doc resolve` | list ambiguous cross-repo links + their candidates (JSON) |
+| `coop-data-doc resolve-apply --from-json -` | apply link decisions to the cache, then build |
+
+See [AGENTS.md](AGENTS.md) for the full machine-readable contract (flags, exit codes, JSON shapes).
 
 `scan`/`build`/`update` show progress bars on stderr while they work, but only in an
 interactive terminal — they're suppressed by `-q` and absent in CI or piped output, and
@@ -442,32 +470,25 @@ they never affect the generated files.
 ## Keeping the tool updated
 
 ```bash
-coop-data-doc upgrade --check    # see what's available, change nothing
-coop-data-doc upgrade            # apply (asks for confirmation first)
+coop-data-doc upgrade            # check for a newer release; print the exact upgrade command
 ```
 
-After upgrading, `coop-data-doc --version` should report the new version. If it still
-shows the old number even though you expected changes, force a clean re-pull:
-`pipx reinstall coop-data-doc`.
+`upgrade` does **not** self-update — replacing the tool while it's running is unreliable
+(and impossible on Windows, which locks a running executable). Instead it checks PyPI for
+a newer release, then **detects how this copy was installed** (pipx / uv / pip / a git
+checkout) and **prints the exact command to run yourself** from a normal shell — e.g.:
 
-**On Windows**, the running tool can't replace its own launcher (`coop-data-doc.exe`) —
-Windows locks a running executable — so `coop-data-doc upgrade` will tell you to finish
-the upgrade from a **new terminal**:
-
-```powershell
-pipx upgrade coop-data-doc      # run in a fresh window, where the tool isn't running
+```bash
+pipx upgrade coop-data-doc      # run in a regular terminal, where the tool isn't running
 ```
 
-(On older versions this surfaced as a raw `[WinError 32] … being used by another process`
-error — same cause, same fix. See [Troubleshooting](#troubleshooting).)
+It also lists any out-of-date direct dependencies (flagging major-version jumps for you to
+review), but it never pulls, reinstalls, or updates anything itself — you copy and run the
+printed command. This is the single command that touches the internet; documentation
+builds are always fully offline.
 
-`upgrade` detects how the tool was installed (pipx / uv / pip / a git checkout) and
-updates it — a git checkout gets new commits pulled and reinstalled. For pip and
-git-checkout installs it also updates the tool's direct dependencies, **but only within
-the same major version**; major-version jumps are listed for a human to review and never
-applied automatically. (pipx and uv manage their own isolated environments, so for those
-installs `upgrade` delegates dependency handling to them.) This is the single command
-that uses the internet; documentation builds are always fully offline.
+After running the printed command, `coop-data-doc --version` should report the new version.
+If it still shows the old number, force a clean re-pull: `pipx reinstall coop-data-doc`.
 
 ## Using it in CI
 

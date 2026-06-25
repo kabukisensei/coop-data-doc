@@ -57,7 +57,6 @@ Per batch, handle:
 ```python
 def parse_sql_procs(entries: list[FileEntry], graph: LineageGraph,
                     dialect: str = "tsql") -> list[ParseWarning]: ...
-def classify_silver(graph: LineageGraph) -> None: ...
 ```
 
 **`CREATE [OR ALTER] PROCEDURE`**: emit `stored_proc` node (schema default `dbo`), then walk
@@ -87,16 +86,19 @@ Exclusions on **both** sides: temp tables, table variables, CTE aliases.
    and emit warning category `"regex_fallback"`.
 4. Dynamic SQL (`EXEC(@sql)` / `sp_executesql`): do NOT guess; warning category `"dynamic_sql"`.
 
-**`classify_silver(graph)`** — post-pass after all SQL files parse: any `gold_table` node that is
-(a) never the target of a `writes`/`defines` edge AND (b) has no `CREATE TABLE` source file in
-the repo ⇒ `graph.retype_node(id, NodeType.SILVER_TABLE)`.
+**Silver classification** is *not* done here — the SQL parsers leave every read table as a
+`gold_table` stub. The live gold→silver retype is the heuristic in `layering.assign_layers`
+pass 2 (run later in the pipeline, after rule-based layering): any `gold_table` that is never
+the target of a `writes`/`defines` edge is treated as a read-only source and retyped via
+`graph.retype_node(id, NodeType.SILVER_TABLE)`. See `module-4.5` / `layering.py`.
 
 ## Tests (fixture-driven, golden expectations)
 Fixture .sql files must cover: MERGE proc with CTE + temp table (assert no edges for either),
 CTAS, `SELECT ... INTO`, `UPDATE ... FROM`, a view with `SELECT *`, nested EXEC, a cursor-based
 proc that defeats sqlglot (assert `regex_fallback` engaged and edges still found), dynamic SQL
 (assert warning, no false edge). Final assertion: full fixture repo parse produces the exact
-expected node-id/edge-key set, and `classify_silver` retypes exactly the silver sources.
+expected node-id/edge-key set; the gold→silver retype of read-only sources is asserted via
+`layering.assign_layers` (the live mechanism), not a parser-local pass.
 
 ## Acceptance criteria
 - No false edges from CTE names, temp tables, or table variables.

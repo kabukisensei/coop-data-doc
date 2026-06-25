@@ -45,7 +45,9 @@ All commands exit with these codes:
 | `--version` | Print version and exit 0 |
 | `-v, --verbose` | Debug logging + full tracebacks |
 | `-q, --quiet` | Suppress warning summaries and progress |
-| `--config PATH` | Use this config file instead of `./coop-data-doc.yml` |
+| `--log-file PATH` | Write a verbose debug log to `PATH` (console stays at warning level) |
+
+`--config PATH` is **not** global — it is a per-subcommand option (see each command below).
 
 ### Commands
 
@@ -59,7 +61,14 @@ All commands exit with these codes:
 | `coop-data-doc update` | Alias for `build` | Same as `build` |
 | `coop-data-doc scan` | Crawl + parse + link only; writes `graph.json` | `--non-interactive`, `--strict`, `--config` |
 | `coop-data-doc check` | CI gate — exits 1 if stale, 2 if problems | `--lenient`, `--config` |
-| `coop-data-doc upgrade` | Update the tool itself | `--check`, `--yes` |
+| `coop-data-doc folders` | List each repo's top-level folders + documented state (JSON) | `--config` |
+| `coop-data-doc set-folders` | Set which top-level folders a repo documents (non-interactive) | `--repo` (required), `--skip` (comma-separated), `--config` |
+| `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON) | `--depth`, `--config` |
+| `coop-data-doc show-config` | Print the current config as JSON (the `config-set` shape) | `--config` |
+| `coop-data-doc config-set` | Apply a JSON patch to the config, non-interactively | `--from-json` (file or `-`), `--config` |
+| `coop-data-doc resolve` | List ambiguous cross-repo links + candidates (JSON) | `--config` |
+| `coop-data-doc resolve-apply` | Apply link decisions to the cache, then build | `--from-json` (file or `-`), `--config` |
+| `coop-data-doc upgrade` | Check for a newer release and print the upgrade command (does **not** self-update) | — |
 | `coop-data-doc help [CMD]` | Show help | — |
 
 ## Config File Discovery
@@ -227,7 +236,6 @@ Use `--strict` to make unresolved items fatal (exit 2).
 | Variable | Effect |
 |----------|--------|
 | `COOP_DATA_DOC_CONFIG` | Default config file path (overrides `./coop-data-doc.yml`) |
-| `COOP_DATA_DOC_QUIET` | If set, equivalent to `-q` |
 
 ## Python API (Advanced)
 

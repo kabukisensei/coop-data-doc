@@ -332,19 +332,3 @@ def resolve_stub_references(graph: LineageGraph) -> None:
     for edge in edges:
         if edge.source_id != edge.target_id:
             graph.add_edge(edge)
-
-
-def classify_silver(graph: LineageGraph) -> None:
-    """Retype read-only, definition-less tables as silver-layer sources."""
-    written = {
-        edge.target_id for edge in graph.edges if edge.edge_type in (EdgeType.WRITES, EdgeType.DEFINES)
-    }
-    for node_id in sorted(graph.nodes):
-        node = graph.nodes.get(node_id)
-        if (
-            node is not None
-            and node.node_type is NodeType.GOLD_TABLE
-            and not node.source_file
-            and node_id not in written
-        ):
-            graph.retype_node(node_id, NodeType.SILVER_TABLE)

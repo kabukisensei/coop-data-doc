@@ -15,6 +15,8 @@ Summary of what was built (see `_shared-context.md` for the full interface table
   (source, target, type) and backfills empty evidence.
 - `upstream`/`downstream`: cycle-safe BFS over flow-normalized adjacency, optional depth,
   sorted ids returned.
-- `retype_node` rewrites the id and all referencing edges (used by `classify_silver`).
+- `retype_node` rewrites the id and all referencing edges (used by the layer-assignment
+  pass in `layering.assign_layers`), then re-adds edges through `add_edge` so the rewrite
+  can't leave duplicate-keyed edges.
 - `serialize.to_json_str`: edges sorted by key, `sort_keys=True`, indent 2, trailing newline —
   git-diffable and byte-stable.

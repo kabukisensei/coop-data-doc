@@ -169,25 +169,46 @@ def is_temp_table(table: exp.Table) -> bool:
 
 _QUOTE_JUNK = re.compile(r'[\[\]"`]')
 
+# One identifier part: a [..]-bracketed segment, a ".."-double-quoted segment,
+# or a bare run of non-dot characters. Splitting on this (rather than a plain
+# str.split(".")) keeps a literal dot *inside* brackets/quotes in its own part,
+# so `[my.proc]` stays one segment instead of becoming ('my', 'proc').
+_IDENT_PART = re.compile(r'\[[^\]]*\]|"[^"]*"|[^.]+')
+
+
+def _ident_parts(raw: str) -> list[str]:
+    """Split a (possibly multi-part) identifier into its dot-separated parts,
+    treating a dot inside brackets/double-quotes as part of the segment, not a
+    separator. Quote/bracket characters are stripped from each returned part.
+    """
+    parts = [_QUOTE_JUNK.sub("", m.group(0)).strip() for m in _IDENT_PART.finditer(str(raw))]
+    return [p for p in parts if p]
+
 
 def original_name(raw: str) -> str:
     """The object's name with original case, brackets/quotes stripped.
 
     Unlike normalize_identifier (which lowercases for stable ids), this keeps
     the source casing for display, e.g. '[dim].[Practice]' -> 'Practice'.
+    A dot inside brackets/quotes (`[my.weird.table]`) stays in the name.
     """
-    cleaned = _QUOTE_JUNK.sub("", str(raw)).strip()
-    return cleaned.rsplit(".", 1)[-1] if "." in cleaned else cleaned
+    parts = _ident_parts(raw)
+    return parts[-1] if parts else ""
 
 
 def qualify(raw: str) -> tuple[str, str]:
-    """'[dbo].[Foo]' -> ('dbo', 'foo'); unqualified names default to dbo."""
-    cleaned = normalize_identifier(raw)
-    if "." in cleaned:
-        schema, _, name = cleaned.rpartition(".")
-        schema = schema.rpartition(".")[2]  # drop db part of db.schema.name
-        return (schema or "dbo", name)
-    return ("dbo", cleaned)
+    """'[dbo].[Foo]' -> ('dbo', 'foo'); unqualified names default to dbo.
+
+    Respects bracket/quote structure before splitting on '.', so a bracketed
+    name containing a literal dot (`[my.proc]`, `[dbo].[my.weird.table]`) keeps
+    that dot in the object name rather than being split apart.
+    """
+    parts = [p.lower() for p in _ident_parts(raw)]
+    if not parts:
+        return ("dbo", "")
+    name = parts[-1]
+    schema = parts[-2] if len(parts) >= 2 else "dbo"  # drop db part of db.schema.name
+    return (schema or "dbo", name)
 
 
 def table_parts(table: exp.Table) -> tuple[str, str]:
