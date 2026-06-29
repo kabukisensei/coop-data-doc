@@ -215,6 +215,90 @@ def test_qualify_respects_bracketed_dots():
     assert original_name("[dim].[Practice]") == "Practice"  # original case preserved
 
 
+def test_native_query_extracts_sql_with_comma_in_first_arg():
+    """Value.NativeQuery(Sql.Database("srv","db"), "SELECT ...") has a top-level
+    comma inside its first argument; the SQL extractor must skip past it and
+    capture the real query, not mistake the database name for the SQL."""
+    from coop_data_doc.parsers.mcode import extract_source
+
+    src, native_sql = extract_source(
+        'let S = Value.NativeQuery(Sql.Database("srv","mydb"), '
+        '"SELECT a FROM dbo.orders JOIN dbo.cust ON 1=1") in S'
+    )
+    assert src is not None and src.raw_kind == "native_query"
+    assert native_sql == ["SELECT a FROM dbo.orders JOIN dbo.cust ON 1=1"]
+    assert "mydb" not in native_sql  # the DB name must not be captured as the SQL
+
+    # the single-identifier first-arg form must still work
+    _src2, native_sql2 = extract_source('Value.NativeQuery(Source, "SELECT x FROM dbo.foo")')
+    assert native_sql2 == ["SELECT x FROM dbo.foo"]
+
+
+def test_bracketed_identifier_apostrophe_does_not_swallow_terminator():
+    """A `'` inside a [...]-bracketed identifier (e.g. [Owner's Name]) is part
+    of the name, not a string-literal start, so it must not make split_statements
+    merge across a `;` or make scrub eat the rest of the chunk."""
+    from coop_data_doc.parsers.sql_common import regex_extract, scrub, split_statements
+
+    stmts = split_statements("UPDATE dbo.t SET [Owner's Name] = 'x'; DELETE FROM dbo.archive")
+    assert len(stmts) == 2  # the ';' terminator is not swallowed
+
+    scrubbed = scrub("INSERT INTO [dbo].[O'Brien] SELECT 1; SELECT * FROM dbo.x", strip_strings=True)
+    assert "dbo.x" in scrubbed  # the rest of the chunk survives
+
+    lineage = regex_extract("UPDATE dbo.t SET [Owner's Name] = 'x'; DELETE FROM dbo.archive")
+    assert ("dbo", "t") in lineage.writes
+    assert ("dbo", "archive") in lineage.writes  # the DELETE write edge is not dropped
+
+
+def test_proc_and_object_names_with_spaces_captured_whole():
+    """The bracket-aware _IDENT pattern must capture spaced bracketed names
+    intact in PROC_HEADER_RE and the CREATE TABLE/VIEW regex fallbacks, instead
+    of truncating `[dbo].[My Proc]` at the first space."""
+    from coop_data_doc.parsers.sql_common import PROC_HEADER_RE, qualify
+    from coop_data_doc.parsers.sql_objects import _TABLE_FALLBACK_RE, _VIEW_FALLBACK_RE
+
+    proc = PROC_HEADER_RE.search("CREATE PROCEDURE [dbo].[My Proc] AS SELECT 1")
+    assert qualify(proc.group(1)) == ("dbo", "my proc")
+
+    table = _TABLE_FALLBACK_RE.search("CREATE TABLE [dbo].[Order Details] (x int)")
+    assert qualify(table.group(1)) == ("dbo", "order details")
+    table2 = _TABLE_FALLBACK_RE.search("CREATE TABLE dbo.[Order Details](x int)")
+    assert qualify(table2.group(1)) == ("dbo", "order details")
+
+    view = _VIEW_FALLBACK_RE.search("CREATE VIEW [dbo].[My View] AS SELECT 1")
+    assert qualify(view.group(1)) == ("dbo", "my view")
+
+
+def test_exec_return_status_capture_finds_real_callee():
+    """EXEC @rc = dbo.RealProc captures a return-status variable first; the
+    callee regex must skip the `@var =` and resolve the real procedure, never
+    inventing a phantom `dbo.@rc` reference."""
+    from coop_data_doc.parsers.sql_common import EXEC_RE, qualify
+
+    match = EXEC_RE.match("EXEC @rc = dbo.RealProc")
+    assert match is not None
+    assert qualify(match.group(1)) == ("dbo", "realproc")
+    assert not match.group(1).startswith("@")
+
+    # plain EXEC (no return-status var) still resolves the callee
+    assert qualify(EXEC_RE.match("EXEC dbo.OtherProc").group(1)) == ("dbo", "otherproc")
+
+
+def test_proc_body_as_after_parenthesized_default():
+    """_find_proc must locate the body-introducing AS at top level, not an AS
+    inside a parenthesized parameter default (e.g. CAST(GETDATE() AS DATE)),
+    which would slice the body mid-parameter-list and corrupt lineage."""
+    from coop_data_doc.parsers.sql_procs import _find_proc
+
+    name, body = _find_proc(
+        "CREATE PROCEDURE dbo.MyProc @D DATETIME = CAST(GETDATE() AS DATE) "
+        "AS INSERT INTO dbo.target SELECT col FROM dbo.src"
+    )
+    assert name == "dbo.MyProc"
+    assert body.strip() == "INSERT INTO dbo.target SELECT col FROM dbo.src"
+
+
 def test_dynamic_sql_warned_not_guessed():
     graph, warnings = parse_all()
     assert any(w.category == "dynamic_sql" for w in warnings)

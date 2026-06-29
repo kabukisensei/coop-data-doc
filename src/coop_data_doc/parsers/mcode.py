@@ -23,7 +23,13 @@ class SourceRef(BaseModel):
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 
-_NATIVE_QUERY_RE = re.compile(r'Value\.NativeQuery\s*\([^,]+,\s*"((?:[^"]|"")*)"', re.S)
+# The first argument can itself be a call containing top-level commas, e.g.
+# Sql.Database("srv", "db"). Match the first argument as a run of either
+# non-comma/paren chars or whole `( ... )` parenthesized groups (which may hold
+# their own commas), so the `,` we stop on is the top-level one before the
+# quoted query — never the comma inside Sql.Database(...). Otherwise the DB name
+# would be mis-extracted as the SQL and all referenced tables dropped.
+_NATIVE_QUERY_RE = re.compile(r'Value\.NativeQuery\s*\((?:[^(),]|\([^()]*\))+,\s*"((?:[^"]|"")*)"', re.S)
 _LAKEHOUSE_RE = re.compile(r"Lakehouse\.Contents\s*\(|Fabric\.|\.Warehouse\s*\(")
 # A composite/DirectQuery reference to another Power BI semantic model:
 # AnalysisServices.Database("powerbi://…", "ModelName", …) — the 2nd arg is the

@@ -29,6 +29,7 @@ id: "view:sales.dim_customer"
 type: "view"
 name: "dim_customer"
 schema: "sales"
+layer: "gold"
 source_file: "views/sales/dim_customer.sql"
 path: "view/sales-dim_customer-<hash>.md"
 upstream_inputs:
@@ -75,8 +76,9 @@ _Add a short description of what this object is for and who relies on it._
 
 Rules:
 - **Front-matter is strict YAML, keys in EXACTLY this order** (`id`, `type`, `name`,
-  `schema`, `source_file`, `path`, `upstream_inputs`, `downstream_dependents`, `tags`),
+  `schema`, `layer`, `source_file`, `path`, `upstream_inputs`, `downstream_dependents`, `tags`),
   all values double-quoted, lists sorted; `schema` key maps from `node.schema_name`;
+  `layer` maps from `node.metadata["layer"]` (`""` when no layer rule matched);
   `path` = `{node_type}/{slug}.md`. `upstream_inputs`/`downstream_dependents` =
   `graph.upstream/downstream(id, depth=1)`. Output must be byte-stable.
 - **Business Intent preservation**: before writing, if the target file exists, extract the text

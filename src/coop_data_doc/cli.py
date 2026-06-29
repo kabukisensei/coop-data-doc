@@ -51,7 +51,7 @@ from coop_data_doc.parsers.sql_procs import (
 from coop_data_doc.parsers.tmdl import link_composite_models, parse_tmdl
 from coop_data_doc.progress import Progress, should_enable
 from coop_data_doc.render.markdown import render_markdown, write_diagnostics
-from coop_data_doc.render.site import build_site, write_mkdocs_config
+from coop_data_doc.render.site import SiteBuildError, build_site, write_mkdocs_config
 
 STRICT_CATEGORIES = ("regex_fallback", "dynamic_sql")
 DEFAULT_CONFIG = "coop-data-doc.yml"
@@ -842,10 +842,10 @@ def config_set(config_path: str | None, json_src) -> None:
     kwargs = (
         _render_kwargs_from_config(_load_config_lenient(path)) if path.is_file() else _default_render_kwargs()
     )
-    _apply_config_patch(kwargs, patch)
     try:
+        _apply_config_patch(kwargs, patch)
         rendered = render_config_yaml(**kwargs)
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
         raise click.ClickException(f"patch produced an invalid config: {exc}") from exc
     try:
         if path.parent != Path(""):
@@ -882,7 +882,7 @@ def resolve(config_path: str | None) -> None:
     "--from-json", "json_src", type=click.File("r"), default="-", help="Decisions JSON (file or '-')."
 )
 def resolve_apply(config_path: str | None, json_src) -> None:
-    """Apply link decisions to the lineage cache, then build to use them (agent/CI).
+    """Write link decisions to the lineage cache (agent/CI); run `build` separately to use them.
 
     Input: ``{"decisions": [{"cache_key": "...", "target": "view:sales.dim_customer"},
     {"cache_key": "...", "external": true}, {"cache_key": "...", "skip": true}]}``.
@@ -1155,7 +1155,10 @@ def main() -> None:
     except click.ClickException as exc:
         exc.show()
         sys.exit(exc.exit_code)
-    except ConfigError as exc:
+    except (ConfigError, SiteBuildError) as exc:
+        # SiteBuildError (mkdocs failed) is a routine user-facing failure: print
+        # one friendly line, reserving the full traceback for -v, to match the
+        # module docstring's contract and the other handled error types.
         click.echo(f"error: {exc}", err=True)
         sys.exit(1)
     except KeyboardInterrupt:

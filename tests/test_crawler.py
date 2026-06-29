@@ -96,6 +96,29 @@ def test_oversize_file_skipped_except_pbix(tmp_path: Path, monkeypatch: pytest.M
     assert warnings[0].file == "big.sql"
 
 
+def test_unreadable_file_degrades_to_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A locked / permission-denied / mid-walk-deleted file (e.g. a .pbix held by
+    Power BI Desktop on Windows) raises OSError from stat(); the crawler must
+    degrade it to a warning and keep going, never abort the whole build."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "locked.sql").write_text("SELECT 1;", encoding="utf-8")
+    (repo / "ok.sql").write_text("SELECT 2;", encoding="utf-8")
+
+    real_stat = Path.stat
+
+    def fake_stat(self, *args, **kwargs):
+        if self.name == "locked.sql":
+            raise PermissionError("[WinError 32] file in use")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
+    inventory, warnings = crawl(config)
+    assert [entry.path for entry in inventory.entries] == ["ok.sql"]  # build did not abort
+    assert any(w.category == "file_unreadable" and w.file == "locked.sql" for w in warnings)
+
+
 def test_hidden_dirs_skipped(tmp_path: Path):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)

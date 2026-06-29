@@ -46,9 +46,11 @@ def prune_schemas(graph: LineageGraph, ignore_schemas: list[str]) -> int:
     """Remove SQL nodes whose schema is a system schema or in the user's
     ignore list (and any edges touching them). Returns the count dropped.
 
-    System schemas (sys, information_schema, tempdb, db_*) are phantom nodes
-    from procs that query the catalog — never real lineage — so they go
-    automatically; ignore_schemas drops client-specific noise on top.
+    System schemas (sys, information_schema, tempdb, guest, and any db_*
+    fixed database role) are phantom nodes from procs that query the catalog —
+    never real lineage — so they go automatically (the first four live in
+    SYSTEM_SCHEMAS; db_* is matched by a startswith check); ignore_schemas drops
+    client-specific noise on top.
     """
     ignored = SYSTEM_SCHEMAS | {s.lower() for s in ignore_schemas}
 

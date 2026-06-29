@@ -104,7 +104,7 @@ class LineageCache:
             "mappings": {key: self.mappings[key].model_dump() for key in sorted(self.mappings)},
         }
         self.path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
             encoding="utf-8",
             newline="\n",
         )

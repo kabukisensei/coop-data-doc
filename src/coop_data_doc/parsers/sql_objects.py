@@ -20,6 +20,7 @@ from coop_data_doc.graph.model import (
     normalize_identifier,
 )
 from coop_data_doc.parsers.sql_common import (
+    _IDENT,
     PROC_HEADER_RE,
     collect_source_tables,
     original_name,
@@ -30,8 +31,10 @@ from coop_data_doc.parsers.sql_common import (
     table_parts,
 )
 
-_TABLE_FALLBACK_RE = re.compile(r"\bCREATE\s+TABLE\s+([\w\[\].]+)", re.IGNORECASE)
-_VIEW_FALLBACK_RE = re.compile(r"\bCREATE\s+(?:OR\s+ALTER\s+)?VIEW\s+([\w\[\].]+)", re.IGNORECASE)
+# Reuse the bracket-aware _IDENT so a spaced bracketed name like
+# `[dbo].[Order Details]` is captured whole, not truncated at the first space.
+_TABLE_FALLBACK_RE = re.compile(rf"\bCREATE\s+TABLE\s+({_IDENT})", re.IGNORECASE)
+_VIEW_FALLBACK_RE = re.compile(rf"\bCREATE\s+(?:OR\s+ALTER\s+)?VIEW\s+({_IDENT})", re.IGNORECASE)
 
 
 def read_sql_file(entry: FileEntry) -> str:

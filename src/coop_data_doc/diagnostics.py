@@ -48,6 +48,16 @@ def severity_of(category: str) -> str:
     return _SEVERITY.get(category, _DEFAULT_SEVERITY)
 
 
+def _md_cell(value: str) -> str:
+    """Make free text safe inside a Markdown table cell: escape pipes and
+    collapse newlines (an unescaped '|' or newline breaks the table row).
+
+    File/message cells can carry user-derived content — e.g. a Power BI page or
+    object name with a literal '|' — so this mirrors render/markdown._cell.
+    """
+    return (value or "").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+
 @dataclass
 class Diagnostics:
     """Aggregated, severity-classified issues from one pipeline run."""
@@ -152,6 +162,6 @@ class Diagnostics:
                 out.append("| --- | --- |")
                 for s, c, f, m in rows:
                     if s == severity and c == category:
-                        out.append(f"| {f} | {m} |")
+                        out.append(f"| {_md_cell(f)} | {_md_cell(m)} |")
         out.append("")
         return "\n".join(out)

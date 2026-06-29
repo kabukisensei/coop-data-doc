@@ -67,7 +67,7 @@ All commands exit with these codes:
 | `coop-data-doc show-config` | Print the current config as JSON (the `config-set` shape) | `--config` |
 | `coop-data-doc config-set` | Apply a JSON patch to the config, non-interactively | `--from-json` (file or `-`), `--config` |
 | `coop-data-doc resolve` | List ambiguous cross-repo links + candidates (JSON) | `--config` |
-| `coop-data-doc resolve-apply` | Apply link decisions to the cache, then build | `--from-json` (file or `-`), `--config` |
+| `coop-data-doc resolve-apply` | Write link decisions to the cache (run `build` separately to apply them) | `--from-json` (file or `-`), `--config` |
 | `coop-data-doc upgrade` | Check for a newer release and print the upgrade command (does **not** self-update) | — |
 | `coop-data-doc help [CMD]` | Show help | — |
 
@@ -82,11 +82,15 @@ All commands exit with these codes:
 
 ## Output Artifacts (Machine-Readable)
 
-After a successful `build`/`update`/`scan`, these files exist:
+After a successful `build`/`update`, these files exist. `scan` is rendering-free:
+it writes only `data-docs/graph.json` and `data-docs/diagnostics.json` (no
+`manifest.json` and no Markdown pages).
 
 ### `data-docs/manifest.json`
 
 The entire lineage graph in one JSON file. **Preferred entry point for agents.**
+Written by `build`/`update` only (the render step); `scan` does not produce it —
+read `graph.json` after a `scan`.
 
 Shape:
 ```json
@@ -137,6 +141,7 @@ id: "view:salespm.dim_customer"
 type: "view"
 name: "dim_customer"
 schema: "salespm"
+layer: "gold"
 source_file: "views/salespm/dim_customer.sql"
 path: "view/salespm-dim_customer-<hash>.md"
 upstream_inputs:
@@ -250,4 +255,4 @@ graph, result, warnings = run_pipeline(config, interactive=False)
 
 ## Version
 
-This contract matches `coop-data-doc` version `0.26.1`.
+This contract matches `coop-data-doc` version `0.26.2`.

@@ -59,10 +59,27 @@ def _find_proc(batch: str) -> tuple[str, str] | None:
     header = PROC_HEADER_RE.search(batch)
     if not header:
         return None
-    as_match = _AS_RE.search(batch, header.end())
+    # The body-introducing `AS` must be at top level (paren depth 0); an `AS`
+    # inside a parenthesized parameter default — e.g. `@D = CAST(GETDATE() AS
+    # DATE)` — must not be mistaken for it, which would slice the body
+    # mid-parameter-list and corrupt the first statement's lineage.
+    as_match = _find_body_as(batch, header.end())
     if not as_match:
         return None
-    return header.group(1), batch[as_match.end() :]
+    return header.group(1), batch[as_match:]
+
+
+def _find_body_as(batch: str, start: int) -> int | None:
+    """Index just after the top-level (paren-depth 0) `AS` that introduces the
+    proc body, or None. Tracks parenthesis depth so an `AS` inside a
+    parenthesized parameter default is skipped."""
+    depth = 0
+    for match in _AS_RE.finditer(batch, start):
+        depth += batch.count("(", start, match.start()) - batch.count(")", start, match.start())
+        start = match.start()
+        if depth == 0:
+            return match.end()
+    return None
 
 
 def _alias_map(statement: exp.Expression) -> dict[str, tuple[str, str]]:

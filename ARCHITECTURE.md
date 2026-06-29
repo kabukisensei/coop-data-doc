@@ -52,7 +52,7 @@ this diagram — read it first when tracing behavior.
   `"{type}:{schema}.{name}"`, lowercased, brackets stripped
   (`[dbo].[Fact Sales]` → `gold_table:dbo.fact sales`). For Power BI nodes,
   `schema_name` holds the normalized semantic-model name.
-- **NodeType** — `silver_table, gold_table, view, stored_proc,
+- **NodeType** — `bronze_table, silver_table, gold_table, view, stored_proc,
   semantic_model, pbi_table, measure, report, report_page, visual`.
 - **Edge** — `source_id`, `target_id`, `edge_type`, `evidence`
   (a `"file: snippet"` string proving the edge — every edge is auditable).
@@ -111,8 +111,8 @@ gold → silver → bronze — with a read/write heuristic fallback (a table onl
 ever read → silver source; one created here → gold). `display_name` carries
 the original-case name for rendering while ids stay normalized.
 `prune_schemas` first drops system schemas (`sys`/`information_schema`/
-`tempdb`/`db_*`) and any `ignore_schemas`, which would otherwise appear as
-phantom nodes from catalog references.
+`tempdb`/`guest`/`db_*`) and any `ignore_schemas`, which would otherwise appear
+as phantom nodes from catalog references.
 
 **Name gaps are a first-class problem.** View schemas and semantic-model
 names are similar but not identical (e.g. schema `sales` feeds the
@@ -124,7 +124,7 @@ interactive `questionary` prompt. Every interactive answer is written to
 nothing.
 
 **Two renderers, one graph.** `render/markdown.py` emits strict fixed-order
-YAML front-matter (`id`, `type`, `name`, `schema`, `source_file`, `path`,
+YAML front-matter (`id`, `type`, `name`, `schema`, `layer`, `source_file`, `path`,
 `upstream_inputs`, `downstream_dependents`, `tags`) so agents can parse pages
 without heuristics; `manifest.json` is the whole serialized graph for
 programmatic consumers. Page filenames come from `slug()` (filesystem-safe,
@@ -180,6 +180,7 @@ src/coop_data_doc/
 ├── cli.py            entrypoints + run_pipeline (the orchestration) + interactive menu
 ├── config.py         coop-data-doc.yml model (repos/layers/ignore_schemas) + ParseWarning
 ├── crawler.py        repo walk + FileKind classification
+├── folders.py        top-level folder selection backing the `folders`/`set-folders` commands
 ├── graph/            model.py (Node/Edge/LineageGraph, display_name), serialize.py
 ├── parsers/          sql_common/sql_objects/sql_procs, tmdl/bim/mcode/dax/pbir/pbix
 ├── layering.py       medallion layer assignment + system/ignored-schema pruning

@@ -307,7 +307,7 @@ that's created here → gold), and the scan warns which objects fell back so you
 Bronze only ever appears when you declare it.
 
 **Dropping schemas you don't want documented:** list them in `ignore_schemas` (the wizard
-asks for these too). System schemas — `sys`, `information_schema`, `tempdb`, `db_*` — are
+asks for these too). System schemas — `sys`, `information_schema`, `tempdb`, `guest`, `db_*` — are
 **always** dropped automatically, since they're catalog references, not real data. Note
 that ignoring a schema removes it from lineage entirely, so anything downstream loses that
 upstream link.
@@ -459,7 +459,7 @@ Beyond the commands above, the CLI exposes a non-interactive surface for agents 
 | `coop-data-doc show-config` | print the current config as JSON (the shape `config-set` accepts) |
 | `coop-data-doc config-set --from-json -` | apply a JSON patch to `coop-data-doc.yml` non-interactively |
 | `coop-data-doc resolve` | list ambiguous cross-repo links + their candidates (JSON) |
-| `coop-data-doc resolve-apply --from-json -` | apply link decisions to the cache, then build |
+| `coop-data-doc resolve-apply --from-json -` | write link decisions to the cache (run `build` separately to apply them) |
 
 See [AGENTS.md](AGENTS.md) for the full machine-readable contract (flags, exit codes, JSON shapes).
 
@@ -541,12 +541,13 @@ non-empty lists in block style (empty lists render as `[]`):
 ```yaml
 ---
 id: "view:sales.dim_customer"
-type: "view"                              # silver_table | gold_table | view | stored_proc |
-                                          # semantic_model | pbi_table | measure | report
+type: "view"                              # bronze_table | silver_table | gold_table | view |
+                                          # stored_proc | semantic_model | pbi_table | measure | report
                                           # (report pages/visuals fold into the report)
 name: "dim_customer"
 schema: "sales"                         # SQL schema; for pbi_table/measure nodes it's the
                                           # (lowercased) model name; "" for report/semantic_model
+layer: "gold"                             # bronze | silver | gold (from config.layers rules); "" if none
 source_file: "views/sales/dim_customer.sql"   # repo-relative; cite this as evidence
 path: "view/sales-dim_customer-<hash>.md"     # this page's location under data-docs/ (read it, don't compute it)
 upstream_inputs:                          # direct (depth-1) data sources, flow-normalized

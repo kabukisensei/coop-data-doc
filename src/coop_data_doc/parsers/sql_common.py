@@ -16,8 +16,6 @@ from sqlglot import exp
 from coop_data_doc.graph.model import normalize_identifier
 
 GO_RE = re.compile(r"^\s*GO\s*;?\s*$", re.IGNORECASE | re.MULTILINE)
-PROC_HEADER_RE = re.compile(r"\bCREATE\s+(?:OR\s+ALTER\s+)?PROC(?:EDURE)?\s+([\w\[\].]+)", re.IGNORECASE)
-DYNAMIC_SQL_RE = re.compile(r"\bsp_executesql\b|\bEXEC(?:UTE)?\s*\(", re.IGNORECASE)
 
 # A (possibly multi-part) SQL identifier: each part is either a bracketed
 # segment — which may contain spaces, e.g. `[Order Details]` — or a bare
@@ -26,7 +24,14 @@ DYNAMIC_SQL_RE = re.compile(r"\bsp_executesql\b|\bEXEC(?:UTE)?\s*\(", re.IGNOREC
 # leak a phantom table like `[my` -> `my`).
 _IDENT = r"(?:\[[^\]]+\]|[#@\w]+)(?:\.(?:\[[^\]]+\]|[#@\w]+))*"
 
-EXEC_RE = re.compile(rf"^\s*EXEC(?:UTE)?\s+({_IDENT})", re.IGNORECASE)
+# Use the bracket-aware _IDENT so a spaced bracketed proc name like
+# `[dbo].[My Proc]` is captured whole, not truncated at the first space.
+PROC_HEADER_RE = re.compile(rf"\bCREATE\s+(?:OR\s+ALTER\s+)?PROC(?:EDURE)?\s+({_IDENT})", re.IGNORECASE)
+DYNAMIC_SQL_RE = re.compile(r"\bsp_executesql\b|\bEXEC(?:UTE)?\s*\(", re.IGNORECASE)
+
+# Capture the callee after EXEC, tolerating an optional `@var =` return-status
+# assignment (EXEC @rc = dbo.Proc) so `@rc` isn't mistaken for the callee.
+EXEC_RE = re.compile(rf"^\s*EXEC(?:UTE)?\s+(?:@\w+\s*=\s*)?({_IDENT})", re.IGNORECASE)
 
 # lines that only drive cursor mechanics; their identifiers are cursors,
 # not tables, so they must never reach the regex table extractor
@@ -83,7 +88,15 @@ def scrub(sql: str, *, strip_strings: bool) -> str:
     i, n = 0, len(sql)
     while i < n:
         ch = sql[i]
-        if ch == "'":
+        if ch == "[":
+            # T-SQL bracket-quoted identifier (e.g. [Owner's Name]): a `'` inside
+            # is part of the name, not a string-literal start, so copy through to
+            # the matching ']' verbatim and never treat its contents as a string.
+            j = sql.find("]", i + 1)
+            end = n if j == -1 else j + 1
+            out.append(sql[i:end])
+            i = end
+        elif ch == "'":
             j = i + 1
             while j < n:
                 if sql[j] == "'":
@@ -115,7 +128,15 @@ def split_statements(sql: str) -> list[str]:
     i, n = 0, len(sql)
     while i < n:
         ch = sql[i]
-        if ch == "'":
+        if ch == "[":
+            # T-SQL bracket-quoted identifier (e.g. [Owner's Name]): a `'` inside
+            # is part of the name, not a string-literal start. Copy through to the
+            # matching ']' so a real `;` terminator after it is not swallowed.
+            j = sql.find("]", i + 1)
+            end = n if j == -1 else j + 1
+            buf.append(sql[i:end])
+            i = end
+        elif ch == "'":
             j = i + 1
             while j < n:
                 if sql[j] == "'":

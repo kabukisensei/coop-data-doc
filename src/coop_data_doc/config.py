@@ -306,7 +306,7 @@ repos:
 {layers_block}
 
 # Schemas to drop entirely (never documented). System schemas (sys,
-# information_schema, tempdb, db_*) are always dropped automatically.
+# information_schema, tempdb, guest, db_*) are always dropped automatically.
 ignore_schemas: {ignore_schemas}
 
 # Optional company branding for the HTML site (logo/favicon paths relative

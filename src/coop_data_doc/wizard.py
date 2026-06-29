@@ -376,8 +376,20 @@ def _autosuggest_mappings(
                 )
             if not chosen:
                 break
+            new_remaining = [obj for obj in remaining if chosen not in obj_schemas.get(obj, ())]
+            if len(new_remaining) == len(remaining):
+                # A manually-typed schema that covers none of the remaining
+                # tables makes no progress: re-prompting would loop forever and
+                # appending it would pollute the config with a bogus mapping.
+                # Warn and stop rather than spin.
+                print(
+                    f"  • {label}: schema '{chosen}' covers none of the remaining "
+                    f"{len(remaining)} table(s); left unresolved.",
+                    file=sys.stderr,
+                )
+                break
             mappings.append((chosen, label))
-            remaining = [obj for obj in remaining if chosen not in obj_schemas.get(obj, ())]
+            remaining = new_remaining
 
     # verify re-scan: re-run with the new mappings so the user knows they took
     print("\n  Re-checking with your mappings…", file=sys.stderr)

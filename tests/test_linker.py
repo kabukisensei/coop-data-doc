@@ -183,6 +183,18 @@ def test_cache_file_stable(tmp_path: Path):
     assert list(reloaded.mappings) == ["a", "b"]
 
 
+def test_cache_writes_non_ascii_identifiers_literally(tmp_path: Path):
+    """Non-ASCII cache keys (e.g. café.ñoño from a Unicode table name) must be
+    written literally, not \\uXXXX-escaped, matching serialize.to_json_str's
+    ensure_ascii=False so the committed cache stays readable/diffable."""
+    cache = cache_at(tmp_path)
+    cache.put("café.ñoño", CacheEntry(target="view:café.ñoño", method="interactive"))
+    cache.write()
+    raw = cache.path.read_text(encoding="utf-8")
+    assert "café.ñoño" in raw
+    assert "\\u" not in raw  # no escaped Unicode
+
+
 def test_unknown_cache_version_ignored(tmp_path: Path):
     path = tmp_path / ".lineage-cache.json"
     path.write_text('{"version": 99, "mappings": {"x": {"target": null, "method": "skip"}}}')

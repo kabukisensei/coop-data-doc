@@ -98,34 +98,47 @@ def crawl(config: Config) -> tuple[FileInventory, list[ParseWarning]]:
         repo = config.repos[repo_key]
         root = config.repo_root(repo_key)
         for path in sorted(root.rglob("*")):
-            if not path.is_file():
-                continue
             rel = path.relative_to(root).as_posix()
-            # hidden dirs/files (.git, .pbi caches, .lineage-cache.json)
-            if any(part.startswith(".") for part in rel.split("/")):
-                continue
-            if path.is_symlink() and not path.resolve().is_relative_to(root):
+            try:
+                if not path.is_file():
+                    continue
+                # hidden dirs/files (.git, .pbi caches, .lineage-cache.json)
+                if any(part.startswith(".") for part in rel.split("/")):
+                    continue
+                if path.is_symlink() and not path.resolve().is_relative_to(root):
+                    warnings.append(
+                        ParseWarning(
+                            file=rel,
+                            message=f"symlink resolves outside repo '{repo_key}'; skipped",
+                            category="symlink_escape",
+                        )
+                    )
+                    continue
+                if not _matches(rel, repo.include) or _matches(rel, repo.exclude):
+                    continue
+                kind = _classify(rel)
+                if kind is None:
+                    warnings.append(
+                        ParseWarning(
+                            file=rel,
+                            message="included by globs but not a recognized file kind; skipped",
+                            category="unclassified_file",
+                        )
+                    )
+                    continue
+                size = path.stat().st_size
+            except OSError as exc:
+                # locked, permission-denied, or deleted/disconnected between
+                # enumeration and stat (e.g. a .pbix held by Power BI Desktop or
+                # OneDrive on Windows): degrade to a warning, never abort the build.
                 warnings.append(
                     ParseWarning(
                         file=rel,
-                        message=f"symlink resolves outside repo '{repo_key}'; skipped",
-                        category="symlink_escape",
+                        message=f"could not access file ({exc}); skipped",
+                        category="file_unreadable",
                     )
                 )
                 continue
-            if not _matches(rel, repo.include) or _matches(rel, repo.exclude):
-                continue
-            kind = _classify(rel)
-            if kind is None:
-                warnings.append(
-                    ParseWarning(
-                        file=rel,
-                        message="included by globs but not a recognized file kind; skipped",
-                        category="unclassified_file",
-                    )
-                )
-                continue
-            size = path.stat().st_size
             if size > MAX_FILE_BYTES and kind is not FileKind.PBIX:
                 warnings.append(
                     ParseWarning(

@@ -414,6 +414,32 @@ def test_init_force_overwrites_valid_config(tmp_path: Path):
     assert "Wrote" in result.output
 
 
+def test_config_set_malformed_patch_friendly_error(tmp_path: Path):
+    """A valid-JSON-but-wrong-shape patch (e.g. {"output": null}) must produce a
+    friendly one-line ClickException, not a leaked TypeError/AttributeError/
+    KeyError traceback. catch_exceptions=False means a leaked non-Click exception
+    would fail this test."""
+    import os
+
+    runner = CliRunner()
+    old = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        for patch in (
+            '{"output": null}',
+            '{"repos": []}',
+            '{"layers": []}',
+            '{"schema_mappings": [{"schema": "x"}]}',
+        ):
+            result = runner.invoke(
+                cli, ["config-set", "--from-json", "-"], input=patch, obj={}, catch_exceptions=False
+            )
+            assert result.exit_code != 0
+            assert "patch produced an invalid config" in result.output
+    finally:
+        os.chdir(old)
+
+
 # a lineage cache that fully resolves the fixtures' ambiguous cross-repo refs,
 # so interactive runs (interactive=True) never stop to prompt in tests
 _FULL_CACHE = (

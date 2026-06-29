@@ -30,8 +30,8 @@ The original builder briefs live in `tasks/` and double as interface documentati
    (`upgrade.py`), which checks PyPI/git for tool and dependency updates —
    nothing in the pipeline may import it.
 3. **Parsers are pure.** No printing or exiting outside `cli.py`,
-   `wizard.py`, and `linker/interactive.py`; warnings are returned as
-   `ParseWarning` values. Parsers/renderers may accept an optional
+   `wizard.py`, `progress.py`, and `linker/interactive.py`; warnings are
+   returned as `ParseWarning` values. Parsers/renderers may accept an optional
    `on_file`/`on_node` callback for progress reporting (the CLI supplies
    it) — that's a reporting hook, not printing; the parser never renders.
 4. **Page filenames go through `slug()`** (`render/mermaid.py`): always
@@ -58,8 +58,10 @@ ruff check src tests
 
 ## Releasing
 
-Bump the version in **both** `pyproject.toml` and `src/coop_data_doc/__init__.py`
-on every release. This is mandatory: `coop-data-doc upgrade` is **version-gated** —
+Bump the version in `src/coop_data_doc/__init__.py` on every release — that is the
+single source of truth. `pyproject.toml` uses dynamic versioning
+(`[tool.hatch.version]`) and derives its version from `__version__`, so there is no
+version field there to edit. This is mandatory: `coop-data-doc upgrade` is **version-gated** —
 `pipx upgrade` only installs when the version number increased — so shipping code
 changes under an unchanged version makes users' upgrade silently report "already at
 latest" and skip them. PyPI releases are immutable, so a version is never reused.

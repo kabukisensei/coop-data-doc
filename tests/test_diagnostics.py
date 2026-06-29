@@ -39,6 +39,26 @@ def test_diagnostics_markdown_and_json():
     assert blob["issues"][0]["category"] == "dynamic_sql"
 
 
+def test_markdown_escapes_pipes_in_cells():
+    """A literal '|' in a file/message cell (e.g. a Power BI object/page name)
+    must be escaped so it can't break the rendered Markdown table row."""
+    d = Diagnostics(
+        warnings=[
+            ParseWarning(
+                file="page 'A|B'",
+                message="unparseable visual config on page 'A|B'",
+                category="pbir_parse",
+            )
+        ],
+        unresolved=[],
+    )
+    md = d.to_markdown("Estate")
+    row = next(line for line in md.splitlines() if line.startswith("| page"))
+    # exactly two cells -> three '|' separators after escaping the literals
+    assert row.count("|") - row.count("\\|") == 3
+    assert "\\|" in row  # the literal pipes were escaped
+
+
 def test_no_issues():
     d = Diagnostics(warnings=[], unresolved=[])
     assert d.console_lines() == ["No issues found."]
