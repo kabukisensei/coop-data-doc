@@ -104,13 +104,22 @@ def run_pipeline(
     dropped = prune_schemas(graph, config.ignore_schemas)
     if dropped:
         progress.line(f"Dropped {dropped} objects in ignored/system schemas")
-    warnings += assign_layers(graph, config)
+    with progress.spinner("Assigning layers"):
+        warnings += assign_layers(graph, config)
 
     if dropped:
         _log.debug("pruned %d nodes in system/ignored schemas", dropped)
-    progress.line("Linking cross-repo references…")
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
-    result, link_warnings = link_graph(graph, config, cache, interactive, pending_out=pending_out)
+    # A spinner (not just a static line) so this stage — the fuzzy cross-repo
+    # matcher, previously silent — visibly shows activity on a large estate.
+    # Only when non-interactive: an interactive link_graph prompts via
+    # questionary, and a spinner thread writing to stderr would corrupt it.
+    if interactive:
+        progress.line("Linking cross-repo references…")
+        result, link_warnings = link_graph(graph, config, cache, interactive, pending_out=pending_out)
+    else:
+        with progress.spinner("Linking cross-repo references"):
+            result, link_warnings = link_graph(graph, config, cache, interactive, pending_out=pending_out)
     warnings += link_warnings
     # reports become downstream of their models, then visuals fold into pages
     link_reports_to_models(graph)

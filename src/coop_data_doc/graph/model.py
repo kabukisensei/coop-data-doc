@@ -208,14 +208,22 @@ class LineageGraph(BaseModel):
             if edge.target_id == node_id:
                 edge.target_id = new_id
         # the in-place rewrite can collide a rewritten edge with an existing
-        # identical (source, target, type) edge; rebuild through the idempotent
-        # adder so duplicates merge (and self-edges drop), mirroring
-        # resolve_stub_references.
-        edges = self.edges
-        self.edges = []
-        for edge in edges:
-            if edge.source_id != edge.target_id:
-                self.add_edge(edge)
+        # identical (source, target, type) edge; dedup so duplicates merge (and
+        # self-edges drop), mirroring resolve_stub_references. Done in a single
+        # O(E) pass via a key->edge map (NOT a rebuild through add_edge, which
+        # rescans all edges per insert and made this O(E²) — the pass is called
+        # once per retyped table, so assign_layers was O(tables × edges²) and
+        # could stall for minutes on a real estate).
+        deduped: dict[tuple[str, str, str], Edge] = {}
+        for edge in self.edges:
+            if edge.source_id == edge.target_id:
+                continue  # self-edge created by the rewrite: drop it
+            kept = deduped.get(edge.key())
+            if kept is None:
+                deduped[edge.key()] = edge
+            elif not kept.evidence and edge.evidence:
+                kept.evidence = edge.evidence  # backfill evidence, like add_edge
+        self.edges = list(deduped.values())
         # merge if a node with the new id already existed
         return self.add_node(node).id
 
