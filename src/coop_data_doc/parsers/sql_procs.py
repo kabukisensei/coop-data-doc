@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+import sqlglot
 from sqlglot import exp
 
 from coop_data_doc.config import ParseWarning
@@ -29,6 +30,7 @@ from coop_data_doc.parsers.sql_common import (
     EXEC_RE,
     PROC_HEADER_RE,
     StatementLineage,
+    blank_comments_and_strings,
     collect_source_tables,
     is_temp_table,
     original_name,
@@ -55,27 +57,37 @@ _USABLE = (exp.Insert, exp.Merge, exp.Update, exp.Delete, exp.Select, exp.Create
 
 
 def _find_proc(batch: str) -> tuple[str, str] | None:
-    """Return (qualified_name, body) if the batch creates a procedure."""
-    header = PROC_HEADER_RE.search(batch)
+    """Return (qualified_name, body) if the batch creates a procedure.
+
+    Header and body-AS detection run on a length-preserving scrub (comments
+    and strings blanked to spaces), so a header named in a doc comment can't
+    fake a proc and a paren inside a comment or string default can't corrupt
+    the depth count; the body is then sliced from the RAW batch at the same
+    offset (the scrub preserves offsets 1:1).
+    """
+    scrubbed = blank_comments_and_strings(batch)
+    header = PROC_HEADER_RE.search(scrubbed)
     if not header:
         return None
     # The body-introducing `AS` must be at top level (paren depth 0); an `AS`
     # inside a parenthesized parameter default — e.g. `@D = CAST(GETDATE() AS
     # DATE)` — must not be mistaken for it, which would slice the body
     # mid-parameter-list and corrupt the first statement's lineage.
-    as_match = _find_body_as(batch, header.end())
+    as_match = _find_body_as(scrubbed, header.end())
     if not as_match:
         return None
     return header.group(1), batch[as_match:]
 
 
-def _find_body_as(batch: str, start: int) -> int | None:
+def _find_body_as(scrubbed: str, start: int) -> int | None:
     """Index just after the top-level (paren-depth 0) `AS` that introduces the
     proc body, or None. Tracks parenthesis depth so an `AS` inside a
-    parenthesized parameter default is skipped."""
+    parenthesized parameter default is skipped. ``scrubbed`` must be
+    comment/string-blanked text (blank_comments_and_strings) — counting parens
+    on raw text lets `-- 1) rebuild` or N'(' corrupt the depth forever."""
     depth = 0
-    for match in _AS_RE.finditer(batch, start):
-        depth += batch.count("(", start, match.start()) - batch.count(")", start, match.start())
+    for match in _AS_RE.finditer(scrubbed, start):
+        depth += scrubbed.count("(", start, match.start()) - scrubbed.count(")", start, match.start())
         start = match.start()
         if depth == 0:
             return match.end()
@@ -143,10 +155,30 @@ def _extract_statement(statement: exp.Expression) -> tuple[StatementLineage, lis
             lineage.reads.discard(raw_target)  # the alias itself is not a table
 
     elif isinstance(statement, exp.Delete):
-        target = statement.this
-        if isinstance(target, exp.Table) and not is_temp_table(target):
-            lineage.writes.add(table_parts(target))
         lineage.reads |= collect_source_tables(statement)
+        # `DELETE alias FROM table AS alias …`: sqlglot puts the target
+        # token(s) in the `tables` arg as bare Table nodes — resolve each
+        # through the statement's aliases (mirroring the Update branch) and
+        # drop the raw alias tuple from reads so `dbo.o` never becomes a
+        # phantom node/edge. Plain `DELETE FROM t` has no `tables` arg and
+        # writes `this` as before.
+        targets = [t for t in statement.args.get("tables") or [] if isinstance(t, exp.Table)]
+        if targets:
+            aliases = _alias_map(statement)
+            for target in targets:
+                raw_target = table_parts(target)
+                schema, name = raw_target
+                if not target.text("db"):
+                    resolved = aliases.get(name)
+                    if resolved is not None:
+                        schema, name = resolved
+                if not is_temp_table(target):
+                    lineage.writes.add((schema, name))
+                lineage.reads.discard(raw_target)  # the alias itself is not a table
+        else:
+            target = statement.this
+            if isinstance(target, exp.Table) and not is_temp_table(target):
+                lineage.writes.add(table_parts(target))
 
     elif isinstance(statement, exp.Select):
         into = statement.args.get("into")
@@ -199,10 +231,24 @@ def parse_sql_procs(
     for entry in entries:
         if on_file:
             on_file(entry.path)
+        # encoding problems are warned about once per file by parse_sql_objects
+        # (the pipeline runs both parsers over the same entries), so no
+        # warnings list is passed here — that would duplicate the diagnostic.
         text = read_sql_file(entry)
         for batch in split_batches(text):
             found = _find_proc(batch)
             if found is None:
+                header = PROC_HEADER_RE.search(blank_comments_and_strings(batch))
+                if header:
+                    # a real header with no top-level body AS (truncated file,
+                    # unsupported layout): skipping must be loud, never silent
+                    warnings.append(
+                        ParseWarning(
+                            file=entry.path,
+                            message=(f"CREATE PROCEDURE {header.group(1)}: no body AS found — batch skipped"),
+                            category="proc_body_not_found",
+                        )
+                    )
                 continue
             raw_name, body = found
             schema, name = qualify(raw_name)
@@ -264,9 +310,14 @@ def parse_sql_procs(
                     )
                     continue
 
+                # RAISE, not IGNORE: a chunk sqlglot can't fully parse (e.g. a
+                # legacy semicolon-less multi-statement body, which IGNORE
+                # silently mangles into ONE statement, losing most lineage)
+                # must yield [] so it flows to the regex fallback below and is
+                # honestly flagged via parse_quality/regex_fallback.
                 usable = [
                     expression
-                    for expression in parse_batch(chunk, dialect)
+                    for expression in parse_batch(chunk, dialect, error_level=sqlglot.ErrorLevel.RAISE)
                     if isinstance(expression, _USABLE)
                 ]
                 if usable:

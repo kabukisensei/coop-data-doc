@@ -29,7 +29,12 @@ from coop_data_doc.linker.cache import LineageCache
 FUZZY_AUTO_ACCEPT = 0.92
 FUZZY_AMBIGUOUS = 0.6
 
-_SQL_TYPES = (NodeType.VIEW, NodeType.GOLD_TABLE, NodeType.SILVER_TABLE)
+# Node types a partition source can resolve against. Order matters: it is the
+# precedence _exact_match tries when several objects share schema.name, so
+# BRONZE_TABLE stays LAST (a curated view/gold/silver object wins over a raw
+# landing table). assign_layers retypes user-declared bronze schemas before
+# link_graph runs, so bronze must be here or those tables can never be linked.
+_SQL_TYPES = (NodeType.VIEW, NodeType.GOLD_TABLE, NodeType.SILVER_TABLE, NodeType.BRONZE_TABLE)
 
 
 class ResolutionResult(BaseModel):
@@ -194,7 +199,12 @@ def link_graph(
 
         scored = _fuzzy_candidates(candidates, item.schema_name, item.object_name)
         best_score = scored[0][1] if scored else 0.0
-        if best_score >= FUZZY_AUTO_ACCEPT:
+        runner_up = scored[1][1] if len(scored) > 1 else 0.0
+        # Auto-accept only an unambiguous winner: a dead tie with the runner-up
+        # is positive proof the source can't distinguish the candidates, and
+        # picking one alphabetically would be guessed lineage (hard rule 4).
+        # Ties fall through to the ambiguous/interactive band below.
+        if best_score >= FUZZY_AUTO_ACCEPT and runner_up < best_score:
             _apply(graph, item, scored[0][0], "fuzzy", result)
             warnings.append(
                 ParseWarning(

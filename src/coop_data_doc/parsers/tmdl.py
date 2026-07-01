@@ -26,7 +26,7 @@ from coop_data_doc.graph.model import (
 )
 from coop_data_doc.parsers.dax import link_measures
 from coop_data_doc.parsers.mcode import extract_source
-from coop_data_doc.parsers.sql_common import collect_source_tables, parse_batch
+from coop_data_doc.parsers.sql_common import collect_source_tables, decode_text, parse_batch
 
 _TABLE_RE = re.compile(r"^table\s+(.+?)\s*$")
 _MEASURE_RE = re.compile(r"^measure\s+('[^']*'|\"[^\"]*\"|\S+)\s*=\s*(.*)$")
@@ -111,6 +111,22 @@ def _attach_partition_source(
                 "object": name,
                 "raw_kind": "native_query",
             }
+            return
+        if not tables:
+            # zero extractable tables (ODBC {CALL}, non-T-SQL passthrough,
+            # broken SQL): the source exists but can't be statically traced —
+            # mark it unresolved and warn, never leave the table looking
+            # healthy with no upstream (hard rule 4)
+            table_node.metadata["partition_source_unresolved"] = True
+            warnings.append(
+                ParseWarning(
+                    file=source_file,
+                    message=(
+                        f"native query of {table_node.name} could not be analyzed — no source tables found"
+                    ),
+                    category="unresolved_partition_source",
+                )
+            )
             return
     if ref is not None and ref.raw_kind == "static":
         # inline/calculation/parameter table — no database lineage by design
@@ -496,6 +512,20 @@ def parse_tmdl(
             except OSError as exc:
                 warnings.append(ParseWarning(file=entry.path, message=str(exc), category="tmdl_parse"))
                 continue
+            if "\x00" in text:
+                # BOM-less UTF-16 or binary: the line parser would silently
+                # find nothing in NUL-interleaved text — warn and skip instead
+                warnings.append(
+                    ParseWarning(
+                        file=entry.path,
+                        message=(
+                            "file does not decode as UTF-8/UTF-16 text (NULs remain — "
+                            "likely UTF-16 without BOM or binary); re-save as UTF-8"
+                        ),
+                        category="encoding_unreadable",
+                    )
+                )
+                continue
             basename = PurePosixPath(entry.path).name.lower()
             # Relationships are serialized in model.tmdl (older style) or a
             # dedicated relationships.tmdl (current default) — parse both.
@@ -511,4 +541,6 @@ def parse_tmdl(
 
 
 def _read(entry: FileEntry) -> str:
-    return Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace")
+    """Read a TMDL file tolerantly (BOM-aware — UTF-8/16/32 — replacement on
+    bad bytes), same policy as the SQL reader."""
+    return decode_text(Path(entry.abs_path).read_bytes())

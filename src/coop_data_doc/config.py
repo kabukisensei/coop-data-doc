@@ -210,6 +210,13 @@ class Config(BaseModel):
             raise ConfigError(f"Config file not found: {path}. Run `coop-data-doc init` to create one.")
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError as exc:
+            # e.g. PowerShell 5.1's `>` redirect writes UTF-16LE; keep the
+            # contract of a user-printable ConfigError, never a raw traceback
+            raise ConfigError(
+                f"{path} is not UTF-8 text (was it saved as UTF-16, e.g. by a PowerShell "
+                "`>` redirect?). Re-save the file as UTF-8 and retry."
+            ) from exc
         except yaml.YAMLError as exc:
             mark = getattr(exc, "problem_mark", None)
             where = f" (line {mark.line + 1})" if mark is not None else ""

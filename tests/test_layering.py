@@ -132,3 +132,42 @@ def test_prune_leaves_pbi_nodes_alone():
     dropped = prune_schemas(g, [])
     assert dropped == 0
     assert "pbi_table:sys.metrics" in g.nodes
+
+
+def test_prune_matches_multipart_cross_db_schemas():
+    # cross-db reads carry multi-part schemas ("otherdb.sys",
+    # "linkedsrv.otherdb.staging"); pruning must key on the final segment
+    # (the actual schema) so catalog noise and ignored schemas are dropped
+    # wherever the database lives
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "dbo", "fact_sales")  # kept
+    node(g, NodeType.GOLD_TABLE, "otherdb.sys", "objects")  # cross-db system → dropped
+    node(g, NodeType.SILVER_TABLE, "linkedsrv.otherdb.staging", "raw")  # ignored schema → dropped
+    node(g, NodeType.GOLD_TABLE, "otherdb.db_datareader", "x")  # cross-db db_* role → dropped
+    node(g, NodeType.GOLD_TABLE, "otherdb.dbo", "customers")  # cross-db user data → kept
+    dropped = prune_schemas(g, ["staging"])
+    assert dropped == 3
+    assert set(g.nodes) == {"gold_table:dbo.fact_sales", "gold_table:otherdb.dbo.customers"}
+
+
+def test_prune_full_multipart_schema_in_ignore_list():
+    # a user can ignore one specific database's schema without ignoring the
+    # same-named schema locally
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "otherdb.audit", "log")  # ignored exactly → dropped
+    node(g, NodeType.GOLD_TABLE, "audit", "log")  # local audit schema → kept
+    dropped = prune_schemas(g, ["otherdb.audit"])
+    assert dropped == 1
+    assert set(g.nodes) == {"gold_table:audit.log"}
+
+
+def test_layer_path_glob_case_insensitive_all_platforms():
+    # deterministic cross-OS policy (mirrors crawler._matches): an uppercase
+    # source path still matches a lowercase layer glob on every platform
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "dbo", "dim_date", source_file="Warehouse/DIM/Dim_Date.SQL")
+    g.add_edge(
+        Edge(source_id="stored_proc:dbo.p", target_id="gold_table:dbo.dim_date", edge_type=EdgeType.WRITES)
+    )
+    assign_layers(g, cfg({"gold": LayerRule(paths=["**/dim/**"])}))
+    assert g.nodes["gold_table:dbo.dim_date"].metadata["layer"] == "gold"

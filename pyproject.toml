@@ -28,7 +28,10 @@ classifiers = [
 dependencies = [
     "pydantic>=2.5",
     "PyYAML>=6.0",
-    "sqlglot>=25.0",
+    # Floor at 26: the parser relies on the >=26 NotNullColumnConstraint
+    # `allow_null` semantics (25.x is inverted -> wrong column nullability).
+    # Cap below the next major past the verified one (30.x) to avoid silent breaks.
+    "sqlglot>=26,<31",
     "click>=8.1",
     "questionary>=2.0",
     "mkdocs>=1.6",

@@ -17,7 +17,10 @@
   (case-insensitive, multiline). Preserve original line numbers in a parallel structure if cheap.
 - `parse_batch(batch: str, dialect: str) -> list[sqlglot.Expression]` — wrap
   `sqlglot.parse(batch, read=dialect, error_level=sqlglot.ErrorLevel.IGNORE)`; filter Nones;
-  on exception return `[]` (caller falls back to regex).
+  on exception return `[]` (caller falls back to regex). *(Later change: gained an
+  `error_level` parameter — proc-body chunks parse with `ErrorLevel.RAISE` so
+  semicolon-less multi-statement chunks fall back to regex instead of being
+  silently mangled into one statement.)*
 - `table_name_parts(expr: sqlglot.exp.Table) -> tuple[str, str]` — return (schema, name),
   bracket-stripped lowercase, schema defaults to `"dbo"` when absent.
 - `collect_source_tables(expr) -> set[tuple[str, str]]` — every `exp.Table` under the

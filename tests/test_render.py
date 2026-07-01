@@ -923,6 +923,114 @@ def test_mkdocs_config_quotes_weird_project_name(tmp_path: Path):
     assert data["site_name"] == "Sales: FY26 # report"  # colon/# survived as a quoted scalar
 
 
+def test_model_description_script_tag_rendered_inert(tmp_path: Path):
+    # descriptions come from the semi-trusted estate being documented; raw
+    # HTML passes straight through python-markdown/mkdocs, so a <script> in a
+    # TMDL/BIM description would execute in every colleague's browser. It must
+    # be escaped to &lt;script&gt; at render time.
+    payload = "legit blurb <script>alert(1)</script>"
+    g = LineageGraph()
+    g.add_node(
+        make_node(
+            NodeType.PBI_TABLE,
+            "sales",
+            "orders",
+            display_name="orders",
+            metadata={"description": payload},
+        )
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "pbi_table:sales.orders").read_text(encoding="utf-8")
+    assert "<script>" not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert "legit blurb" in page  # plain text survives untouched
+
+
+def test_column_description_html_rendered_inert(tmp_path: Path):
+    # _cell keeps its pipe escaping AND neutralizes HTML in column descriptions
+    g = LineageGraph()
+    g.add_node(
+        make_node(
+            NodeType.GOLD_TABLE,
+            "dbo",
+            "fact",
+            columns=[Column(name="c", data_type="int", description="<img src=x onerror=alert(1)> a | b")],
+        )
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "gold_table:dbo.fact").read_text(encoding="utf-8")
+    assert "<img" not in page
+    assert "&lt;img src=x onerror=alert(1)&gt; a \\| b" in page  # escaped, pipe still escaped
+
+
+def test_h1_object_name_html_rendered_inert(tmp_path: Path):
+    # object names are model-supplied too; an <i>…</i> (or worse) in a display
+    # name must render literally in the H1, not as live markup
+    g = LineageGraph()
+    g.add_node(
+        Node(
+            id=Node.make_id(NodeType.PBI_TABLE, "m", "evil"),
+            node_type=NodeType.PBI_TABLE,
+            name="evil",
+            schema_name="m",
+            display_name="<img src=x onerror=alert(1)>",
+        )
+    )
+    g.add_node(
+        Node(
+            id=Node.make_id(NodeType.REPORT, "", "rpt"),
+            node_type=NodeType.REPORT,
+            name="rpt",
+            schema_name="",
+            display_name="Dash <script>x</script>",
+        )
+    )
+    render_markdown(g, tmp_path, "Test")
+    table_page = page_path(tmp_path, "pbi_table:m.evil").read_text(encoding="utf-8")
+    assert "# m.&lt;img src=x onerror=alert(1)&gt;" in table_page
+    report_page = page_path(tmp_path, "report:rpt").read_text(encoding="utf-8")
+    assert "# Dash &lt;script&gt;x&lt;/script&gt;" in report_page
+    assert "<script>" not in report_page
+
+
+def test_intent_block_saved_as_cp1252_does_not_crash_build(tmp_path: Path):
+    # the Business Intent block is hand-edited; a Windows ANSI editor saving a
+    # smart quote writes cp1252 bytes. The next build must carry the note
+    # forward (decoded via the cp1252 fallback), never crash with
+    # UnicodeDecodeError.
+    graph = build_graph()
+    render_markdown(graph, tmp_path, "Test Estate")
+    page = page_path(tmp_path, "view:sales.dim_customer")
+    text = page.read_text(encoding="utf-8")
+    custom = "Bob’s finance view – don’t drop"
+    text = text.replace(
+        "_Add a short description of what this object is for and who relies on it._",
+        custom,
+    )
+    page.write_bytes(text.encode("cp1252"))  # smart quote/en-dash as ANSI bytes
+
+    render_markdown(graph, tmp_path, "Test Estate")  # must not raise
+    regenerated = page.read_text(encoding="utf-8")
+    assert custom in regenerated  # note preserved, correctly decoded
+
+
+def test_intent_block_with_binary_garbage_does_not_crash_build(tmp_path: Path):
+    # bytes invalid in BOTH utf-8 and cp1252 (0x81/0x90 are unmapped in
+    # cp1252): the build must still regenerate the page best-effort
+    graph = build_graph()
+    render_markdown(graph, tmp_path, "Test Estate")
+    page = page_path(tmp_path, "view:sales.dim_customer")
+    text = page.read_text(encoding="utf-8")
+    head, _, tail = text.partition("_Add a short description")
+    garbage = head.encode("utf-8") + b"\x81\x90\xfe\xff" + ("_Add a short description" + tail).encode("utf-8")
+    page.write_bytes(garbage)
+
+    written = render_markdown(graph, tmp_path, "Test Estate")  # must not raise
+    assert page in written
+    regenerated = page.read_text(encoding="utf-8")
+    assert INTENT_BEGIN in regenerated and INTENT_END in regenerated
+
+
 def test_description_with_pipe_does_not_break_contract_table(tmp_path: Path):
     g = LineageGraph()
     g.add_node(

@@ -133,6 +133,28 @@ def test_dax_quoted_table_and_strings_ignored():
     assert tables == {"my table"}
 
 
+def test_dax_comment_marker_inside_string_does_not_corrupt_refs():
+    """'//' inside a string literal (URLs, doc links) must not be treated as a
+    comment: stripping it unbalances the quotes, hides real measure refs, and
+    leaks string contents as phantom table candidates."""
+    measures, tables = extract_refs(
+        'VAR url = "https://contoso.com/help"\n'
+        'VAR note = "see [Internal Note] for details"\n'
+        "RETURN [Total Sales] + 0"
+    )
+    assert measures == {"Total Sales"}
+    assert "Internal Note" not in measures
+    assert "see" not in tables and "return" not in tables
+
+
+def test_dax_escaped_quotes_and_keyword_before_bracket():
+    # a "" escape inside a string must not flip which text counts as code,
+    # and a keyword like RETURN before [X] is a measure ref, not table RETURN
+    measures, tables = extract_refs('VAR t = "say ""hi"" [Nope]" RETURN [Net Total]')
+    assert measures == {"Net Total"}
+    assert tables == set()
+
+
 # ---- TMDL model ------------------------------------------------------------
 
 
@@ -521,6 +543,93 @@ def test_tmdl_doc_comment_does_not_bleed_to_wrong_object(tmp_path):
     parse_table_file(tmdl, "Model", "semantic_model:model", _E(), g)
     cols = {c.name: c.description for c in g.nodes["pbi_table:model.sales"].columns}
     assert cols["region"] == ""  # the hierarchy's doc must not bleed onto region
+
+
+def test_strip_m_comments_preserves_url_strings():
+    from coop_data_doc.parsers.mcode import strip_m_comments
+
+    out = strip_m_comments('X = "https://a/b", // trailing comment\nY = 1')
+    assert '"https://a/b"' in out  # string survives intact
+    assert "trailing" not in out  # the real comment is still stripped
+
+
+def test_mcode_commented_out_as_database_is_not_a_source():
+    # a commented-out AnalysisServices.Database line must never win over the
+    # real Sql.Database navigation below it
+    ref, sqls = extract_source(
+        "let\n"
+        '    // Source = AnalysisServices.Database("powerbi://api/x", "OldModel"),\n'
+        '    Source = Sql.Database("srv", "gold"),\n'
+        '    d = Source{[Schema="dbo",Item="orders"]}[Data]\n'
+        "in d"
+    )
+    assert sqls == []
+    assert ref is not None and ref.raw_kind == "sql_database"
+    assert ref.schema_name == "dbo" and ref.object_name == "orders"
+
+
+def test_native_query_with_no_extractable_tables_flagged_unresolved():
+    """A Value.NativeQuery whose SQL yields zero real tables (ODBC {CALL},
+    non-T-SQL passthrough, broken SQL) cannot be traced — the table must be
+    marked unresolved and warned about, never left silently healthy-looking."""
+    from coop_data_doc.parsers.tmdl import parse_table_file
+
+    class _E:
+        path = "M.SemanticModel/definition/tables/proc_fed.tmdl"
+        repo_key = "powerbi"
+
+    for native in (
+        "{CALL dbo.usp_get_sales(2024)}",
+        "definitely not sql at all",
+    ):
+        g = LineageGraph()
+        tmdl = (
+            "table proc_fed\n"
+            "\tpartition proc_fed = m\n"
+            "\t\tmode: import\n"
+            "\t\tsource =\n"
+            '\t\t\tlet Source = Sql.Database("s", "db"), '
+            f'q = Value.NativeQuery(Source, "{native}") in q\n'
+        )
+        warnings = parse_table_file(tmdl, "M", "semantic_model:m", _E(), g)
+        node = g.nodes["pbi_table:m.proc_fed"]
+        assert node.metadata["native_query_tables"] == []
+        assert node.metadata.get("partition_source_unresolved") is True
+        assert any(w.category == "unresolved_partition_source" for w in warnings)
+
+
+def test_tmdl_utf16_with_bom_parsed(tmp_path):
+    import codecs
+
+    from coop_data_doc.parsers.tmdl import parse_tmdl
+
+    defn = tmp_path / "U16.SemanticModel" / "definition" / "tables"
+    defn.mkdir(parents=True)
+    tmdl = "table fact\n\tcolumn k\n\t\tdataType: int64\n"
+    (defn / "fact.tmdl").write_bytes(codecs.BOM_UTF16_LE + tmdl.encode("utf-16-le"))
+    config = Config(repos={"pbi": RepoConfig(path=str(tmp_path), include=["**/*.tmdl"])})
+    inventory, _ = crawl(config)
+    g = LineageGraph()
+    warnings = parse_tmdl(inventory.by_kind(FileKind.TMDL), g)
+    assert "pbi_table:u16.fact" in g.nodes
+    assert [c.name for c in g.nodes["pbi_table:u16.fact"].columns] == ["k"]
+    assert not any(w.category == "encoding_unreadable" for w in warnings)
+
+
+def test_tmdl_undecodable_file_warns_not_silent(tmp_path):
+    from coop_data_doc.parsers.tmdl import parse_tmdl
+
+    defn = tmp_path / "U16.SemanticModel" / "definition" / "tables"
+    defn.mkdir(parents=True)
+    tmdl = "table fact\n\tcolumn k\n"
+    (defn / "fact.tmdl").write_bytes(tmdl.encode("utf-16-le"))  # no BOM
+    config = Config(repos={"pbi": RepoConfig(path=str(tmp_path), include=["**/*.tmdl"])})
+    inventory, _ = crawl(config)
+    g = LineageGraph()
+    warnings = parse_tmdl(inventory.by_kind(FileKind.TMDL), g)
+    encoding = [w for w in warnings if w.category == "encoding_unreadable"]
+    assert len(encoding) == 1
+    assert "pbi_table:u16.fact" not in g.nodes  # nothing guessed from garbage
 
 
 def test_mcode_navigation_anchored_not_poisoned_by_let_step():

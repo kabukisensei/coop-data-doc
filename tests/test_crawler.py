@@ -159,6 +159,35 @@ def test_hidden_and_excluded_dirs_are_not_descended(tmp_path: Path, monkeypatch:
     assert warnings == []
 
 
+def test_glob_matching_is_case_insensitive_on_every_platform():
+    """fnmatch.fnmatch is case-insensitive on Windows (normcase folds) but
+    case-sensitive on POSIX, so the crawled file set — and therefore the docs —
+    differed per OS. The policy is uniform case-insensitivity everywhere:
+    _matches casefolds both sides itself, so the result below holds regardless
+    of the platform the suite runs on."""
+    assert crawler._matches("REPORT.SQL", ["**/*.sql"])  # uppercase file, lowercase glob
+    assert crawler._matches("report.sql", ["**/*.SQL"])  # lowercase file, uppercase glob
+    assert crawler._matches("Archive/old.sql", ["**/archive/**"])  # TitleCase folder
+    assert not crawler._matches("report.txt", ["**/*.sql"])  # still a real filter
+
+
+def test_crawl_uppercase_extension_and_titlecase_exclude_dir(tmp_path: Path):
+    # Windows-authored repos routinely carry REPORT.SQL and Archive/: the
+    # include must catch the former and the exclude must prune the latter,
+    # identically on every OS (regression: both flipped per-platform).
+    repo = tmp_path / "repo"
+    (repo / "Archive").mkdir(parents=True)
+    (repo / "Archive" / "old.sql").write_text("SELECT 1;", encoding="utf-8")
+    (repo / "REPORT.SQL").write_text("SELECT 1;", encoding="utf-8")
+    config = Config(
+        repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"], exclude=["**/archive/**"])}
+    )
+    inventory, warnings = crawl(config)
+    assert [entry.path for entry in inventory.entries] == ["REPORT.SQL"]
+    assert [entry.kind for entry in inventory.entries] == [FileKind.SQL_FILE]
+    assert warnings == []
+
+
 def test_narrow_exclude_still_crawls_dir_and_keeps_other_files(tmp_path: Path):
     """A narrow exclude (not a whole-subtree pattern) must NOT prune the dir:
     the excluded file is dropped per-file, siblings are still crawled."""

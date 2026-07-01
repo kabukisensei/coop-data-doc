@@ -58,13 +58,23 @@ _PBIR_PAGE_RE = re.compile(r"definition/pages/[^/]+/page\.json$")
 
 
 def _matches(rel_posix: str, patterns: list[str]) -> bool:
+    # Deterministic cross-OS policy: globs match case-INSENSITIVELY on every
+    # platform. fnmatch.fnmatch defers to os.path.normcase, which folds case
+    # on Windows but not on POSIX — so the same repo would crawl a different
+    # file set per OS (an uppercase REPORT.SQL silently skipped on Linux CI
+    # but documented on a Windows dev box), breaking the cross-OS byte-identity
+    # guarantee. Uniform insensitivity is the Windows-first-friendly choice:
+    # casefold both sides ourselves and use fnmatchcase (which never normcases).
+    #
     # fnmatch's '*' crosses '/', but '**/*.sql' still requires at least one
     # slash — also try the pattern with a leading '**/' stripped so
     # top-level files match the way users expect from glob syntax.
+    name = rel_posix.casefold()
     for pattern in patterns:
-        if fnmatch.fnmatch(rel_posix, pattern):
+        folded = pattern.casefold()
+        if fnmatch.fnmatchcase(name, folded):
             return True
-        if pattern.startswith("**/") and fnmatch.fnmatch(rel_posix, pattern[3:]):
+        if folded.startswith("**/") and fnmatch.fnmatchcase(name, folded[3:]):
             return True
     return False
 

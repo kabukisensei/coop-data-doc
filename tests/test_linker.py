@@ -251,6 +251,163 @@ def test_is_no_terminal_error_detection():
     assert not interactive._is_no_terminal_error(KeyboardInterrupt())
 
 
+def test_exact_match_resolves_bronze_table(tmp_path: Path):
+    # assign_layers retypes tables in user-declared bronze schemas to
+    # BRONZE_TABLE before link_graph runs; a PBI table loading such a raw
+    # table must still resolve via the exact rung (regression: _SQL_TYPES
+    # omitted BRONZE_TABLE, so the item stayed permanently unresolved).
+    graph = LineageGraph()
+    graph.add_node(make_node(NodeType.BRONZE_TABLE, "erp_orders", "sales_orders"))
+    pbi_table(graph, "sales orders", "erp_orders", "sales_orders")
+    result, _ = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
+
+    assert result.methods == {"exact": 1}
+    assert result.unresolved == []
+    assert (
+        "bronze_table:erp_orders.sales_orders",
+        f"pbi_table:{MODEL_KEY}.sales orders",
+        "feeds",
+    ) in edge_keys(graph)
+
+
+def test_exact_match_prefers_view_over_bronze_table(tmp_path: Path):
+    # BRONZE_TABLE sits LAST in _SQL_TYPES: when a view and a bronze table
+    # share schema.name, the view keeps precedence in the exact rung.
+    graph = LineageGraph()
+    graph.add_node(make_node(NodeType.BRONZE_TABLE, "erp_orders", "sales_orders"))
+    graph.add_node(make_node(NodeType.VIEW, "erp_orders", "sales_orders"))
+    pbi_table(graph, "sales orders", "erp_orders", "sales_orders")
+    result, _ = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
+
+    assert result.methods == {"exact": 1}
+    assert (
+        "view:erp_orders.sales_orders",
+        f"pbi_table:{MODEL_KEY}.sales orders",
+        "feeds",
+    ) in edge_keys(graph)
+
+
+def _tie_graph() -> LineageGraph:
+    """Two SQL candidates scoring an identical fuzzy ratio (a dead tie) for
+    one PBI table: dbo.fact_sales_2023 vs {fact_sales_2022, fact_sales_2024}."""
+    graph = LineageGraph()
+    graph.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "fact_sales_2022"))
+    graph.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "fact_sales_2024"))
+    pbi_table(graph, "sales", "dbo", "fact_sales_2023")
+    return graph
+
+
+def test_fuzzy_dead_tie_never_auto_accepted(tmp_path: Path):
+    # Two candidates at the same >=0.92 score is positive proof the source
+    # can't distinguish them — auto-accepting one is a coin flip broken
+    # alphabetically, i.e. guessed lineage (hard rule 4). The item must land
+    # in the unresolved/ambiguous band instead.
+    graph = _tie_graph()
+    result, _ = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
+
+    assert "fuzzy" not in result.methods
+    assert result.unresolved == [f"pbi_table:{MODEL_KEY}.sales"]
+    assert graph.nodes[f"pbi_table:{MODEL_KEY}.sales"].metadata["unresolved"] is True
+    assert edge_keys(graph) == set()  # no coin-flip feeds edge
+
+
+def test_fuzzy_dead_tie_routes_to_ambiguous_candidates(tmp_path: Path):
+    # In collect mode the tie surfaces as an ambiguous item carrying BOTH
+    # tied candidates, so a human/agent makes the call.
+    graph = _tie_graph()
+    pending: list = []
+    result, _ = link_graph(
+        graph, make_config(), cache_at(tmp_path), interactive_mode=True, pending_out=pending
+    )
+
+    assert "fuzzy" not in result.methods
+    assert len(pending) == 1
+    targets = {c["target"] for c in pending[0]["candidates"]}
+    assert {"gold_table:dbo.fact_sales_2022", "gold_table:dbo.fact_sales_2024"} <= targets
+
+
+def test_fuzzy_clear_winner_still_auto_accepted(tmp_path: Path):
+    # the tie guard must not break the documented >=0.92 auto-accept rung
+    # when the best score strictly beats the runner-up
+    graph = LineageGraph()
+    graph.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "fact_sales_2023"))
+    graph.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "fact_sales_2024"))
+    pbi_table(graph, "sales", "dbo", "fact_sales_20231")
+    result, warnings = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
+
+    assert result.methods == {"fuzzy": 1}
+    assert any(w.category == "fuzzy_auto" for w in warnings)
+    assert (
+        "gold_table:dbo.fact_sales_2023",
+        f"pbi_table:{MODEL_KEY}.sales",
+        "feeds",
+    ) in edge_keys(graph)
+
+
+def multi_native_graph() -> LineageGraph:
+    """A PBI table backed by a two-table Value.NativeQuery join — the only
+    producer of composite '#' cache keys."""
+    graph = LineageGraph()
+    graph.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "orders"))
+    graph.add_node(make_node(NodeType.GOLD_TABLE, "dbo", "order_lines"))
+    node = Node(
+        id=Node.make_id(NodeType.PBI_TABLE, MODEL, "combo"),
+        node_type=NodeType.PBI_TABLE,
+        name="combo",
+        schema_name=MODEL_KEY,
+        metadata={
+            "partition_source": {"schema": "", "object": "", "raw_kind": "native_query"},
+            "native_query_tables": ["dbo.order_lines", "dbo.orders"],
+        },
+    )
+    graph.add_node(node)
+    return graph
+
+
+def test_multi_table_native_query_resolves_each_table(tmp_path: Path):
+    # the composite-key branch: one _Item per table, each resolving exactly,
+    # producing one feeds edge per source table onto the same pbi_table
+    graph = multi_native_graph()
+    result, _ = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
+
+    assert result.methods == {"exact": 2}
+    assert result.unresolved == []
+    keys = edge_keys(graph)
+    assert ("gold_table:dbo.orders", f"pbi_table:{MODEL_KEY}.combo", "feeds") in keys
+    assert ("gold_table:dbo.order_lines", f"pbi_table:{MODEL_KEY}.combo", "feeds") in keys
+
+
+def test_multi_table_native_query_composite_cache_keys_round_trip(tmp_path: Path):
+    # composite '#' keys flow through the cache: an interactive-style answer
+    # stored under a composite key is honored on the next run, and a stale
+    # composite key is pruned (not crashed on)
+    node_id = f"pbi_table:{MODEL_KEY}.combo"
+    cache = cache_at(tmp_path)
+    cache.put(f"{node_id}#dbo.orders", CacheEntry(target="gold_table:dbo.orders", method="interactive"))
+    cache.put(f"{node_id}#dbo.gone", CacheEntry(target="view:dbo.vanished", method="interactive"))
+    cache.write()
+
+    graph = multi_native_graph()
+    result, warnings = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
+
+    assert result.methods == {"cache": 1, "exact": 1}  # orders from cache, order_lines exact
+    assert any(w.category == "cache_pruned" for w in warnings)  # stale composite key dropped
+    keys = edge_keys(graph)
+    assert ("gold_table:dbo.orders", node_id, "feeds") in keys
+    assert ("gold_table:dbo.order_lines", node_id, "feeds") in keys
+
+
+def test_multi_table_native_query_unresolved_uses_composite_key(tmp_path: Path):
+    # when one of the joined tables has no SQL node, the unresolved marker
+    # carries the composite key so `resolve`/`resolve-apply` can target it
+    graph = multi_native_graph()
+    del graph.nodes["gold_table:dbo.order_lines"]
+    result, _ = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
+
+    assert result.methods == {"exact": 1}
+    assert result.unresolved == [f"pbi_table:{MODEL_KEY}.combo#dbo.order_lines"]
+
+
 def test_collect_mode_records_candidates_without_prompting(tmp_path: Path, monkeypatch):
     # pending_out -> record each ambiguous item + its candidates, leave unresolved,
     # and never prompt (the `resolve` command path).

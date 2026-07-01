@@ -7,6 +7,7 @@ T-SQL constructs it can't parse (cursors, WHILE blocks, etc.).
 
 from __future__ import annotations
 
+import codecs
 import re
 from dataclasses import dataclass, field
 
@@ -68,15 +69,43 @@ def strip_bom(text: str) -> str:
     return text.lstrip("﻿")
 
 
+def decode_text(data: bytes) -> str:
+    """Decode file bytes tolerantly, BOM-aware.
+
+    UTF-16/UTF-32 BOMs (SSMS's 'Save with Encoding' Unicode default is UTF-16)
+    are honored; everything else decodes as utf-8-sig with replacement, so a
+    file never raises here. Callers should treat NULs surviving in the result
+    (BOM-less UTF-16, binary) as unreadable and warn — never stay silent.
+    """
+    # UTF-32-LE's BOM starts with UTF-16-LE's, so check the wider one first.
+    if data.startswith(codecs.BOM_UTF32_LE) or data.startswith(codecs.BOM_UTF32_BE):
+        return data.decode("utf-32", errors="replace")
+    if data.startswith(codecs.BOM_UTF16_LE) or data.startswith(codecs.BOM_UTF16_BE):
+        return data.decode("utf-16", errors="replace")
+    return data.decode("utf-8-sig", errors="replace")
+
+
 def split_batches(sql_text: str) -> list[str]:
     """Split a script on GO separators into trimmed, non-empty batches."""
     return [batch.strip() for batch in GO_RE.split(strip_bom(sql_text)) if batch.strip()]
 
 
-def parse_batch(batch: str, dialect: str = "tsql") -> list[exp.Expression]:
-    """sqlglot.parse with errors ignored; returns [] instead of raising."""
+def parse_batch(
+    batch: str,
+    dialect: str = "tsql",
+    *,
+    error_level: sqlglot.ErrorLevel = sqlglot.ErrorLevel.IGNORE,
+) -> list[exp.Expression]:
+    """sqlglot.parse that returns [] instead of raising.
+
+    ``error_level`` defaults to IGNORE (best-effort partial parse). Pass
+    ``sqlglot.ErrorLevel.RAISE`` when a partial parse would be worse than no
+    parse — e.g. a semicolon-less multi-statement proc chunk, which IGNORE
+    silently mangles into one statement; RAISE turns it into [] so the caller
+    can fall back to the (honestly flagged) regex layer instead.
+    """
     try:
-        parsed = sqlglot.parse(batch, read=dialect, error_level=sqlglot.ErrorLevel.IGNORE)
+        parsed = sqlglot.parse(batch, read=dialect, error_level=error_level)
     except Exception:
         return []
     return [expression for expression in parsed if expression is not None]
@@ -119,6 +148,56 @@ def scrub(sql: str, *, strip_strings: bool) -> str:
             out.append(ch)
             i += 1
     return "".join(out)
+
+
+def blank_comments_and_strings(sql: str) -> str:
+    """Length-preserving scrub: comments and string literals are overwritten
+    with spaces (newlines kept), so every offset maps 1:1 back into the raw
+    text. Used where a *position* found on clean text must be applied to the
+    original — e.g. locating a proc body's top-level AS without parens inside
+    comments/string defaults corrupting the depth count.
+    """
+    chars = list(sql)
+    n = len(sql)
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, b):
+            if chars[k] != "\n":
+                chars[k] = " "
+
+    i = 0
+    while i < n:
+        ch = sql[i]
+        if ch == "[":
+            # bracket-quoted identifier: copy through (a `'` inside is part of
+            # the name, not a string start), same as scrub/split_statements
+            j = sql.find("]", i + 1)
+            i = n if j == -1 else j + 1
+        elif ch == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":
+                        j += 2
+                        continue
+                    break
+                j += 1
+            end = min(j + 1, n)
+            blank(i, end)
+            i = end
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            end = n if j == -1 else j
+            blank(i, end)
+            i = end
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i)
+            end = n if j == -1 else j + 2
+            blank(i, end)
+            i = end
+        else:
+            i += 1
+    return "".join(chars)
 
 
 def split_statements(sql: str) -> list[str]:
@@ -223,19 +302,36 @@ def qualify(raw: str) -> tuple[str, str]:
     Respects bracket/quote structure before splitting on '.', so a bracketed
     name containing a literal dot (`[my.proc]`, `[dbo].[my.weird.table]`) keeps
     that dot in the object name rather than being split apart.
+
+    Cross-database qualifiers are preserved, not collapsed: a 3-part
+    'OtherDb.dbo.t' becomes ('otherdb.dbo', 't') and a 4-part linked-server
+    'SRV.OtherDb.dbo.t' becomes ('srv.otherdb.dbo', 't'), so an object in
+    another database can never share a node id with (and silently steal the
+    lineage of) the local schema.name object. table_parts applies the same
+    policy to sqlglot Tables.
     """
     parts = [p.lower() for p in _ident_parts(raw)]
     if not parts:
         return ("dbo", "")
     name = parts[-1]
-    schema = parts[-2] if len(parts) >= 2 else "dbo"  # drop db part of db.schema.name
-    return (schema or "dbo", name)
+    schema = ".".join(parts[:-1]) or "dbo"
+    return (schema, name)
 
 
 def table_parts(table: exp.Table) -> tuple[str, str]:
-    """(schema, name) for a sqlglot Table, lowercased, defaulting to dbo."""
-    schema = normalize_identifier(table.text("db")) or "dbo"
-    return (schema, normalize_identifier(table.name))
+    """(schema, name) for a sqlglot Table, lowercased, defaulting to dbo.
+
+    Every qualifier (linked server, database, schema) is kept in the schema
+    part — same policy as qualify() — so cross-database reads get their own
+    node ids instead of being conflated with local objects.
+    """
+    parts = [normalize_identifier(part.name) for part in table.parts]
+    parts = [p for p in parts if p]
+    if not parts:
+        return ("dbo", "")
+    name = parts[-1]
+    schema = ".".join(parts[:-1]) or "dbo"
+    return (schema, name)
 
 
 def cte_names(expression: exp.Expression) -> set[str]:

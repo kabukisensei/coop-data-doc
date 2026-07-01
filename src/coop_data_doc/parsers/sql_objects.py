@@ -23,10 +23,12 @@ from coop_data_doc.parsers.sql_common import (
     _IDENT,
     PROC_HEADER_RE,
     collect_source_tables,
+    decode_text,
     original_name,
     parse_batch,
     qualify,
     regex_extract,
+    scrub,
     split_batches,
     table_parts,
 )
@@ -37,9 +39,31 @@ _TABLE_FALLBACK_RE = re.compile(rf"\bCREATE\s+TABLE\s+({_IDENT})", re.IGNORECASE
 _VIEW_FALLBACK_RE = re.compile(rf"\bCREATE\s+(?:OR\s+ALTER\s+)?VIEW\s+({_IDENT})", re.IGNORECASE)
 
 
-def read_sql_file(entry: FileEntry) -> str:
-    """Read a SQL file tolerantly (BOM-aware, replacement on bad bytes)."""
-    return Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace")
+def read_sql_file(entry: FileEntry, warnings: list[ParseWarning] | None = None) -> str:
+    """Read a SQL file tolerantly (BOM-aware — UTF-8/16/32 — replacement on
+    bad bytes; SSMS's 'Save with Encoding' Unicode default is UTF-16).
+
+    If NULs survive decoding (BOM-less UTF-16, binary), no parser will extract
+    anything from the text — so when a ``warnings`` list is given, an
+    ``encoding_unreadable`` warning is appended: the file must never just
+    silently contribute nothing. Only one caller per file should pass the
+    list (the pipeline reads each file in both SQL parsers) to avoid
+    duplicate diagnostics.
+    """
+    text = decode_text(Path(entry.abs_path).read_bytes())
+    if warnings is not None and "\x00" in text:
+        warnings.append(
+            ParseWarning(
+                file=entry.path,
+                message=(
+                    "file does not decode as UTF-8/UTF-16 text (NULs remain — likely "
+                    "UTF-16 without BOM or binary); re-save as UTF-8, its objects are "
+                    "not documented"
+                ),
+                category="encoding_unreadable",
+            )
+        )
+    return text
 
 
 def stub_table(graph: LineageGraph, schema: str, name: str) -> Node:
@@ -225,9 +249,12 @@ def parse_sql_objects(
     for entry in entries:
         if on_file:
             on_file(entry.path)
-        text = read_sql_file(entry)
+        text = read_sql_file(entry, warnings)
         for batch in split_batches(text):
-            if PROC_HEADER_RE.search(batch):
+            # test against comment/string-stripped text: a doc comment merely
+            # *mentioning* "CREATE PROCEDURE dbo.x" must not make us drop a
+            # CREATE TABLE/VIEW batch as "handled by parse_sql_procs"
+            if PROC_HEADER_RE.search(scrub(batch, strip_strings=True)):
                 continue  # handled by parse_sql_procs
             creates = [
                 expression

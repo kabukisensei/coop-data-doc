@@ -55,8 +55,14 @@ def prune_schemas(graph: LineageGraph, ignore_schemas: list[str]) -> int:
     ignored = SYSTEM_SCHEMAS | {s.lower() for s in ignore_schemas}
 
     def is_ignored(schema: str) -> bool:
+        # Cross-db reads carry multi-part schemas ("otherdb.sys",
+        # "linkedsrv.otherdb.staging"): test the full string (so a user can
+        # ignore one database's schema exactly) AND the final segment — the
+        # actual schema — so OtherDb.sys catalog noise and ignored schema
+        # names are dropped wherever the database lives.
         schema = (schema or "").lower()
-        return schema in ignored or schema.startswith("db_")
+        segment = schema.rsplit(".", 1)[-1]
+        return schema in ignored or segment in ignored or segment.startswith("db_")
 
     drop = {
         node_id
@@ -73,11 +79,15 @@ def prune_schemas(graph: LineageGraph, ignore_schemas: list[str]) -> int:
 
 
 def _path_matches(globs: list[str], source_file: str) -> bool:
-    posix = source_file.replace("\\", "/")
+    # Same deterministic cross-OS policy as crawler._matches: case-INSENSITIVE
+    # on every platform (fnmatch.fnmatch normcases only on Windows, which
+    # would assign the same repo different layers per OS).
+    posix = source_file.replace("\\", "/").casefold()
     for pattern in globs:
-        if fnmatch.fnmatch(posix, pattern):
+        folded = pattern.casefold()
+        if fnmatch.fnmatchcase(posix, folded):
             return True
-        if pattern.startswith("**/") and fnmatch.fnmatch(posix, pattern[3:]):
+        if folded.startswith("**/") and fnmatch.fnmatchcase(posix, folded[3:]):
             return True
     return False
 

@@ -76,10 +76,20 @@ def _quote(value: str) -> str:
     return '"' + escaped + '"'
 
 
+def _text(value: str) -> str:
+    """Neutralize model-supplied free text (descriptions, object names) before
+    it lands in a page: python-markdown/mkdocs pass raw HTML straight through,
+    so a `<script>`/`onerror` payload in a TMDL/BIM description or name would
+    execute in every reader's browser. Escapes only the HTML-significant
+    `& < >` (quote=False) so ordinary prose is untouched."""
+    return html.escape(value or "", quote=False)
+
+
 def _cell(value: str) -> str:
-    """Make free text safe inside a Markdown table cell: escape pipes and
-    collapse newlines (an unescaped '|' or newline breaks the table)."""
-    return (value or "").replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+    """Make free text safe inside a Markdown table cell: neutralize raw HTML
+    (`_text`), escape pipes and collapse newlines (an unescaped '|' or newline
+    breaks the table)."""
+    return _text(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
 def _link_text(value: str) -> str:
@@ -414,7 +424,7 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     def dedup_sorted(ns: list[Node]) -> list[Node]:
         return sorted({n.id: n for n in ns}.values(), key=lambda n: n.qualified_display.lower())
 
-    parts = [_front_matter(graph, node), "", f"# {node.qualified_display}", ""]
+    parts = [_front_matter(graph, node), "", f"# {_text(node.qualified_display)}", ""]
     if models:
         parts += ["_Draws from: " + ", ".join(link(m) for m in dedup_sorted(models)) + "_", ""]
     parts += ["## Measures referenced", ""]
@@ -432,7 +442,18 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
 def _existing_intent(path: Path) -> str:
     if not path.is_file():
         return _DEFAULT_INTENT
-    match = _INTENT_RE.search(path.read_text(encoding="utf-8"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # The intent block is hand-edited, and a Windows ANSI editor saving a
+        # smart quote / en-dash writes cp1252 bytes. Never crash the whole
+        # build over one docs page: retry cp1252 (covers every 8-bit byte the
+        # ANSI case produces), then fall back to a lossy best-effort decode.
+        try:
+            text = path.read_text(encoding="cp1252")
+        except UnicodeDecodeError:
+            text = path.read_text(encoding="utf-8", errors="replace")
+    match = _INTENT_RE.search(text)
     if match is None:
         return _DEFAULT_INTENT
     return match.group(1).strip("\n")
@@ -502,11 +523,12 @@ def render_node_page(
     parts = [
         _front_matter(graph, node),
         "",
-        f"# {node.qualified_display}",
+        f"# {_text(node.qualified_display)}",
         "",
-        # description imported from the source model (TMDL/BIM), if any
+        # description imported from the source model (TMDL/BIM), if any —
+        # model-supplied text, so HTML-escaped before it becomes page markup
         *(
-            [f"_{' '.join(node.metadata['description'].split())}_", ""]
+            [f"_{_text(' '.join(node.metadata['description'].split()))}_", ""]
             if node.metadata.get("description")
             else []
         ),

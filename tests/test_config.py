@@ -62,6 +62,17 @@ def test_invalid_yaml_mentions_line(tmp_path: Path):
         Config.load(path)
 
 
+def test_non_utf8_config_raises_friendly_config_error(tmp_path: Path):
+    # PowerShell 5.1's `>` redirect writes UTF-16LE by default — a plausible
+    # first-run experience on Windows. That must surface as a one-line
+    # ConfigError naming the file and the likely cause, not a raw
+    # UnicodeDecodeError traceback (cli.main only pretty-prints ConfigError).
+    path = tmp_path / "coop-data-doc.yml"
+    path.write_bytes(minimal_yaml(str(FIXTURES / "repo_sql"), str(FIXTURES / "repo_pbi")).encode("utf-16"))
+    with pytest.raises(ConfigError, match=r"coop-data-doc\.yml.*UTF-8"):
+        Config.load(path)
+
+
 def test_unknown_key_named_in_error(tmp_path: Path):
     body = minimal_yaml(str(FIXTURES / "repo_sql"), str(FIXTURES / "repo_pbi"))
     path = write_config(tmp_path, body + "definitely_not_a_key: 1\n")

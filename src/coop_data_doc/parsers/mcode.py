@@ -20,9 +20,6 @@ class SourceRef(BaseModel):
     raw_kind: str  # "sql_database" | "native_query" | "lakehouse" | "as_model" | "static" | "fallback"
 
 
-_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
-_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
-
 # The first argument can itself be a call containing top-level commas, e.g.
 # Sql.Database("srv", "db"). Match the first argument as a run of either
 # non-comma/paren chars or whole `( ... )` parenthesized groups (which may hold
@@ -51,10 +48,40 @@ _STATIC_RE = re.compile(r"Table\.FromRows|#table\b|Json\.Document")
 
 
 def strip_m_comments(m_expression: str) -> str:
-    # '//' inside string literals (URLs) is also stripped — an accepted
-    # v1 edge case; it can only ever hide a source, never invent one
-    """Remove // and /* */ comments from M code before pattern matching."""
-    return _LINE_COMMENT_RE.sub("", _BLOCK_COMMENT_RE.sub(" ", m_expression))
+    """Remove // and /* */ comments from M code before pattern matching.
+
+    A character scanner, not regexes: string literals (including `""` escapes
+    and `#"quoted identifiers"`) are consumed first and copied through intact,
+    so a '//' inside a URL literal can never truncate the string, unbalance
+    the quotes, or hide the real source expression.
+    """
+    out: list[str] = []
+    i, n = 0, len(m_expression)
+    while i < n:
+        ch = m_expression[i]
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if m_expression[j] == '"':
+                    if j + 1 < n and m_expression[j + 1] == '"':
+                        j += 2
+                        continue
+                    break
+                j += 1
+            end = min(j + 1, n)
+            out.append(m_expression[i:end])
+            i = end
+        elif m_expression.startswith("//", i):
+            j = m_expression.find("\n", i)
+            i = n if j == -1 else j
+        elif m_expression.startswith("/*", i):
+            j = m_expression.find("*/", i)
+            i = n if j == -1 else j + 2
+            out.append(" ")
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
 
 def _resolve(match: re.Match | None, bindings: dict[str, str]) -> str | None:
@@ -74,10 +101,11 @@ def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
     if native_sql:
         return SourceRef(schema_name="", object_name="", raw_kind="native_query"), native_sql
 
-    # composite/DirectQuery chain to another semantic model. Match against the
-    # block-comment-stripped original (NOT `text`): the `//` line-comment strip
-    # would eat the `powerbi://…` connection URL and hide the model name.
-    as_match = _AS_DATABASE_RE.search(_BLOCK_COMMENT_RE.sub(" ", m_expression))
+    # composite/DirectQuery chain to another semantic model. The string-aware
+    # comment strip keeps the `powerbi://…` connection URL intact, so matching
+    # `text` works — and a commented-out AnalysisServices.Database line can no
+    # longer be mistaken for the live source.
+    as_match = _AS_DATABASE_RE.search(text)
     if as_match:
         return SourceRef(schema_name="", object_name=as_match.group(1), raw_kind="as_model"), []
 

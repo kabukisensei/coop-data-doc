@@ -211,7 +211,7 @@ def test_qualify_respects_bracketed_dots():
     assert qualify("dbo.t") == ("dbo", "t")
     assert qualify("[dbo].[t]") == ("dbo", "t")
     assert qualify("t") == ("dbo", "t")
-    assert qualify("db.dbo.t") == ("dbo", "t")  # db part dropped from 3-part name
+    assert qualify("db.dbo.t") == ("db.dbo", "t")  # db part of a 3-part name is preserved
     assert original_name("[dim].[Practice]") == "Practice"  # original case preserved
 
 
@@ -339,4 +339,206 @@ def test_end_to_end_lineage_chain():
 def test_determinism():
     first, _ = parse_all()
     second, _ = parse_all()
+    assert to_json_str(first) == to_json_str(second)
+
+
+# ---- parser edge-case estate (tests/fixtures/repo_sql_edge) -----------------
+# A second miniature repo covering historically silent failure modes: legacy
+# semicolon-less proc bodies, parens/keywords inside comments and strings,
+# aliased DELETE targets, and cross-database names. Kept separate from
+# repo_sql so the crawler/CLI suites' exact-count assertions stay stable.
+
+
+def edge_config() -> Config:
+    return Config(
+        repos={
+            "sql": RepoConfig(
+                path=str(FIXTURES / "repo_sql_edge"),
+                include=["**/*.sql"],
+            )
+        }
+    )
+
+
+def parse_edge_repo() -> tuple[LineageGraph, list]:
+    inventory, _ = crawl(edge_config())
+    entries = inventory.by_kind(FileKind.SQL_FILE)
+    graph = LineageGraph()
+    warnings = parse_sql_objects(entries, graph)
+    warnings += parse_sql_procs(entries, graph)
+    resolve_stub_references(graph)
+    return graph, warnings
+
+
+def test_edge_repo_expected_nodes():
+    graph, _ = parse_edge_repo()
+    expected = {
+        "stored_proc:dbo.usp_refresh_fact_sales",
+        "stored_proc:dbo.usp_load_sales",
+        "stored_proc:dbo.usp_purge_cancelled",
+        "stored_proc:dbo.usp_load_external",
+        "gold_table:dbo.dim_customer",
+        "gold_table:dbo.customers",
+        "gold_table:dbo.load_log",
+        "gold_table:dbo.fact_sales",
+        "gold_table:dbo.stg_orders",
+        "gold_table:dbo.dim_date",
+        "gold_table:stg.sales",
+        "gold_table:dbo.orders",
+        "gold_table:dbo.archive_flags",
+        # cross-db / linked-server reads keep their database qualifiers, so
+        # they can never be conflated with the local dbo.customers
+        "gold_table:otherdb.dbo.customers",
+        "gold_table:lnksrv.otherdb.dbo.customers",
+    }
+    assert set(graph.nodes) == expected
+
+
+def test_semicolonless_proc_body_lineage_not_lost():
+    """A legacy proc body with NO semicolons is one un-parseable chunk; it must
+    flow to the regex fallback (all four DML statements traced) and be honestly
+    downgraded to regex_fallback quality — never a silent partial 'ast' parse."""
+    graph, warnings = parse_edge_repo()
+    keys = edge_keys(graph)
+    proc = "stored_proc:dbo.usp_refresh_fact_sales"
+    assert (proc, "gold_table:dbo.load_log", "writes") in keys
+    assert (proc, "gold_table:dbo.fact_sales", "writes") in keys  # UPDATE alias resolved
+    assert (proc, "gold_table:dbo.stg_orders", "writes") in keys  # DELETE FROM
+    assert (proc, "gold_table:dbo.dim_date", "reads") in keys
+    assert graph.nodes[proc].metadata["parse_quality"] == "regex_fallback"
+    assert any(w.category == "regex_fallback" for w in warnings)
+    # the UPDATE/JOIN aliases must not leak as tables
+    assert "gold_table:dbo.fs" not in graph.nodes
+    assert "gold_table:dbo.o" not in graph.nodes
+
+
+def test_proc_header_parens_in_comments_and_strings_do_not_drop_proc():
+    """Unbalanced parens inside header comments ('-- fiscal year (see wiki',
+    '-- 1) full, 2) incremental') or string defaults (N'(') must not corrupt
+    the paren-depth scan that locates the body AS."""
+    graph, _ = parse_edge_repo()
+    keys = edge_keys(graph)
+    proc = "stored_proc:dbo.usp_load_sales"
+    assert proc in graph.nodes
+    assert (proc, "gold_table:dbo.fact_sales", "writes") in keys
+    assert (proc, "gold_table:stg.sales", "reads") in keys
+    assert graph.nodes[proc].metadata["parse_quality"] == "ast"
+
+
+def test_find_proc_ignores_parens_in_comments_and_strings():
+    from coop_data_doc.parsers.sql_procs import _find_proc
+
+    found = _find_proc(
+        "CREATE PROCEDURE dbo.usp_LoadSales\n"
+        "    @Year INT = 2024, -- fiscal year (see wiki\n"
+        "    @Prefix NVARCHAR(5) = N'('\n"
+        "AS\n"
+        "INSERT INTO dbo.fact_sales SELECT col FROM stg.sales"
+    )
+    assert found is not None
+    name, body = found
+    assert name == "dbo.usp_LoadSales"
+    assert "INSERT INTO dbo.fact_sales" in body
+
+
+def test_proc_header_without_body_as_warns_not_silent():
+    """When a CREATE PROCEDURE header exists but no top-level body AS is found,
+    the batch is skipped with a warning — a proc must never vanish silently."""
+    _, warnings = parse_edge_repo()
+    broken = [w for w in warnings if w.category == "proc_body_not_found"]
+    assert len(broken) == 1
+    assert "usp_broken_no_as" in broken[0].message
+
+
+def test_comment_mentioning_create_procedure_does_not_drop_table_batch():
+    """A doc comment naming the loading proc must not make parse_sql_objects
+    skip the batch as 'a proc' (and parse_sql_procs drop it for lack of AS)."""
+    graph, _ = parse_edge_repo()
+    table = graph.nodes["gold_table:dbo.dim_customer"]
+    names = [column.name for column in table.columns]
+    assert names == ["customer_id", "customer_name"]
+    # and the proc named only inside the comment must not become a node
+    assert not any("usp_load_dim_customer" in node_id for node_id in graph.nodes)
+
+
+def test_delete_alias_resolves_to_real_table():
+    """DELETE alias FROM table AS alias must write to the real table; the alias
+    itself must never become a phantom node or reads edge."""
+    graph, _ = parse_edge_repo()
+    keys = edge_keys(graph)
+    proc = "stored_proc:dbo.usp_purge_cancelled"
+    assert (proc, "gold_table:dbo.orders", "writes") in keys
+    assert (proc, "gold_table:dbo.archive_flags", "reads") in keys
+    assert "gold_table:dbo.o" not in graph.nodes
+    assert (proc, "gold_table:dbo.o", "reads") not in keys
+
+
+def test_cross_db_reads_not_conflated_with_local_tables():
+    """3-part (db.schema.object) and 4-part (server.db.schema.object) names keep
+    their qualifiers: a read of OtherDb.dbo.customers must not attach to the
+    local dbo.customers node."""
+    graph, _ = parse_edge_repo()
+    keys = edge_keys(graph)
+    proc = "stored_proc:dbo.usp_load_external"
+    assert (proc, "gold_table:otherdb.dbo.customers", "reads") in keys
+    assert (proc, "gold_table:lnksrv.otherdb.dbo.customers", "reads") in keys
+    assert (proc, "gold_table:dbo.customers", "reads") not in keys
+
+
+def test_cross_db_names_preserved_in_helpers():
+    import sqlglot
+
+    from coop_data_doc.parsers.sql_common import collect_source_tables, qualify
+
+    assert qualify("OtherDb.dbo.customers") == ("otherdb.dbo", "customers")
+    assert qualify("LNKSRV.OtherDb.dbo.customers") == ("lnksrv.otherdb.dbo", "customers")
+
+    three = sqlglot.parse_one("SELECT * FROM OtherDb.dbo.customers", read="tsql")
+    assert collect_source_tables(three) == {("otherdb.dbo", "customers")}
+    four = sqlglot.parse_one("SELECT * FROM LNKSRV.OtherDb.dbo.customers", read="tsql")
+    assert collect_source_tables(four) == {("lnksrv.otherdb.dbo", "customers")}
+
+
+def test_utf16_sql_files_parsed_via_bom(tmp_path: Path):
+    """SSMS 'Save with Encoding' Unicode (UTF-16, BOM) files must parse like
+    UTF-8 ones instead of decoding to NUL-interleaved garbage."""
+    import codecs
+
+    script = (
+        "CREATE TABLE dbo.orders (order_id INT NOT NULL PRIMARY KEY);\n"
+        "GO\n"
+        "CREATE VIEW dbo.v_sales AS SELECT order_id FROM dbo.orders;\n"
+        "GO\n"
+    )
+    (tmp_path / "utf16le.sql").write_bytes(codecs.BOM_UTF16_LE + script.encode("utf-16-le"))
+    (tmp_path / "utf16be.sql").write_bytes(codecs.BOM_UTF16_BE + script.encode("utf-16-be"))
+    config = Config(repos={"sql": RepoConfig(path=str(tmp_path), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    graph = LineageGraph()
+    warnings = parse_sql_objects(inventory.by_kind(FileKind.SQL_FILE), graph)
+    assert "gold_table:dbo.orders" in graph.nodes
+    assert "view:dbo.v_sales" in graph.nodes
+    assert not any(w.category == "encoding_unreadable" for w in warnings)
+
+
+def test_undecodable_sql_file_warns_not_silent(tmp_path: Path):
+    """A BOM-less UTF-16 (or binary) file can't be parsed — but it must produce
+    an encoding warning, never silently contribute nothing. The warning is
+    emitted once (by parse_sql_objects), not duplicated by parse_sql_procs."""
+    script = "CREATE TABLE dbo.orders (order_id INT NOT NULL PRIMARY KEY);\nGO\n"
+    (tmp_path / "nobom.sql").write_bytes(script.encode("utf-16-le"))  # no BOM
+    config = Config(repos={"sql": RepoConfig(path=str(tmp_path), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    entries = inventory.by_kind(FileKind.SQL_FILE)
+    graph = LineageGraph()
+    warnings = parse_sql_objects(entries, graph)
+    warnings += parse_sql_procs(entries, graph)
+    encoding = [w for w in warnings if w.category == "encoding_unreadable"]
+    assert len(encoding) == 1
+    assert encoding[0].file == "nobom.sql"
+
+
+def test_edge_repo_determinism():
+    first, _ = parse_edge_repo()
+    second, _ = parse_edge_repo()
     assert to_json_str(first) == to_json_str(second)

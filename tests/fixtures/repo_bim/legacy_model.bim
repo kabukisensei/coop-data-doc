@@ -1,0 +1,100 @@
+{
+  "name": "Legacy Model",
+  "compatibilityLevel": 1550,
+  "model": {
+    "culture": "en-US",
+    "tables": [
+      {
+        "name": "fact_sales",
+        "description": "All booked sales orders.",
+        "columns": [
+          {
+            "name": "order_id",
+            "dataType": "int64",
+            "description": "Surrogate key."
+          },
+          {
+            "name": "customer_id",
+            "dataType": "int64"
+          },
+          {
+            "name": "order_total",
+            "dataType": "decimal"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "fact_sales-partition",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Sql.Database(\"srv\", \"gold\"),",
+                "    d = Source{[Schema=\"sales\",Item=\"fact_sales\"]}[Data]",
+                "in",
+                "    d"
+              ]
+            }
+          }
+        ],
+        "measures": [
+          {
+            "name": "Total Sales",
+            "expression": "SUM(fact_sales[order_total])",
+            "description": "Grand total of all orders."
+          },
+          {
+            "name": "Order Count",
+            "expression": [
+              "COUNTROWS(",
+              "    fact_sales",
+              ")"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "dim_customer",
+        "columns": [
+          {
+            "name": "customer_id",
+            "dataType": "int64"
+          },
+          {
+            "name": "customer_name",
+            "dataType": "string"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "dim_customer-partition",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let Source = Sql.Database(\"srv\", \"gold\"), d = Source{[Schema=\"sales\",Item=\"dim_customer\"]}[Data] in d"
+            }
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "name": "r-active-bidi",
+        "fromTable": "fact_sales",
+        "fromColumn": "customer_id",
+        "toTable": "dim_customer",
+        "toColumn": "customer_id",
+        "crossFilteringBehavior": "bothDirections"
+      },
+      {
+        "name": "r-inactive",
+        "isActive": false,
+        "fromTable": "fact_sales",
+        "fromColumn": "order_id",
+        "toTable": "dim_customer",
+        "toColumn": "customer_id"
+      }
+    ]
+  }
+}
