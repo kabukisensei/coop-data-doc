@@ -10,7 +10,9 @@ warehouse & lakehouse); (2) a Power BI repo with semantic models (PBIP/TMDL or .
 reports (PBIR folders, legacy report.json, occasional .pbix). It builds one **LineageGraph**
 covering: silver table → stored proc → gold table → view → semantic-model table → measure → report
 visual. It then renders Markdown docs with strict YAML front-matter (for LLM agents) and a
-searchable dark-mode MkDocs HTML portal with Mermaid flowcharts (for humans).
+searchable dark-mode MkDocs HTML portal (for humans). (The portal originally shipped Mermaid
+flowcharts; that feature was later removed — mentions of "Mermaid flowcharts" and
+`render/mermaid.py` in these briefs are historical.)
 
 ## Hard constraints — violating any of these fails review
 1. **100% offline & deterministic.** No DB connections, no network, no LLM calls. AST parsing
@@ -61,7 +63,7 @@ src/coop_data_doc/
 ├── parsers/sql_objects.py  sql_procs.py # M2
 ├── parsers/tmdl.py bim.py mcode.py dax.py pbir.py pbix.py  # M3
 ├── linker/resolver.py cache.py interactive.py              # M4
-└── render/markdown.py mermaid.py site.py                   # M5
+└── render/markdown.py paths.py site.py                     # M5  (was mermaid.py; mermaid removed, slug/doc_relpath moved to paths.py)
 tests/  (fixtures/repo_sql, fixtures/repo_pbi, golden/)
 ```
 

@@ -21,11 +21,6 @@
   opacity: 0.85;
 }
 
-/* keep wide mermaid lineage diagrams scrollable rather than overflowing on mobile */
-.mermaid {
-  overflow-x: auto;
-}
-
 /* Joel's Relationship Grid: real gridlines on every cell (scoped to the
    .rel-grid wrapper so the wide lineage/contract tables keep their lighter
    row-only look), and made responsive — table-layout:fixed + width:100% means
@@ -89,63 +84,4 @@
 }
 .tree-branch:not(.tree-collapsed) > .tree-toggle::before {
   content: "\25BE"; /* ▾ */
-}
-
-/* mermaid-zoom.js turns each rendered diagram into a bounded pan/zoom viewport
-   so big estate/lineage charts stay readable. Styles are inert until that
-   script adds the .mermaid-zoom-host class, so non-JS / plain Markdown is
-   unaffected. */
-.mermaid-zoom-host {
-  position: relative;
-  overflow: hidden;
-  max-height: 80vh;
-  border: 1px solid var(--md-default-fg-color--lightest);
-  border-radius: 0.2rem;
-  background: var(--md-default-bg-color);
-  touch-action: none;
-}
-.mermaid-zoom-host:fullscreen {
-  max-height: none;
-  height: 100%;
-  width: 100%;
-}
-.mermaid-zoom-controls {
-  position: absolute;
-  top: 0.3rem;
-  right: 0.3rem;
-  display: flex;
-  align-items: center;
-  gap: 0.2rem;
-  padding: 0.15rem;
-  border-radius: 0.2rem;
-  background: var(--md-default-bg-color);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-  opacity: 0;
-  transition: opacity 0.15s ease-in-out;
-  z-index: 2;
-}
-.mermaid-zoom-host:hover .mermaid-zoom-controls,
-.mermaid-zoom-host:focus-within .mermaid-zoom-controls {
-  opacity: 1;
-}
-.mermaid-zoom-btn {
-  cursor: pointer;
-  width: 1.6rem;
-  height: 1.6rem;
-  font-size: 0.9rem;
-  line-height: 1;
-  border: 1px solid var(--md-default-fg-color--lighter);
-  border-radius: 0.2rem;
-  background: var(--md-default-bg-color);
-  color: var(--md-default-fg-color);
-}
-.mermaid-zoom-btn:hover {
-  background: var(--md-accent-fg-color);
-  color: var(--md-accent-bg-color, #fff);
-}
-.mermaid-zoom-hint {
-  font-size: 0.6rem;
-  padding: 0 0.3rem;
-  opacity: 0.7;
-  white-space: nowrap;
 }

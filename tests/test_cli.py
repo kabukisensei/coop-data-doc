@@ -5,7 +5,7 @@ from click.testing import CliRunner
 
 from coop_data_doc import __version__
 from coop_data_doc.cli import cli
-from coop_data_doc.render.mermaid import slug
+from coop_data_doc.render.paths import slug
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

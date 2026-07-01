@@ -3,11 +3,9 @@
 Synthesizes a Material-for-MkDocs config (dark default with toggle, offline
 plugin so search works over file://) and shells out to `mkdocs build`.
 
-Material falls back to unpkg.com for two things — the Mermaid library and
-the iframe-worker shim that powers search over file:// — so both are
-vendored in this package (templates/assets) and injected: Mermaid via
-extra_javascript (Material skips its CDN fetch when window.mermaid is
-already defined), the shim by rewriting the built HTML.
+Material falls back to unpkg.com for the iframe-worker shim that powers
+search over file://, so it is vendored in this package (templates/assets)
+and injected by rewriting the built HTML.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, normalize_identifier
-from coop_data_doc.render.mermaid import slug
+from coop_data_doc.render.paths import slug
 
 _MAX_BRAND_BYTES = 8 * 1024 * 1024  # don't copy oversized logo/favicon files
 
@@ -94,15 +92,9 @@ markdown_extensions:
   - admonition
   - tables
   - md_in_html
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.superfences
 
 extra_javascript:
-  - assets/javascripts/vendor/mermaid.min.js
-  - assets/javascripts/vendor/mermaid-zoom.js
   - assets/javascripts/vendor/doc-tree.js
 
 extra_css:
@@ -337,7 +329,7 @@ def write_mkdocs_config(
     docs_dir = Path(docs_dir).resolve()
     vendor_dir = docs_dir / _VENDOR_REL
     vendor_dir.mkdir(parents=True, exist_ok=True)
-    for asset in ("mermaid.min.js", "mermaid-zoom.js", "doc-tree.js", "iframe-worker-shim.js"):
+    for asset in ("doc-tree.js", "iframe-worker-shim.js"):
         shutil.copyfile(_VENDOR_SRC / asset, vendor_dir / asset)
     css_dir = docs_dir / _CSS_REL
     css_dir.mkdir(parents=True, exist_ok=True)

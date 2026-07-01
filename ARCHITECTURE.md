@@ -37,7 +37,7 @@ coop-data-doc.yml ──► [crawler] ──► FileInventory (classified files)
              ▼                             ▼
   [render/markdown (M5)]         [render/site (M5)]
   per-node .md + index.md        MkDocs Material, dark default,
-  + manifest.json (for agents)   offline search + vendored mermaid
+  + manifest.json (for agents)   offline search + vendored assets
 ```
 
 `cli.run_pipeline()` (`src/coop_data_doc/cli.py`) is the executable version of
@@ -137,9 +137,8 @@ deterministic:
   from the model's parsed relationships (TMDL `relationships.tmdl` or the older
   inline `model.tmdl`, and `.bim`), marking active/inactive/bidirectional edges.
 - **Upstream lineage** (measures + the gold tables/views that feed a model) — a
-  "trace back to source" view as a clickable indented text tree *and* a
-  full-depth Mermaid diagram, so a functional user can walk a report number
-  back to the SQL behind it.
+  "trace back to source" view as a clickable indented text tree, so a
+  functional user can walk a report number back to the SQL behind it.
 - **Unused measures** (semantic models) — a cleanup roll-up of measures nothing
   references or shows, with a matching advisory badge on each measure's page.
 - **Report pages are deliberately minimal** — just the model(s) a report draws
@@ -148,10 +147,8 @@ deterministic:
 
 `render/site.py` synthesizes a Material config and post-processes the built
 HTML so the portal works over `file://` with zero network: vendored
-`mermaid.min.js` (Material skips its CDN fetch when `window.mermaid` exists),
-the first-party dependency-free `mermaid-zoom.js` (drag-pan / Ctrl+scroll zoom
-for large diagrams), vendored iframe-worker shim (URL rewritten in the HTML),
-`font: false`, `use_directory_urls: false`.
+iframe-worker shim (URL rewritten in the HTML), `font: false`,
+`use_directory_urls: false`.
 
 **Human content survives regeneration.** Each page has a Business Intent
 block between `<!-- intent:begin/end -->` markers; the renderer carries the
@@ -189,8 +186,8 @@ src/coop_data_doc/
 ├── progress.py       stderr progress bars + spinner (TTY-only)
 ├── wizard.py         interactive `setup` (repos, layers, ignore, mappings)
 ├── upgrade.py        `upgrade` — the only networked command (PyPI/git); on Windows, defers to a fresh shell rather than replace its own running launcher
-├── render/           markdown.py, mermaid.py, site.py (layer-grouped nav)
-└── templates/assets/ vendored mermaid + iframe-worker + first-party mermaid-zoom.js + custom.css
+├── render/           markdown.py, paths.py, site.py (layer-grouped nav)
+└── templates/assets/ vendored iframe-worker + first-party doc-tree.js + custom.css
 tasks/                original builder briefs — double as interface docs
 tests/                fixtures/repo_sql + fixtures/repo_pbi drive everything
 ```

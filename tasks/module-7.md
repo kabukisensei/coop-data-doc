@@ -25,8 +25,9 @@ open data-docs-site/index.html
 ```
 Sections: what it documents (the lineage chain diagram), the two-repo setup, the
 `.lineage-cache.json` workflow (commit it!), CI usage (`coop-data-doc check`), the .pbix
-limitation + "save as PBIP" guidance, troubleshooting table. Note the one-time vendored
-`mermaid.min.js` provenance (version + source URL) in a "third-party assets" note.
+limitation + "save as PBIP" guidance, troubleshooting table. (The one-time vendored
+`mermaid.min.js` provenance note this once called for is gone — mermaid was later removed;
+the sole vendored third-party asset now is `iframe-worker-shim.js`.)
 
 ## 3. `CONTRIBUTING.md`
 Module map (M0–M6 with file paths), the determinism rules (sorted iteration, no timestamps),

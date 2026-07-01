@@ -4,7 +4,7 @@ import yaml
 
 from coop_data_doc.graph import Column, Edge, EdgeType, LineageGraph, Node, NodeType
 from coop_data_doc.render.markdown import INTENT_BEGIN, INTENT_END, render_markdown
-from coop_data_doc.render.mermaid import estate_flowchart, local_flowchart, slug
+from coop_data_doc.render.paths import slug
 
 
 def page_path(out_dir: Path, node_id: str) -> Path:
@@ -129,43 +129,8 @@ def test_index_and_manifest(tmp_path: Path):
     written = render_markdown(graph, tmp_path, "Test Estate")
     index = (tmp_path / "index.md").read_text(encoding="utf-8")
     assert "| Views | 1 |" in index
-    assert "```mermaid" in index
     assert (tmp_path / "manifest.json").is_file()
     assert all(path.is_file() for path in written)
-
-
-def test_local_flowchart_deterministic_and_linked():
-    graph = build_graph()
-    chart = local_flowchart(graph, "view:sales.dim_customer")
-    assert chart == local_flowchart(graph, "view:sales.dim_customer")
-    assert chart.startswith("flowchart LR")
-    assert "click" in chart
-    assert "stroke-width:3px" in chart
-    # the focus node itself must not get a click link
-    focus_alias = [line.split()[1] for line in chart.splitlines() if "stroke-width" in line][0]
-    assert f"click {focus_alias} " not in chart
-
-
-def test_mermaid_label_neutralizes_significant_chars():
-    g = LineageGraph()
-    model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "finance"))
-    measure = g.add_node(make_node(NodeType.MEASURE, "finance", 'gross | net < tax > "q1"'))
-    g.add_edge(Edge(source_id=measure.id, target_id=model.id, edge_type=EdgeType.FEEDS))
-    chart = local_flowchart(g, measure.id)
-    # find the node-definition line and extract its quoted label
-    node_lines = [ln for ln in chart.splitlines() if "finance.gross" in ln]
-    assert node_lines
-    label = node_lines[0].split('"')[1]  # text between the first pair of quotes
-    assert "finance.gross" in label
-    for bad in ("|", "<", ">", '"'):
-        assert bad not in label  # mermaid-significant chars neutralized
-
-
-def test_estate_flowchart_layers():
-    chart = estate_flowchart(build_graph())
-    assert chart is not None
-    assert 'subgraph Silver["Silver"]' in chart
-    assert 'subgraph Views["Views"]' in chart
 
 
 def test_render_determinism(tmp_path: Path):
@@ -338,11 +303,6 @@ def test_upstream_tree_on_model_facing_gold_objects(tmp_path: Path):
         - 1
     )
     assert silver_indent > gold_indent
-    # the upstream section is text-tree only — no second mermaid diagram (the
-    # page keeps just the Local Flow chart)
-    upstream_section = view_page.split("## Upstream lineage", 1)[1].split("\n## ", 1)[0]
-    assert "```mermaid" not in upstream_section
-    assert view_page.count("```mermaid") == 1  # only Local Flow remains
 
     # a pure source (the silver table) is not a measure/gold/view -> no tree
     silver_page = page_path(tmp_path, "silver_table:silver.customers").read_text(encoding="utf-8")
@@ -464,11 +424,11 @@ def test_mkdocs_config_and_assets_deterministic(tmp_path: Path):
     site = tmp_path / "site"
     cfg = write_mkdocs_config(docs, site, "Test", g)
     first_cfg = cfg.read_bytes()
-    zoom = docs / "assets" / "javascripts" / "vendor" / "mermaid-zoom.js"
-    first_zoom = zoom.read_bytes()
+    tree = docs / "assets" / "javascripts" / "vendor" / "doc-tree.js"
+    first_tree = tree.read_bytes()
     write_mkdocs_config(docs, site, "Test", g)  # rewrite same paths
     assert cfg.read_bytes() == first_cfg
-    assert zoom.read_bytes() == first_zoom
+    assert tree.read_bytes() == first_tree
 
 
 def test_measure_dependency_tree(tmp_path: Path):
@@ -525,10 +485,8 @@ def test_report_page_is_minimal_measures_referenced(tmp_path: Path):
     assert "[sales.Total Sales](" in page  # measure linked by qualified display
     assert "## Tables referenced" in page
     assert "[sales.Dim Customer](" in page
-    # the messy report internals are gone: no generic lineage tables or flow chart
+    # the messy report internals are gone: no generic lineage tables
     assert "## Lineage" not in page
-    assert "```mermaid" not in page
-    assert "Local Flow" not in page
 
 
 def test_site_nav_has_no_separate_reports_section():
@@ -858,29 +816,17 @@ def test_default_branding_is_cooptimize_theme(tmp_path: Path):
     assert f"--md-accent-fg-color: {DEFAULT_ACCENT_COLOR};" in brand_css
 
 
-def test_mermaid_click_targets_html():
-    g = build_graph()
-    chart = local_flowchart(g, "view:sales.dim_customer")
-    clicks = [ln for ln in chart.splitlines() if ln.strip().startswith("click")]
-    assert clicks
-    assert all(".html" in ln and ".md" not in ln for ln in clicks)
-
-
-def test_mermaid_zoom_asset_copied_and_referenced(tmp_path: Path):
+def test_doc_tree_asset_copied_and_referenced(tmp_path: Path):
     from coop_data_doc.render.site import write_mkdocs_config
 
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "index.md").write_text("# x", encoding="utf-8")
     cfg = write_mkdocs_config(docs, tmp_path / "site", "Test", build_graph())
-    # the dependency-free zoom + tree scripts are vendored next to mermaid
     vendor = docs / "assets" / "javascripts" / "vendor"
-    assert (vendor / "mermaid-zoom.js").is_file()
     assert (vendor / "doc-tree.js").is_file()
     text = cfg.read_text(encoding="utf-8")
-    assert "assets/javascripts/vendor/mermaid-zoom.js" in text
     assert "assets/javascripts/vendor/doc-tree.js" in text
-    assert text.index("mermaid.min.js") < text.index("mermaid-zoom.js")  # mermaid loads first
 
 
 def test_display_name_schema_qualified_original_case(tmp_path: Path):
@@ -901,10 +847,6 @@ def test_display_name_schema_qualified_original_case(tmp_path: Path):
     page = page_path(tmp_path, "gold_table:dim.practice").read_text(encoding="utf-8")
     assert "# dim.Practice\n" in page  # schema-qualified H1, original case
     assert "# dim.Practice `gold_table`" not in page  # type label dropped from the title
-    # mermaid label uses the same display
-    from coop_data_doc.render.mermaid import local_flowchart
-
-    assert "dim.Practice" in local_flowchart(g, "gold_table:dim.practice")
 
 
 def test_display_falls_back_to_name_when_absent():

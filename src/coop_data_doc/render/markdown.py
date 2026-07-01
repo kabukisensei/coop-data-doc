@@ -15,12 +15,7 @@ from pathlib import Path
 
 from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.graph.serialize import to_json_str
-from coop_data_doc.render.mermaid import (
-    doc_relpath,
-    estate_flowchart,
-    local_flowchart,
-    slug,
-)
+from coop_data_doc.render.paths import doc_relpath, slug
 
 INTENT_BEGIN = "<!-- intent:begin -->"
 INTENT_END = "<!-- intent:end -->"
@@ -329,8 +324,7 @@ def _wants_upstream_tree(graph: LineageGraph, node: Node) -> bool:
 
 def _upstream_section(graph: LineageGraph, node: Node, up: dict[str, list[str]]) -> str:
     """A 'trace back to source' section: a readable, collapsible text ancestry
-    tree to the source roots. (The page's Local Flow chart covers the visual
-    neighborhood, so this stays text-only — no second diagram.)"""
+    tree to the source roots."""
     tree = _upstream_tree_text(graph, node, up)
     lines = ["## Upstream lineage", ""]
     if not tree:
@@ -551,12 +545,6 @@ def render_node_page(
         "",
         _lineage_table(graph, node, graph.downstream(node.id, depth=1), "Downstream"),
         "",
-        "## Local Flow",
-        "",
-        "```mermaid",
-        local_flowchart(graph, node.id),
-        "```",
-        "",
         "## Business Intent",
         "",
         INTENT_BEGIN,
@@ -593,14 +581,6 @@ def _index_page(graph: LineageGraph, project_name: str) -> str:
         for node_id in unresolved:
             node = graph.nodes[node_id]
             lines.append(f"- [{node_id}]({node.node_type.value}/{slug(node_id)}.md)")
-    chart = estate_flowchart(graph)
-    if chart is not None:
-        lines.append("")
-        lines.append("## Data Flow")
-        lines.append("")
-        lines.append("```mermaid")
-        lines.append(chart)
-        lines.append("```")
     lines.extend(
         [
             "",

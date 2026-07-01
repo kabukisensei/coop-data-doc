@@ -1,3 +1,3 @@
 """coop-data-doc: offline, deterministic data-lineage documentation generator."""
 
-__version__ = "0.26.6"
+__version__ = "0.27.0"

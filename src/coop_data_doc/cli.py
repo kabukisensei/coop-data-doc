@@ -652,7 +652,7 @@ def set_folders(config_path: str | None, repo: str, skip_csv: str) -> None:
 
 def _doc_path(node) -> str:
     """The object's generated Markdown page, relative to the docs root."""
-    from coop_data_doc.render.mermaid import slug
+    from coop_data_doc.render.paths import slug
 
     return f"{node.node_type.value}/{slug(node.id)}.md"
 

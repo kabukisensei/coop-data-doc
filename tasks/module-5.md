@@ -1,8 +1,16 @@
 # MODULE 5 — Markdown & MkDocs HTML Generators ✅ IMPLEMENTED
 
 > Status: **done** — kept as interface reference; do not reimplement.
+>
+> **Later change (mermaid removed):** the Mermaid flowchart feature described
+> below (`render/mermaid.py`, the per-node "Local Flow" and index "Data Flow"
+> charts, the vendored `mermaid.min.js` / `mermaid-zoom.js`, and the `mermaid`
+> superfence) was removed — it wasn't useful in practice. The general-purpose
+> `slug()` / `doc_relpath()` helpers that lived in `render/mermaid.py` now live
+> in **`render/paths.py`**. Ignore the mermaid-specific parts of this brief; the
+> Markdown/site structure otherwise still holds.
 
-**Files to create:** `src/coop_data_doc/render/markdown.py`, `render/mermaid.py`,
+**Files to create:** `src/coop_data_doc/render/markdown.py`, `render/paths.py`,
 `render/site.py`, `src/coop_data_doc/templates/` assets, `tests/test_render.py`,
 golden files under `tests/golden/`.
 
@@ -16,7 +24,8 @@ def render_markdown(graph: LineageGraph, out_dir: Path, project_name: str) -> li
 ```
 
 One file per node at `{out_dir}/{node_type}/{slug}.md`. **As built, `slug()` lives in
-`render/mermaid.py`**: it strips every filesystem-illegal character (`< > : " / \ | ? *`
+`render/paths.py`** (originally `render/mermaid.py`, moved when mermaid was removed): it
+strips every filesystem-illegal character (`< > : " / \ | ? *`
 + control chars), replaces `.`/spaces, bounds the readable part to 80 chars, and appends
 `-<8-char sha1 of the id>` for guaranteed uniqueness — so the filename is *not* derivable
 from the id by hand. The page's location is published in the `path` front-matter field.
@@ -93,7 +102,12 @@ Rules:
   - `{out_dir}/manifest.json` — `to_json_str(graph)`; the machine entrypoint for agents.
 - Return the sorted list of written paths. No timestamps anywhere.
 
-## 2. `mermaid.py`
+## 2. `mermaid.py` — ⚠️ REMOVED
+
+> This whole module and its charts were later removed (mermaid wasn't useful in
+> practice). The section is kept only as a record of what once existed. `slug()`
+> and `doc_relpath()` were moved out to `render/paths.py`; everything else below
+> no longer exists in the codebase.
 
 ```python
 def local_flowchart(graph: LineageGraph, node_id: str, up_depth: int = 2, down_depth: int = 2) -> str: ...

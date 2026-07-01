@@ -19,8 +19,8 @@ silver table → stored proc → gold table → view → semantic model → meas
 
 - 📄 **Markdown files** with machine-readable headers — built for AI agents and scripts
   (see [For AI agents](#-for-ai-agents) below)
-- 🌐 **A searchable website** with dark mode and clickable lineage diagrams — built for
-  humans. It works straight off your hard drive: no server, no internet, no login.
+- 🌐 **A searchable website** with dark mode and clickable, collapsible lineage trees —
+  built for humans. It works straight off your hard drive: no server, no internet, no login.
 
 Everything runs on your machine by reading files. It never connects to a database, never
 calls an AI service, and produces byte-identical output for identical inputs — so the
@@ -195,8 +195,8 @@ xdg-open data-docs-site/index.html    # Linux
 
 You'll get a searchable site with a page per table, view, stored procedure, semantic
 model, measure, and report — each with its defining SQL/DAX up top, its columns, where
-its data comes from, what depends on it, and a clickable flowchart (drag to pan,
-Ctrl/Cmd+scroll to zoom). Model-facing pages add extras: a **collapsible "trace back to
+its data comes from, and what depends on it (upstream/downstream, each entry linking to
+its own page). Model-facing pages add extras: a **collapsible "trace back to
 source" tree** that walks a measure or gold table all the way down to its bronze sources,
 **Joel's Relationship Grid** (a fact × dimension matrix) on each semantic model, an
 **Unused measures** roll-up for cleanup, and reports nested under the model they draw
@@ -621,7 +621,7 @@ overwritten on the next `update`. To regenerate after source changes, run
 | `fuzzy_auto` warning | Two names were close enough to auto-match — listed so you can spot a wrong guess. |
 | `check` exits 1 | Committed docs are out of date — run `coop-data-doc update` and commit. |
 | `check` exits 2 | Unresolved references or risky parses. Resolve interactively, or use `check --lenient` if the risky parses are known and accepted. |
-| Diagrams or search don't work in the browser | Make sure you opened `data-docs-site/index.html` (the built site), not a file in `data-docs/`. |
+| Search doesn't work in the browser | Make sure you opened `data-docs-site/index.html` (the built site), not a file in `data-docs/`. |
 | Want to change a saved mapping answer | Edit `.lineage-cache.json` (next to your config): delete the entry and re-run. |
 
 ## Notes on .pbix files
@@ -633,11 +633,10 @@ hold anyway. The tool tells you when it hits an opaque model.
 
 ## Third-party assets
 
-The package vendors `mermaid.min.js` 11.15.0 and `iframe-worker` 1.0.4 (both MIT) so
-generated sites render diagrams and search over `file://` with no network, plus two
-small first-party scripts — `mermaid-zoom.js` (drag-pan / Ctrl-scroll zoom on diagrams)
-and `doc-tree.js` (collapsible lineage trees) — hand-rolled rather than vendored to stay
-within the no-CDN rule. See `src/coop_data_doc/templates/assets/README.md` for provenance.
+The package vendors `iframe-worker` 1.0.4 (MIT) so generated sites search over
+`file://` with no network, plus a small first-party script — `doc-tree.js`
+(collapsible lineage trees) — hand-rolled rather than vendored to stay within the
+no-CDN rule. See `src/coop_data_doc/templates/assets/README.md` for provenance.
 
 ## Development
 

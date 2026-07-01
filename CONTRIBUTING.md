@@ -11,7 +11,7 @@
 | M4 linker | `linker/resolver.py`, `cache.py`, `interactive.py` | joins SQL ↔ PBI: cache → exact → config rule → fuzzy → prompt |
 | M4½ layering | `layering.py` | medallion layer (bronze/silver/gold) from `config.layers` rules (schema/path), heuristic fallback; object *type* stays parser-detected |
 | M4¾ diagnostics | `diagnostics.py` | severity-classified warnings/unresolved → console summary, `diagnostics.json`, and the HTML Diagnostics page |
-| M5 renderers | `render/markdown.py`, `mermaid.py`, `site.py` | agent Markdown + offline MkDocs Material portal; nav grouped by layer→type; `schema.Object` (original-case `display_name`) titles |
+| M5 renderers | `render/markdown.py`, `paths.py`, `site.py` | agent Markdown + offline MkDocs Material portal; nav grouped by layer→type; `schema.Object` (original-case `display_name`) titles |
 | M6 CLI | `cli.py`, `wizard.py`, `upgrade.py`, `progress.py` | interactive menu (bare invocation), `setup` / `init` / `scan` / `build` / `update` / `check` / `help` / `upgrade`; stderr progress bars + spinner |
 
 The original builder briefs live in `tasks/` and double as interface documentation.
@@ -34,7 +34,7 @@ The original builder briefs live in `tasks/` and double as interface documentati
    returned as `ParseWarning` values. Parsers/renderers may accept an optional
    `on_file`/`on_node` callback for progress reporting (the CLI supplies
    it) — that's a reporting hook, not printing; the parser never renders.
-4. **Page filenames go through `slug()`** (`render/mermaid.py`): always
+4. **Page filenames go through `slug()`** (`render/paths.py`): always
    filesystem-safe (Windows-illegal chars stripped), length-bounded, and
    uniquified with a short id-hash. Never build a page path by hand; agents
    read the `path` front-matter field.
