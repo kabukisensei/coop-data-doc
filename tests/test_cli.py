@@ -368,6 +368,47 @@ def test_status_with_valid_config(tmp_path: Path):
     assert "freshness:" in result.output
 
 
+def test_build_graph_is_reusable_across_resolutions(tmp_path: Path):
+    """build_graph parses once; resolve_graph re-links on a copy without
+    re-parsing. Two resolves of the same parsed graph must match run_pipeline,
+    and the built graph must be left pristine (so the wizard can reuse it for
+    its suggest + verify passes). This is what makes the wizard scan ~2x faster.
+    """
+    import copy as _copy
+
+    from coop_data_doc.cli import build_graph, resolve_graph, run_pipeline
+    from coop_data_doc.config import Config
+
+    config_path = setup_workspace(tmp_path)
+    config = Config.load(config_path)
+
+    # baseline: the full pipeline in one shot
+    _, whole, _ = run_pipeline(config, interactive=False)
+
+    # split: parse once, then resolve twice on throwaway copies
+    parsed, _ = build_graph(config)
+    before_nodes, before_edges = len(parsed.nodes), len(parsed.edges)
+
+    g1 = parsed.model_copy(deep=True)
+    r1, _ = resolve_graph(g1, config, interactive=False)
+    g2 = parsed.model_copy(deep=True)
+    r2, _ = resolve_graph(g2, config, interactive=False)
+
+    # the split reproduces the monolithic pipeline's resolution exactly
+    assert (r1.resolved, r1.unresolved) == (whole.resolved, whole.unresolved)
+    # re-linking is deterministic across copies
+    assert (r1.resolved, r1.unresolved) == (r2.resolved, r2.unresolved)
+    # resolve_graph mutates only its argument copy, never the parsed base graph
+    assert (len(parsed.nodes), len(parsed.edges)) == (before_nodes, before_edges)
+    # build_graph is mapping-independent: dropping the schema_mappings changes
+    # only the resolution, not the parsed structure
+    no_map = _copy.deepcopy(config)
+    no_map.schema_mappings = []
+    g3 = parsed.model_copy(deep=True)
+    r3, _ = resolve_graph(g3, no_map, interactive=False)
+    assert r3.resolved <= whole.resolved  # fewer/equal links without the mapping hint
+
+
 def test_status_with_invalid_config(tmp_path: Path):
     """status exits 1 when config exists but is invalid."""
     config = tmp_path / "coop-data-doc.yml"

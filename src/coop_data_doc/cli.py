@@ -58,17 +58,17 @@ DEFAULT_CONFIG = "coop-data-doc.yml"
 _log = logging.getLogger("coop_data_doc")
 
 
-def run_pipeline(
+def build_graph(
     config: Config,
-    interactive: bool,
     progress: Progress | None = None,
-    pending_out: list | None = None,
-) -> tuple[LineageGraph, ResolutionResult, list[ParseWarning]]:
-    """Execute the full crawl -> parse -> link pipeline and return
-    (graph, resolution result, warnings). Shared by scan/build/check.
-
-    ``progress`` (optional) drives stderr progress bars; defaults to a
-    disabled no-op so callers and tests that don't want output are silent.
+) -> tuple[LineageGraph, list[ParseWarning]]:
+    """Crawl -> parse -> structural links -> prune -> assign layers, returning
+    (graph, warnings). This is everything that does NOT depend on
+    ``config.schema_mappings``, so the resulting graph can be resolved against
+    several mapping sets (see ``resolve_graph``) without re-crawling or
+    re-parsing — the expensive part. ``run_pipeline`` chains this into
+    ``resolve_graph``; the setup wizard reuses one built graph across its
+    suggest + verify passes.
     """
     progress = progress or Progress(enabled=False)
     graph = LineageGraph()
@@ -104,11 +104,26 @@ def run_pipeline(
     dropped = prune_schemas(graph, config.ignore_schemas)
     if dropped:
         progress.line(f"Dropped {dropped} objects in ignored/system schemas")
+        _log.debug("pruned %d nodes in system/ignored schemas", dropped)
     with progress.spinner("Assigning layers"):
         warnings += assign_layers(graph, config)
+    return graph, warnings
 
-    if dropped:
-        _log.debug("pruned %d nodes in system/ignored schemas", dropped)
+
+def resolve_graph(
+    graph: LineageGraph,
+    config: Config,
+    interactive: bool,
+    progress: Progress | None = None,
+    pending_out: list | None = None,
+) -> tuple[ResolutionResult, list[ParseWarning]]:
+    """Resolution tail: link Power BI tables to their SQL sources (the only
+    stage that depends on ``config.schema_mappings``), then wire reports to
+    models and fold visuals into pages. Mutates ``graph`` in place and returns
+    (result, warnings). Run this on a *copy* of a built graph when resolving the
+    same estate against more than one mapping set.
+    """
+    progress = progress or Progress(enabled=False)
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
     # A spinner (not just a static line) so this stage — the fuzzy cross-repo
     # matcher, previously silent — visibly shows activity on a large estate.
@@ -116,14 +131,31 @@ def run_pipeline(
     # questionary, and a spinner thread writing to stderr would corrupt it.
     if interactive:
         progress.line("Linking cross-repo references…")
-        result, link_warnings = link_graph(graph, config, cache, interactive, pending_out=pending_out)
+        result, warnings = link_graph(graph, config, cache, interactive, pending_out=pending_out)
     else:
         with progress.spinner("Linking cross-repo references"):
-            result, link_warnings = link_graph(graph, config, cache, interactive, pending_out=pending_out)
-    warnings += link_warnings
+            result, warnings = link_graph(graph, config, cache, interactive, pending_out=pending_out)
     # reports become downstream of their models, then visuals fold into pages
     link_reports_to_models(graph)
     collapse_visuals(graph)
+    return result, warnings
+
+
+def run_pipeline(
+    config: Config,
+    interactive: bool,
+    progress: Progress | None = None,
+    pending_out: list | None = None,
+) -> tuple[LineageGraph, ResolutionResult, list[ParseWarning]]:
+    """Execute the full crawl -> parse -> link pipeline and return
+    (graph, resolution result, warnings). Shared by scan/build/check.
+
+    ``progress`` (optional) drives stderr progress bars; defaults to a
+    disabled no-op so callers and tests that don't want output are silent.
+    """
+    graph, warnings = build_graph(config, progress)
+    result, link_warnings = resolve_graph(graph, config, interactive, progress, pending_out)
+    warnings += link_warnings
     _log.debug(
         "done: %d nodes, %d edges, %d cross-repo links, %d unresolved, %d warnings",
         len(graph.nodes),

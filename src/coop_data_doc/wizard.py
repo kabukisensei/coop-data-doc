@@ -14,9 +14,14 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import questionary
 import yaml
+
+if TYPE_CHECKING:  # annotation-only; runtime import stays lazy inside the function
+    from coop_data_doc.graph.model import LineageGraph
+    from coop_data_doc.linker.resolver import ResolutionResult
 
 from coop_data_doc.config import (
     Config,
@@ -255,13 +260,21 @@ def _autosuggest_mappings(
     if not (sql_abs.is_dir() and pbi_abs.is_dir()):
         return None  # nothing to scan; caller does manual entry
 
-    from coop_data_doc.cli import run_pipeline  # lazy: avoid the wizard<->cli import cycle
+    from coop_data_doc.cli import build_graph, resolve_graph  # lazy: avoid the wizard<->cli cycle
     from coop_data_doc.progress import Progress, should_enable
 
     # Drive the dry-run's own crawl/parse/link progress on stderr so the scan
     # shows a spinner and bars instead of sitting silent after the message below
     # (disabled automatically when stderr isn't a TTY, e.g. under tests/CI).
     scan_progress = Progress(should_enable(quiet=False))
+
+    def resolve(working: list[tuple[str, str]]) -> tuple[LineageGraph, ResolutionResult]:
+        """Resolve the parsed estate against one mapping set, on a throwaway copy
+        so ``parsed`` stays pristine for the next call. Only the (cheap) link
+        step re-runs — the crawl/parse happens once, above."""
+        graph = parsed.model_copy(deep=True)
+        result, _ = resolve_graph(graph, build_config(working), interactive=False, progress=scan_progress)
+        return graph, result
 
     def build_config(working: list[tuple[str, str]]) -> Config:
         rendered = render_config_yaml(
@@ -287,7 +300,10 @@ def _autosuggest_mappings(
         "\nScanning your repos to connect Power BI tables to their SQL sources (read-only, a few seconds)…",
         file=sys.stderr,
     )
-    graph, result, _ = run_pipeline(build_config(mappings), interactive=False, progress=scan_progress)
+    # Parse the estate ONCE; both the suggest pass here and the verify pass below
+    # re-link this same parsed graph rather than re-crawling and re-parsing.
+    parsed, _ = build_graph(build_config(mappings), progress=scan_progress)
+    graph, result = resolve(mappings)
 
     # index: normalized SQL object name -> set of schemas that contain it
     obj_schemas: dict[str, set[str]] = {}
@@ -397,9 +413,10 @@ def _autosuggest_mappings(
             mappings.append((chosen, label))
             remaining = new_remaining
 
-    # verify re-scan: re-run with the new mappings so the user knows they took
+    # verify re-scan: re-link (no re-parse) with the new mappings so the user
+    # knows they took — reuses the graph parsed once at the top.
     print("\n  Re-checking with your mappings…", file=sys.stderr)
-    _, verified, _ = run_pipeline(build_config(mappings), interactive=False, progress=scan_progress)
+    _, verified = resolve(mappings)
     left = len(verified.unresolved)
     if left == 0:
         print("  ✓ All Power BI tables now link to a SQL object.", file=sys.stderr)
