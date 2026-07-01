@@ -256,6 +256,12 @@ def _autosuggest_mappings(
         return None  # nothing to scan; caller does manual entry
 
     from coop_data_doc.cli import run_pipeline  # lazy: avoid the wizard<->cli import cycle
+    from coop_data_doc.progress import Progress, should_enable
+
+    # Drive the dry-run's own crawl/parse/link progress on stderr so the scan
+    # shows a spinner and bars instead of sitting silent after the message below
+    # (disabled automatically when stderr isn't a TTY, e.g. under tests/CI).
+    scan_progress = Progress(should_enable(quiet=False))
 
     def build_config(working: list[tuple[str, str]]) -> Config:
         rendered = render_config_yaml(
@@ -281,7 +287,7 @@ def _autosuggest_mappings(
         "\nScanning your repos to connect Power BI tables to their SQL sources (read-only, a few seconds)…",
         file=sys.stderr,
     )
-    graph, result, _ = run_pipeline(build_config(mappings), interactive=False)
+    graph, result, _ = run_pipeline(build_config(mappings), interactive=False, progress=scan_progress)
 
     # index: normalized SQL object name -> set of schemas that contain it
     obj_schemas: dict[str, set[str]] = {}
@@ -393,7 +399,7 @@ def _autosuggest_mappings(
 
     # verify re-scan: re-run with the new mappings so the user knows they took
     print("\n  Re-checking with your mappings…", file=sys.stderr)
-    _, verified, _ = run_pipeline(build_config(mappings), interactive=False)
+    _, verified, _ = run_pipeline(build_config(mappings), interactive=False, progress=scan_progress)
     left = len(verified.unresolved)
     if left == 0:
         print("  ✓ All Power BI tables now link to a SQL object.", file=sys.stderr)

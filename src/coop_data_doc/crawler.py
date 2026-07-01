@@ -9,8 +9,10 @@ paths so output is identical across operating systems.
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 from enum import Enum
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -67,6 +69,22 @@ def _matches(rel_posix: str, patterns: list[str]) -> bool:
     return False
 
 
+def _dir_excluded(rel_dir: str, patterns: list[str]) -> bool:
+    """True when an exclude glob covers the *entire* subtree under ``rel_dir``,
+    so the walk can skip descending into it altogether.
+
+    Conservative on purpose: it only prunes when a generic file at *arbitrary
+    depth* beneath ``rel_dir`` would be excluded (e.g. ``**/archive/**`` or
+    ``**/node_modules/**``). A narrow pattern like ``**/archive/*.tmp`` returns
+    False, so the directory is still crawled and the per-file exclude drops the
+    real matches while keeping the non-matches — identical to the old
+    rglob-then-filter behaviour, just without the wasted descent. The ``\\x00``
+    probe segments can never appear in a real path, so name/extension-specific
+    patterns don't falsely trigger a prune.
+    """
+    return _matches(f"{rel_dir}/\x00", patterns) and _matches(f"{rel_dir}/\x00/\x00", patterns)
+
+
 def _classify(rel_posix: str) -> FileKind | None:
     name = rel_posix.rsplit("/", 1)[-1].lower()
     if name.endswith(".sql"):
@@ -97,66 +115,82 @@ def crawl(config: Config) -> tuple[FileInventory, list[ParseWarning]]:
     for repo_key in sorted(config.repos):
         repo = config.repos[repo_key]
         root = config.repo_root(repo_key)
-        for path in sorted(root.rglob("*")):
-            rel = path.relative_to(root).as_posix()
-            try:
-                if not path.is_file():
-                    continue
-                # hidden dirs/files (.git, .pbi caches, .lineage-cache.json)
-                if any(part.startswith(".") for part in rel.split("/")):
-                    continue
-                if path.is_symlink() and not path.resolve().is_relative_to(root):
-                    warnings.append(
-                        ParseWarning(
-                            file=rel,
-                            message=f"symlink resolves outside repo '{repo_key}'; skipped",
-                            category="symlink_escape",
-                        )
-                    )
-                    continue
-                if not _matches(rel, repo.include) or _matches(rel, repo.exclude):
-                    continue
-                kind = _classify(rel)
-                if kind is None:
-                    warnings.append(
-                        ParseWarning(
-                            file=rel,
-                            message="included by globs but not a recognized file kind; skipped",
-                            category="unclassified_file",
-                        )
-                    )
-                    continue
-                size = path.stat().st_size
-            except OSError as exc:
-                # locked, permission-denied, or deleted/disconnected between
-                # enumeration and stat (e.g. a .pbix held by Power BI Desktop or
-                # OneDrive on Windows): degrade to a warning, never abort the build.
-                warnings.append(
-                    ParseWarning(
-                        file=rel,
-                        message=f"could not access file ({exc}); skipped",
-                        category="file_unreadable",
-                    )
-                )
-                continue
-            if size > MAX_FILE_BYTES and kind is not FileKind.PBIX:
-                warnings.append(
-                    ParseWarning(
-                        file=rel,
-                        message=f"file is {size} bytes (> {MAX_FILE_BYTES}); skipped",
-                        category="file_too_large",
-                    )
-                )
-                continue
-            entries.append(
-                FileEntry(
-                    path=rel,
-                    abs_path=str(path),
-                    repo_key=repo_key,
-                    kind=kind,
-                    size=size,
-                )
+        # os.walk with in-place dir pruning (not rglob) so huge non-source trees
+        # are never *descended into*. rglob("*") would enter .git / .venv /
+        # node_modules and stat every file only to discard it — cheap on a local
+        # Mac, but on a Windows VM each touch pays a Defender / OneDrive tax and
+        # a big .git alone can stall the crawl for minutes. Pruning here is
+        # behaviour-identical to the per-file skips below: hidden paths were
+        # always skipped, and a subtree-wide exclude drops every file under it.
+        for dirpath, dirnames, filenames in os.walk(root):
+            base = Path(dirpath)
+            dirnames[:] = sorted(
+                d
+                for d in dirnames
+                if not d.startswith(".")  # .git, .venv, .pbi caches — never descend
+                and not _dir_excluded((base / d).relative_to(root).as_posix(), repo.exclude)
             )
+            for name in sorted(filenames):
+                path = base / name
+                rel = path.relative_to(root).as_posix()
+                try:
+                    if not path.is_file():
+                        continue
+                    # a hidden file at a non-hidden path (e.g. src/.notes.sql)
+                    if any(part.startswith(".") for part in rel.split("/")):
+                        continue
+                    if path.is_symlink() and not path.resolve().is_relative_to(root):
+                        warnings.append(
+                            ParseWarning(
+                                file=rel,
+                                message=f"symlink resolves outside repo '{repo_key}'; skipped",
+                                category="symlink_escape",
+                            )
+                        )
+                        continue
+                    if not _matches(rel, repo.include) or _matches(rel, repo.exclude):
+                        continue
+                    kind = _classify(rel)
+                    if kind is None:
+                        warnings.append(
+                            ParseWarning(
+                                file=rel,
+                                message="included by globs but not a recognized file kind; skipped",
+                                category="unclassified_file",
+                            )
+                        )
+                        continue
+                    size = path.stat().st_size
+                except OSError as exc:
+                    # locked, permission-denied, or deleted/disconnected between
+                    # enumeration and stat (e.g. a .pbix held by Power BI Desktop or
+                    # OneDrive on Windows): degrade to a warning, never abort the build.
+                    warnings.append(
+                        ParseWarning(
+                            file=rel,
+                            message=f"could not access file ({exc}); skipped",
+                            category="file_unreadable",
+                        )
+                    )
+                    continue
+                if size > MAX_FILE_BYTES and kind is not FileKind.PBIX:
+                    warnings.append(
+                        ParseWarning(
+                            file=rel,
+                            message=f"file is {size} bytes (> {MAX_FILE_BYTES}); skipped",
+                            category="file_too_large",
+                        )
+                    )
+                    continue
+                entries.append(
+                    FileEntry(
+                        path=rel,
+                        abs_path=str(path),
+                        repo_key=repo_key,
+                        kind=kind,
+                        size=size,
+                    )
+                )
 
     entries.sort(key=lambda entry: (entry.repo_key, entry.path))
     return FileInventory(entries=entries), warnings

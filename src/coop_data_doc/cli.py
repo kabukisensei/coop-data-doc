@@ -72,8 +72,11 @@ def run_pipeline(
     """
     progress = progress or Progress(enabled=False)
     graph = LineageGraph()
-    inventory, warnings = crawl(config)
-    progress.line(f"Crawling repos… {len(inventory.entries)} files found")
+    # A spinner (not a silent call) so the crawl — the first, fully blocking
+    # stage — visibly shows activity instead of looking frozen on a slow estate.
+    with progress.spinner("Crawling repos"):
+        inventory, warnings = crawl(config)
+    progress.line(f"  {len(inventory.entries)} files found")
     _log.debug("crawled %d files across %d repos", len(inventory.entries), len(config.repos))
 
     sql_entries = inventory.by_kind(FileKind.SQL_FILE)

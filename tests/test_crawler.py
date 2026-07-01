@@ -128,3 +128,44 @@ def test_hidden_dirs_skipped(tmp_path: Path):
     inventory, warnings = crawl(config)
     assert [entry.path for entry in inventory.entries] == ["real.sql"]
     assert warnings == []
+
+
+def test_hidden_and_excluded_dirs_are_not_descended(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Pruning happens at the directory level: files under a hidden or a
+    subtree-excluded directory must never be stat'd/opened (the whole point of
+    the walk-pruning is to avoid touching .git / node_modules on Windows). We
+    prove non-descent by making any stat() under a pruned dir blow up — the
+    crawl must still succeed and only see the real, top-level file."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "objects.sql").write_text("SELECT 1;", encoding="utf-8")
+    (repo / "node_modules" / "pkg").mkdir(parents=True)
+    (repo / "node_modules" / "pkg" / "bundled.sql").write_text("SELECT 1;", encoding="utf-8")
+    (repo / "real.sql").write_text("SELECT 1;", encoding="utf-8")
+
+    real_stat = Path.stat
+
+    def boom_under_pruned(self, *args, **kwargs):
+        if ".git" in self.parts or "node_modules" in self.parts:
+            raise AssertionError(f"descended into a pruned dir: {self}")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", boom_under_pruned)
+    config = Config(
+        repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"], exclude=["**/node_modules/**"])}
+    )
+    inventory, warnings = crawl(config)
+    assert [entry.path for entry in inventory.entries] == ["real.sql"]
+    assert warnings == []
+
+
+def test_narrow_exclude_still_crawls_dir_and_keeps_other_files(tmp_path: Path):
+    """A narrow exclude (not a whole-subtree pattern) must NOT prune the dir:
+    the excluded file is dropped per-file, siblings are still crawled."""
+    repo = tmp_path / "repo"
+    (repo / "logs").mkdir(parents=True)
+    (repo / "logs" / "debug.sql").write_text("SELECT 1;", encoding="utf-8")
+    (repo / "logs" / "keep.sql").write_text("SELECT 1;", encoding="utf-8")
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"], exclude=["**/debug.sql"])})
+    inventory, _ = crawl(config)
+    assert [entry.path for entry in inventory.entries] == ["logs/keep.sql"]
