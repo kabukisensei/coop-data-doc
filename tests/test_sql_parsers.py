@@ -521,6 +521,26 @@ def test_utf16_sql_files_parsed_via_bom(tmp_path: Path):
     assert not any(w.category == "encoding_unreadable" for w in warnings)
 
 
+def test_crlf_sql_files_normalized_to_lf(tmp_path: Path):
+    """git autocrlf on Windows checks sources out as CRLF; source_code must be
+    LF regardless, or rendered pages embed CRLF inside code fences and `check`
+    reports docs built on another OS as stale (the cross-OS byte-identity
+    guarantee)."""
+    from coop_data_doc.parsers.sql_common import decode_text
+
+    script = "CREATE VIEW dbo.v_sales AS\r\nSELECT order_id\r\nFROM dbo.orders;\r\n"
+    (tmp_path / "crlf.sql").write_bytes(script.encode("utf-8"))
+    config = Config(repos={"sql": RepoConfig(path=str(tmp_path), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    graph = LineageGraph()
+    parse_sql_objects(inventory.by_kind(FileKind.SQL_FILE), graph)
+    node = graph.nodes["view:dbo.v_sales"]
+    assert "\r" not in node.source_code
+    assert "CREATE VIEW dbo.v_sales AS\nSELECT order_id" in node.source_code
+    # the BOM'd UTF-16 decode path (SSMS Unicode save) normalizes too
+    assert decode_text("x\r\ny\rz".encode("utf-16")) == "x\ny\nz"
+
+
 def test_undecodable_sql_file_warns_not_silent(tmp_path: Path):
     """A BOM-less UTF-16 (or binary) file can't be parsed — but it must produce
     an encoding warning, never silently contribute nothing. The warning is
