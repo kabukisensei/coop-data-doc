@@ -70,19 +70,26 @@ def strip_bom(text: str) -> str:
 
 
 def decode_text(data: bytes) -> str:
-    """Decode file bytes tolerantly, BOM-aware.
+    """Decode file bytes tolerantly, BOM-aware, newlines normalized to LF.
 
     UTF-16/UTF-32 BOMs (SSMS's 'Save with Encoding' Unicode default is UTF-16)
     are honored; everything else decodes as utf-8-sig with replacement, so a
     file never raises here. Callers should treat NULs surviving in the result
     (BOM-less UTF-16, binary) as unreadable and warn — never stay silent.
+
+    CRLF/lone-CR are normalized to LF: git's autocrlf checks sources out as
+    CRLF on Windows, and carrying CRLF into `source_code` embeds it in
+    rendered pages — breaking the cross-OS byte-identity guarantee (docs
+    built on Windows read as stale on Linux CI, and vice versa).
     """
     # UTF-32-LE's BOM starts with UTF-16-LE's, so check the wider one first.
     if data.startswith(codecs.BOM_UTF32_LE) or data.startswith(codecs.BOM_UTF32_BE):
-        return data.decode("utf-32", errors="replace")
-    if data.startswith(codecs.BOM_UTF16_LE) or data.startswith(codecs.BOM_UTF16_BE):
-        return data.decode("utf-16", errors="replace")
-    return data.decode("utf-8-sig", errors="replace")
+        text = data.decode("utf-32", errors="replace")
+    elif data.startswith(codecs.BOM_UTF16_LE) or data.startswith(codecs.BOM_UTF16_BE):
+        text = data.decode("utf-16", errors="replace")
+    else:
+        text = data.decode("utf-8-sig", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def split_batches(sql_text: str) -> list[str]:
