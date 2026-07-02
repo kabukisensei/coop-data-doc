@@ -56,6 +56,53 @@ pytest
 ruff check src tests
 ```
 
+Use Python 3.10–3.13 (3.13 recommended); **never 3.14** — it breaks the
+editable-install `.pth` / console-script imports. `make setup` builds a
+correct `.venv`; `make test` / `make lint` use it without activation.
+
+## Testing strategy
+
+Two tiers — run the first on every change, the second before releases and
+after parser/crawler/linker changes.
+
+**1. Unit suite (pytest).** Fixture-driven: `tests/fixtures/repo_sql` and
+`repo_pbi` are miniature real repos, and most tests assert exact node-id /
+edge-key sets. Fast (~300 tests, < 2 s):
+
+```bash
+.venv/bin/python -m pytest -q     # or: make test
+```
+
+CI (`.github/workflows/ci.yml`) runs the same suite on Python 3.10–3.13 ×
+ubuntu + windows, plus `ruff check` and `ruff format --check`.
+
+**2. Real-estate end-to-end.** The fixtures are deliberately tiny; before a
+release, build against a real estate. Reference estates on Aaron's machine
+(machine-specific example paths — substitute your own repos elsewhere):
+
+- `~/Developer/fabric-dw` — Fabric warehouse SQL estate, ~452 `.sql` files
+  (tables / views / stored procedures across several schemas)
+- `~/Developer/fabric` — Power BI estate, ~130 `.tmdl` + ~36 `.pbix` files
+  plus PBIR reports
+
+Put a `coop-data-doc.yml` in a folder that is a **sibling of both repos**
+(the README's "Worked example: a large multi-schema warehouse" uses exactly
+these two repos' paths; keep `output.dir` and `output.site_dir` side-by-side —
+validation rejects nesting one inside the other), then build with this repo's
+dev install:
+
+```bash
+.venv/bin/coop-data-doc build --config path/to/coop-data-doc.yml --non-interactive
+```
+
+Expected ballpark against those two estates (regression sanity only — the
+estates grow, so treat every number as approximate): **~948 objects,
+~2760 edges, ~56 cross-repo links, 0 unresolved, ~40 s**. Investigate if a
+rebuild suddenly loses objects/edges, gains unresolved items, or slows
+sharply — diff `data-docs/diagnostics.json` against the previous run, and use
+`coop-data-doc scan` (no rendering) as the fast feedback loop while narrowing
+down.
+
 ## Releasing
 
 Bump the version in `src/coop_data_doc/__init__.py` on every release — that is the

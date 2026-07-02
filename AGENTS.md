@@ -27,6 +27,12 @@ coop-data-doc check --lenient
 > --non-interactive`). Use this when the `coop-data-doc` console script isn't on
 > `PATH` — same entry point, no install-location dependency.
 
+> **Python for dev installs: 3.10–3.13 only — never 3.14.** 3.14 breaks the
+> editable-install `.pth` / console-script imports, so both `coop-data-doc`
+> and `python -m coop_data_doc` fail on a `pip install -e` install. Setup:
+> `python3.13 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
+> (or `make setup`). End users installing from PyPI via pipx are unaffected.
+
 ## CLI Contract for Agents
 
 All commands exit with these codes:
@@ -255,4 +261,4 @@ graph, result, warnings = run_pipeline(config, interactive=False)
 
 ## Version
 
-This contract matches `coop-data-doc` version `0.26.2`.
+This contract matches `coop-data-doc` version `0.28.0`.

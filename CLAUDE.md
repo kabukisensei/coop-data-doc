@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # coop-data-doc — agent guide
 
 Offline, deterministic data-lineage doc generator for SQL + Power BI estates.
@@ -5,21 +7,42 @@ Start with `ARCHITECTURE.md` (pipeline, data model, design decisions), then
 `CONTRIBUTING.md` (rules). The `tasks/` briefs document each module's
 interface in depth.
 
-**For the machine-readable agent contract, see `AGENTS.md`.**
+**For the machine-readable agent contract, see `AGENTS.md`** (imported above).
+
+## Quick setup
+
+```bash
+python3.13 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m pytest -q      # verify: ~300 passed in < 2 s
+```
+
+**Python 3.10–3.13 only — never 3.14.** 3.14 breaks the editable-install
+`.pth` / console-script imports, so `coop-data-doc` (and `python -m
+coop_data_doc`) fails to import from a dev install. 3.13 is the recommended
+dev interpreter; CI tests 3.10–3.13. `make setup` runs the first two lines
+(venv + editable install) and verifies with `python -m coop_data_doc
+--version` instead of pytest — run `make test` afterwards for the full check.
 
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest -q          # full suite (fast, <1s)
-.venv/bin/ruff check src tests        # lint
+.venv/bin/python -m pytest -q          # full suite (fast, <2s)  [make test]
+.venv/bin/ruff check src tests        # lint                     [make lint]
 .venv/bin/ruff format --check src tests   # formatting (CI enforces this too)
 .venv/bin/coop-data-doc build --non-interactive   # run the tool itself
 ```
 
-If `.venv` is missing, build it with a CI-tested Python (3.10–3.13; 3.13
-recommended — 3.14 doesn't reliably honor the editable-install `.pth`, so the
-`coop-data-doc` console script fails to import):
-`python3.13 -m venv .venv && .venv/bin/pip install -e ".[dev]"`.
+## Release rule
+
+`__version__` in `src/coop_data_doc/__init__.py` is the **single source of
+truth** — bump it there on every release. `pyproject.toml` is dynamic
+(`[tool.hatch.version]`); there is no version field there to edit. The release
+tag must match `__version__` exactly (`__version__ = "0.28.0"` → tag
+`v0.28.0`); `.github/workflows/publish.yml` verifies tag == `__version__` and
+aborts the PyPI publish on mismatch. Run `make release-check` before tagging
+(it checks **local** tags only — `git fetch --tags` first on a stale clone).
+Semver policy and rationale: `CONTRIBUTING.md` → "Releasing".
 
 ## Hard rules
 
