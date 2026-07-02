@@ -1175,6 +1175,21 @@ def _tree_diff(committed: Path, fresh: Path) -> list[str]:
             and filecmp.cmp(committed_file, fresh_file, shallow=False)
         ):
             stale.add(str(relative))
+            # DEBUG probe (temporary, debug/windows-stale-probe branch only):
+            # dump the first differing bytes of both sides so the Windows CI
+            # runner shows exactly what diverges.
+            if committed_file.is_file() and fresh_file.is_file():
+                a = committed_file.read_bytes()
+                b = fresh_file.read_bytes()
+                limit = min(len(a), len(b))
+                i = next((k for k in range(limit) if a[k] != b[k]), limit)
+                lo = max(0, i - 80)
+                click.echo(
+                    f"DEBUG {relative}: committed={len(a)}B fresh={len(b)}B first-diff@{i}\n"
+                    f"  committed: {a[lo : i + 160]!r}\n"
+                    f"  fresh:     {b[lo : i + 160]!r}",
+                    err=True,
+                )
     return sorted(stale)
 
 
