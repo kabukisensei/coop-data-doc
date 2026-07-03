@@ -2,6 +2,13 @@
 
 Each `module-N.md` is a self-contained brief for a coding LLM (Claude Sonnet, Kimi K2.7, etc.).
 
+> **Status: every module (M0–M7) is built and merged.** These briefs remain as
+> interface documentation (see the module map in `CONTRIBUTING.md`). The
+> handoff process below applies **only** if a new `module-N.md` brief is added;
+> for changes to existing code, follow `CONTRIBUTING.md` instead — do not
+> re-implement a module from its brief. Where a brief and the code disagree,
+> the code wins.
+
 ## How to hand off a task
 1. Paste **`_shared-context.md`** first (always).
 2. Paste the source of `src/coop_data_doc/graph/model.py` (the interface every module codes
@@ -20,8 +27,8 @@ Each `module-N.md` is a self-contained brief for a coding LLM (Claude Sonnet, Ki
 | 5 | ~~M7 packaging/CI hardening~~ ✅ done | — |
 
 ## Review checklist for every returned module
-- [ ] `pytest` green, including new fixtures
-- [ ] No prints/exits outside cli.py, wizard.py, and linker/interactive.py; warnings returned as data
-- [ ] Determinism: run twice on fixtures → identical output (sorted iteration everywhere)
-- [ ] No new dependencies beyond the allowed list
+- [ ] `.venv/bin/python -m pytest -q` green (expect `~310 passed`, zero failures), including new fixtures
+- [ ] No prints/exits outside cli.py, wizard.py, progress.py, and linker/interactive.py; warnings returned as data
+- [ ] Determinism: two builds on the same inputs are byte-identical — `tests/test_determinism.py` (part of the suite above) enforces this; sorted iteration everywhere
+- [ ] No new dependencies beyond the allowed list (`[project.dependencies]` in `pyproject.toml`; mirrored in `_shared-context.md`)
 - [ ] Type hints + module docstring present

@@ -33,6 +33,19 @@ coop-data-doc check --lenient
 > `python3.13 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
 > (or `make setup`). End users installing from PyPI via pipx are unaffected.
 
+## Environment (Working on This Repo)
+
+Linux and macOS are equally supported; every command below is copy-paste on both.
+
+- **Venv** (Python 3.13; 3.10–3.13 only, never 3.14). Rebuild from scratch:
+  `rm -rf .venv && python3.13 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
+- **Tests:** `.venv/bin/python -m pytest -q` — expect `~310 passed` in a few seconds, zero failures.
+- **Lint:** `.venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests` — pass looks like `All checks passed!` then `N files already formatted`.
+- **Before starting any work:** `git pull --ff-only`. If the tree is dirty or the pull fails: stop and report — do not stash, reset, or commit around it.
+- **Secrets:** none exist and none are needed (the pipeline is offline). Never add tokens, connection strings, or credentials to code, config, or fixtures.
+- **Releases:** pushing a `v*` tag publishes to PyPI (`.github/workflows/publish.yml`). Never create or push a `v*` tag unless Aaron explicitly requested a release and named the version — a clean tree or a finished task is **not** a release signal.
+- **Headless machines (VPS/CI):** run only this repo's unit tests and fixtures. The full-corpus reference estates (`fabric` / `fabric-dw`, see `CONTRIBUTING.md` → Testing strategy) live on Azure DevOps with interactive-only auth and **cannot be cloned or pulled headlessly**; any task needing them (full estate builds, the ~948-object benchmark) is Aaron's-Mac-only — report it back instead of attempting it.
+
 ## CLI Contract for Agents
 
 All commands exit with these codes:

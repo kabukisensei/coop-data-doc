@@ -14,7 +14,7 @@ interface in depth.
 ```bash
 python3.13 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest -q      # verify: ~300 passed in < 2 s
+.venv/bin/python -m pytest -q      # verify: ~310 passed in a few seconds
 ```
 
 **Python 3.10–3.13 only — never 3.14.** 3.14 breaks the editable-install
@@ -27,13 +27,17 @@ dev interpreter; CI tests 3.10–3.13. `make setup` runs the first two lines
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest -q          # full suite (fast, <2s)  [make test]
+.venv/bin/python -m pytest -q          # full suite (fast, ~2s)  [make test]
 .venv/bin/ruff check src tests        # lint                     [make lint]
 .venv/bin/ruff format --check src tests   # formatting (CI enforces this too)
 .venv/bin/coop-data-doc build --non-interactive   # run the tool itself
 ```
 
 ## Release rule
+
+Releases happen only when Aaron explicitly asks for one and names the version —
+never create or push a `v*` tag on your own, and never infer a release from a
+clean tree or a finished task (the tag push publishes straight to PyPI).
 
 `__version__` in `src/coop_data_doc/__init__.py` is the **single source of
 truth** — bump it there on every release. `pyproject.toml` is dynamic

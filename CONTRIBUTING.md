@@ -67,7 +67,7 @@ after parser/crawler/linker changes.
 
 **1. Unit suite (pytest).** Fixture-driven: `tests/fixtures/repo_sql` and
 `repo_pbi` are miniature real repos, and most tests assert exact node-id /
-edge-key sets. Fast (~300 tests, < 2 s):
+edge-key sets. Fast (~310 tests, a few seconds):
 
 ```bash
 .venv/bin/python -m pytest -q     # or: make test
@@ -77,13 +77,21 @@ CI (`.github/workflows/ci.yml`) runs the same suite on Python 3.10–3.13 ×
 ubuntu + windows, plus `ruff check` and `ruff format --check`.
 
 **2. Real-estate end-to-end.** The fixtures are deliberately tiny; before a
-release, build against a real estate. Reference estates on Aaron's machine
+release, build against a real estate. Reference estates on Aaron's machine,
+cloned side-by-side under one parent directory — `~/Developer` there; the
+side-by-side layout is the assumption everywhere cross-repo paths appear
 (machine-specific example paths — substitute your own repos elsewhere):
 
 - `~/Developer/fabric-dw` — Fabric warehouse SQL estate, ~452 `.sql` files
   (tables / views / stored procedures across several schemas)
 - `~/Developer/fabric` — Power BI estate, ~130 `.tmdl` + ~36 `.pbix` files
   plus PBIR reports
+
+> **This tier is Aaron's-Mac-only.** Both estates live in a private Azure
+> DevOps org with interactive-only auth, so a headless machine
+> (VPS, CI) **cannot clone or pull them**. On headless machines run only
+> tier 1 (the unit suite); if a task requires these corpora, stop and report
+> that it needs Aaron's Mac rather than attempting a workaround.
 
 Put a `coop-data-doc.yml` in a folder that is a **sibling of both repos**
 (the README's "Worked example: a large multi-schema warehouse" uses exactly
@@ -104,6 +112,11 @@ sharply — diff `data-docs/diagnostics.json` against the previous run, and use
 down.
 
 ## Releasing
+
+Releases are human-initiated: cut one only when Aaron explicitly asks for a
+release and names the version. Never infer a release from a clean tree, a
+merged PR, or a finished task — pushing a `v*` tag publishes to PyPI and
+cannot be undone (versions are never reused).
 
 Bump the version in `src/coop_data_doc/__init__.py` on every release — that is the
 single source of truth. `pyproject.toml` uses dynamic versioning
