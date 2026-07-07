@@ -53,6 +53,12 @@ path = "src/coop_data_doc/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/coop_data_doc"]
 
+[tool.hatch.build.targets.sdist]
+# Ship only what installers and downstream builders need. Internal process
+# docs (AGENTS.md, CONTRIBUTING.md, tasks/, .github/) must never end up in
+# the published artifact — PyPI uploads are immutable.
+only-include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

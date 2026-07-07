@@ -115,11 +115,11 @@ Shape:
 ```json
 {
   "nodes": {
-    "view:salespm.dim_customer": {
+    "view:sales.dim_customer": {
       "node_type": "view",
-      "schema_name": "salespm",
+      "schema_name": "sales",
       "name": "dim_customer",
-      "source_file": "views/salespm/dim_customer.sql",
+      "source_file": "views/sales/dim_customer.sql",
       "columns": [...],
       "metadata": {...}
     }
@@ -156,19 +156,19 @@ Every generated `.md` page starts with strict YAML:
 
 ```yaml
 ---
-id: "view:salespm.dim_customer"
+id: "view:sales.dim_customer"
 type: "view"
 name: "dim_customer"
-schema: "salespm"
+schema: "sales"
 layer: "gold"
-source_file: "views/salespm/dim_customer.sql"
-path: "view/salespm-dim_customer-<hash>.md"
+source_file: "views/sales/dim_customer.sql"
+path: "view/sales-dim_customer-<hash>.md"
 upstream_inputs:
   - "gold_table:dbo.fact_sales"
 downstream_dependents:
-  - "pbi_table:salespm.dim_customer"
+  - "pbi_table:sales.dim_customer"
 tags:
-  - "salespm"
+  - "sales"
 ---
 ```
 

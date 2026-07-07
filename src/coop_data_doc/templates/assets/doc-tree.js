@@ -2,7 +2,7 @@
  * doc-tree.js — collapsible "Upstream lineage" dependency trees.
  *
  * First-party, dependency-free. The trace-to-source tree can be a wall of text
- * (deep d365fo chains), so this turns the nested list under each "## Upstream
+ * (deep ERP source chains), so this turns the nested list under each "## Upstream
  * lineage" heading into a collapsible tree: every node with children starts
  * COLLAPSED with a ▸/▾ toggle to drill down. With no JS the full tree shows, so
  * the Markdown still reads fine.
