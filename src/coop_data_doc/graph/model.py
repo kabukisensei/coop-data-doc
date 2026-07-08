@@ -15,7 +15,7 @@ import re
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class NodeType(str, Enum):
@@ -151,6 +151,30 @@ class LineageGraph(BaseModel):
 
     nodes: dict[str, Node] = Field(default_factory=dict)
     edges: list[Edge] = Field(default_factory=list)
+    # O(1) dedup index over `edges`, keyed by (source, target, type). Not serialized —
+    # rebuilt from `edges` on load (model_post_init, so model_validate of a graph.json
+    # works) and whenever the edge list is replaced wholesale (replace_edges). Keeps graph
+    # construction O(E) instead of the O(E²) full scan add_edge used to do per insert.
+    _edge_index: dict[tuple[str, str, str], Edge] = PrivateAttr(default_factory=dict)
+    # Cached flow adjacency per direction ("up"/"down"), lazily built by _adjacency and
+    # invalidated on any edge mutation. Render is read-only over the graph, so this turns
+    # the per-node upstream()/downstream() calls (which rebuilt adjacency EVERY call) into
+    # a single rebuild reused across the whole render — O(nodes×edges) -> O(nodes+edges).
+    _adj_cache: dict[str, dict[str, set[str]]] = PrivateAttr(default_factory=dict)
+
+    def model_post_init(self, __context: object) -> None:
+        self._reindex()
+
+    def _reindex(self) -> None:
+        """Rebuild the edge index from the current `edges` list and drop the adjacency cache."""
+        self._edge_index = {edge.key(): edge for edge in self.edges}
+        self._adj_cache = {}
+
+    def replace_edges(self, edges: list[Edge]) -> None:
+        """Swap in a new edge list and rebuild the index in one O(E) pass. Every site that
+        rewrites/filters `edges` wholesale must use this, or the indexes go stale."""
+        self.edges = edges
+        self._reindex()
 
     # -- construction -------------------------------------------------------
 
@@ -184,13 +208,17 @@ class LineageGraph(BaseModel):
         return existing
 
     def add_edge(self, edge: Edge) -> Edge:
-        """Add an edge unless an identical (source, target, type) exists."""
-        for existing in self.edges:
-            if existing.key() == edge.key():
-                if not existing.evidence:
-                    existing.evidence = edge.evidence
-                return existing
+        """Add an edge unless an identical (source, target, type) exists — O(1) via the
+        index, with the same evidence-backfill semantics as before."""
+        key = edge.key()
+        existing = self._edge_index.get(key)
+        if existing is not None:
+            if not existing.evidence:
+                existing.evidence = edge.evidence
+            return existing
         self.edges.append(edge)
+        self._edge_index[key] = edge
+        self._adj_cache = {}  # a new edge changes adjacency; drop the cache
         return edge
 
     def retype_node(self, node_id: str, new_type: NodeType) -> str:
@@ -223,13 +251,20 @@ class LineageGraph(BaseModel):
                 deduped[edge.key()] = edge
             elif not kept.evidence and edge.evidence:
                 kept.evidence = edge.evidence  # backfill evidence, like add_edge
+        # `deduped` is already the (rewritten-key -> edge) index; set both so the private
+        # index doesn't go stale after the in-place endpoint rewrite changed edge keys.
         self.edges = list(deduped.values())
+        self._edge_index = deduped
+        self._adj_cache = {}  # endpoints were rewritten; drop the adjacency cache
         # merge if a node with the new id already existed
         return self.add_node(node).id
 
     # -- traversal ----------------------------------------------------------
 
     def _adjacency(self, direction: str) -> dict[str, set[str]]:
+        cached = self._adj_cache.get(direction)
+        if cached is not None:
+            return cached
         adj: dict[str, set[str]] = {}
         for edge in self.edges:
             up, down = edge.flow()
@@ -237,6 +272,7 @@ class LineageGraph(BaseModel):
                 adj.setdefault(down, set()).add(up)
             else:
                 adj.setdefault(up, set()).add(down)
+        self._adj_cache[direction] = adj
         return adj
 
     def _walk(self, node_id: str, direction: str, depth: Optional[int]) -> list[str]:
@@ -269,9 +305,13 @@ class LineageGraph(BaseModel):
         for node_id in sorted(ids):
             if node_id in self.nodes:
                 sub.nodes[node_id] = self.nodes[node_id].model_copy(deep=True)
-        for edge in self.edges:
-            if edge.source_id in sub.nodes and edge.target_id in sub.nodes:
-                sub.edges.append(edge.model_copy(deep=True))
+        sub.replace_edges(
+            [
+                edge.model_copy(deep=True)
+                for edge in self.edges
+                if edge.source_id in sub.nodes and edge.target_id in sub.nodes
+            ]
+        )
         return sub
 
 

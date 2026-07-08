@@ -33,7 +33,9 @@ _MEASURE_RE = re.compile(r"^measure\s+('[^']*'|\"[^\"]*\"|\S+)\s*=\s*(.*)$")
 # A line that is only backticks: TMDL's multi-line expression delimiter
 # (``measure 'X' = ```` … ```` ``). The fence chars are NOT part of the DAX.
 _FENCE_RE = re.compile(r"^`{3,}$")
-_COLUMN_RE = re.compile(r"^column\s+('[^']*'|\"[^\"]*\"|\S+)\s*$")
+# A column header. Group 2 (the `= <DAX>` tail) is present only for a CALCULATED column
+# (`column Name = <expression>`, analogous to a measure); plain columns leave it None.
+_COLUMN_RE = re.compile(r"^column\s+('[^']*'|\"[^\"]*\"|\S+)\s*(?:=\s*(.*))?$")
 _DATATYPE_RE = re.compile(r"^dataType\s*:\s*(\S+)")
 _PARTITION_RE = re.compile(r"^partition\s+(.+?)\s*=\s*(\w+)\s*$")
 _SOURCE_RE = re.compile(r"^source\s*=\s*(.*)$")
@@ -75,6 +77,36 @@ def _dedent(raw_lines: list[str]) -> str:
         return ""
     common = min((len(ln) - len(ln.lstrip())) for ln in body if ln.strip())
     return "\n".join(ln[common:] for ln in body)
+
+
+def _consume_expression(lines: list[str], i: int, indent: int, first: str) -> tuple[str, int]:
+    """Consume a TMDL multi-line ``= <expression>`` body (measure OR calculated column),
+    starting at ``i`` (the header line already passed). ``first`` is the text after ``=``.
+    A triple-backtick fence delimits the body; otherwise continuation lines that are
+    indented deeper than the header and are not properties belong to the expression. The
+    body stops before a property line (e.g. a column's ``dataType:``) so those still
+    attach to the object. Returns ``(dax, next_index)``."""
+    if _FENCE_RE.match(first.strip()):
+        body: list[str] = []
+        while i < len(lines):
+            if _FENCE_RE.match(lines[i].strip()):
+                i += 1
+                break
+            if lines[i].strip() and _indent(lines[i]) <= indent:
+                break  # safety net for a missing close fence
+            body.append(lines[i])
+            i += 1
+        return _dedent(body), i
+    dax_parts = [first] if first else []
+    while i < len(lines):
+        nxt = lines[i]
+        inner = nxt.strip()
+        if inner and (_indent(nxt) <= indent or _PROPERTY_RE.match(inner)):
+            break
+        if inner:
+            dax_parts.append(inner)
+        i += 1
+    return "\n".join(dax_parts).strip(), i
 
 
 def model_root(path: str) -> tuple[str, str]:
@@ -251,34 +283,11 @@ def parse_table_file(
             current_column = None
             measure_name = _unquote(measure_match.group(1))
             measure_desc = take_doc()
-            first = measure_match.group(2)
             i += 1
-            if _FENCE_RE.match(first.strip()):
-                # Multi-line expression: ``` opens the body, ``` on its own line
-                # closes it. Keep the lines between (dedented) but never the
-                # backtick delimiters — capturing them wraps stray ``` into the
-                # rendered code fence and splits it into empty boxes.
-                body: list[str] = []
-                while i < len(lines):
-                    if _FENCE_RE.match(lines[i].strip()):
-                        i += 1
-                        break
-                    if lines[i].strip() and _indent(lines[i]) <= indent:
-                        break  # safety net for a missing close fence
-                    body.append(lines[i])
-                    i += 1
-                dax = _dedent(body)
-            else:
-                dax_parts = [first] if first else []
-                while i < len(lines):
-                    nxt = lines[i]
-                    inner = nxt.strip()
-                    if inner and (_indent(nxt) <= indent or _PROPERTY_RE.match(inner)):
-                        break
-                    if inner:
-                        dax_parts.append(inner)
-                    i += 1
-                dax = "\n".join(dax_parts).strip()
+            # Consume the (possibly multi-line, possibly fenced) DAX body. The ``` fence
+            # is a delimiter, never part of the DAX (capturing it splits the rendered code
+            # box into empty fragments); see _consume_expression.
+            dax, i = _consume_expression(lines, i, indent, measure_match.group(2))
             measure = graph.add_node(
                 Node(
                     id=Node.make_id(NodeType.MEASURE, model_name, measure_name),
@@ -303,11 +312,20 @@ def parse_table_file(
         column_match = _COLUMN_RE.match(stripped)
         if column_match:
             name = normalize_identifier(_unquote(column_match.group(1)))
+            expr = column_match.group(2)  # None => plain column; else a CALCULATED column
             current_column = Column(name=name, description=take_doc())
+            if expr is not None:
+                current_column.constraints.append("CALCULATED")
             known = {c.name for c in table_node.columns}
             if name not in known:
                 table_node.columns.append(current_column)
             i += 1
+            if expr is not None:
+                # `column Name = <DAX>`: consume the expression body just like a measure,
+                # so its continuation lines aren't misread as properties — but KEEP
+                # current_column pointing at the column so its own `dataType:` (a property
+                # line, which ends the body) still attaches HERE, not to the previous column.
+                _dax, i = _consume_expression(lines, i, indent, expr)
             continue
 
         datatype_match = _DATATYPE_RE.match(stripped)
@@ -369,6 +387,10 @@ def parse_table_file(
             pending_doc.clear()
             continue
 
+        # Safety net: an unrecognized `column …` header must not let its following
+        # property lines (e.g. `dataType:`) bleed into the PREVIOUS column (issue #8).
+        if stripped.startswith("column"):
+            current_column = None
         # any other line (property, hierarchy, level, relationship…) breaks
         # the adjacency between a `///` block and the object it documents
         pending_doc.clear()

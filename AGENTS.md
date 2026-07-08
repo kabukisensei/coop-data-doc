@@ -54,7 +54,7 @@ All commands exit with these codes:
 |-----------|---------|
 | `0` | Success |
 | `1` | Stale docs / friendly error / config not found |
-| `2` | Unresolved references, risky parses, or invalid CLI args |
+| `2` | Unresolved references, risky parses, error-severity diagnostics (corrupt/undecodable files, truncated procs — data is missing), or invalid CLI args |
 | `130` | Cancelled with Ctrl+C |
 
 ### Global flags (before subcommand)
@@ -76,10 +76,10 @@ All commands exit with these codes:
 | `coop-data-doc status` | **Check project state** — config exists? docs built? stale? | `--config` |
 | `coop-data-doc init [PATH]` | Scaffold a starter config | `--force` |
 | `coop-data-doc setup [PATH]` | Interactive wizard (human) | — |
-| `coop-data-doc build` | Full pipeline + render | `--non-interactive`, `--strict`, `--skip-html`, `--config` |
+| `coop-data-doc build` | Full pipeline + render | `--non-interactive`, `--strict`, `--skip-html`, `--no-parse-cache`, `--jobs N`, `--config` |
 | `coop-data-doc update` | Alias for `build` | Same as `build` |
-| `coop-data-doc scan` | Crawl + parse + link only; writes `graph.json` | `--non-interactive`, `--strict`, `--config` |
-| `coop-data-doc check` | CI gate — exits 1 if stale, 2 if problems | `--lenient`, `--config` |
+| `coop-data-doc scan` | Crawl + parse + link only; writes `graph.json` | `--non-interactive`, `--strict`, `--no-parse-cache`, `--jobs N`, `--config` |
+| `coop-data-doc check` | CI gate — exits 1 if stale, 2 if problems | `--lenient`, `--no-parse-cache`, `--config` |
 | `coop-data-doc folders` | List each repo's top-level folders + documented state (JSON) | `--config` |
 | `coop-data-doc set-folders` | Set which top-level folders a repo documents (non-interactive) | `--repo` (required), `--skip` (comma-separated), `--config` |
 | `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON) | `--depth`, `--config` |
@@ -149,6 +149,15 @@ Human-facing HTML portal. Works over `file://` with no network.
 ### `.lineage-cache.json`
 
 Mapping answers from interactive runs. **Commit this file.** It makes subsequent runs fully automatic.
+
+### `.coop-data-doc-parse-cache.json`
+
+Incremental per-file SQL parse cache (content-hashed): unchanged SQL files are replayed
+instead of re-parsed on the next build. **Do NOT commit this file** — it is *derivable*
+(a cold rebuild reproduces it) and already gitignored. It is transparent (a warm build is
+byte-identical to a cold one) and self-healing (a corrupt/stale cache degrades to a cold
+parse with a `parse_cache_invalid` warning, which is a warning, never a CI failure). Pass
+`--no-parse-cache` to `scan`/`build`/`update`/`check` to bypass it.
 
 ## Page Front-Matter Contract
 
@@ -244,6 +253,8 @@ Same inputs + same cache → **byte-identical output**. This is CI-enforced via 
 - Sorted iteration everywhere
 - No timestamps or randomness in output
 - `newline="\n"` on all generated files
+- The incremental parse cache is **transparent**: a warm-cache build is byte-identical to a cold (`--no-parse-cache`) build — the same test suite proves warm == cold.
+- Parallel SQL parsing (`--jobs N`) is **transparent** too: each file is parsed in an isolated worker but the per-file contributions are merged back in sorted file order, so `--jobs N` (any N) is byte-identical to `--jobs 1` and to a cold serial build, warm or cold. Only the SQL parsers fan out (all cross-file passes stay serial). The worker is a module-level, spawn-safe function (works on Windows spawn), a failing worker degrades that one file to a `parse_worker_error` diagnostic without aborting the build, and a pool that can't start falls back to serial. Pin the default without the flag via `COOP_DATA_DOC_JOBS`.
 
 ## Non-Interactive Mode
 
@@ -260,6 +271,7 @@ Use `--strict` to make unresolved items fatal (exit 2).
 | Variable | Effect |
 |----------|--------|
 | `COOP_DATA_DOC_CONFIG` | Default config file path (overrides `./coop-data-doc.yml`) |
+| `COOP_DATA_DOC_JOBS` | Default SQL-parse worker count when `--jobs` is omitted (capped at 8, floored at 1; a non-integer is ignored). An explicit `--jobs N` always wins. Set `1` for pool-free, fully in-process runs. |
 
 ## Python API (Advanced)
 

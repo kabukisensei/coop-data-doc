@@ -204,6 +204,19 @@ def test_unknown_cache_version_ignored(tmp_path: Path):
     assert path.read_text().startswith('{"version": 99')  # file untouched
 
 
+@pytest.mark.parametrize("payload", ["[1, 2, 3]", "42", '"a string"', "true", "null"])
+def test_wrong_shape_cache_degrades_not_crashes(tmp_path: Path, payload: str):
+    """A committed .lineage-cache.json that is valid JSON of the WRONG shape (a
+    top-level list/number/string/bool/null) must degrade to an empty cache with a
+    warning, never AttributeError — `.get()` on a non-dict crashes, and a non-empty
+    non-dict is truthy so an `or {}` fallback wouldn't save it."""
+    path = tmp_path / ".lineage-cache.json"
+    path.write_text(payload, encoding="utf-8")
+    cache = LineageCache.load(path)  # must not raise
+    assert cache.mappings == {}
+    assert any(w.category == "cache_invalid" for w in cache.warnings)
+
+
 class _RaisingQuestionary(FakeQuestionary):
     """questionary stand-in whose prompt raises — mimics questionary's no-TTY
     OSError / prompt_toolkit's Windows NoConsoleScreenBufferError."""

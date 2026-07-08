@@ -165,3 +165,28 @@ def test_json_round_trip_and_determinism(tmp_path: Path):
     g_reordered = g.model_copy(deep=True)
     g_reordered.edges.reverse()
     assert to_json_str(g_reordered) == to_json_str(g)
+
+
+def test_add_edge_after_model_validate_load_uses_rebuilt_index():
+    # issue #13: a graph loaded from json (LineageGraph.model_validate, as the `lineage`
+    # CLI does) must dedup via the index rebuilt on load — add_edge is O(1), not a rescan.
+    import json
+
+    g = LineageGraph()
+    g.add_node(Node(id="gold_table:s.a", node_type=NodeType.GOLD_TABLE, name="a", schema_name="s"))
+    g.add_node(Node(id="gold_table:s.b", node_type=NodeType.GOLD_TABLE, name="b", schema_name="s"))
+    g.add_edge(Edge(source_id="gold_table:s.a", target_id="gold_table:s.b", edge_type=EdgeType.FEEDS))
+
+    reloaded = LineageGraph.model_validate(json.loads(g.model_dump_json()))
+    assert len(reloaded.edges) == 1
+    # a duplicate (same source/target/type) must merge, not append — proving the index exists
+    dup = reloaded.add_edge(
+        Edge(source_id="gold_table:s.a", target_id="gold_table:s.b", edge_type=EdgeType.FEEDS, evidence="ev")
+    )
+    assert len(reloaded.edges) == 1
+    assert dup.evidence == "ev"  # evidence backfilled onto the existing edge
+    # a genuinely new edge appends and indexes
+    reloaded.add_edge(
+        Edge(source_id="gold_table:s.b", target_id="gold_table:s.a", edge_type=EdgeType.REFERENCES)
+    )
+    assert len(reloaded.edges) == 2

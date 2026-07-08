@@ -72,9 +72,9 @@ def prune_schemas(graph: LineageGraph, ignore_schemas: list[str]) -> int:
     for node_id in drop:
         del graph.nodes[node_id]
     if drop:
-        graph.edges = [
-            edge for edge in graph.edges if edge.source_id not in drop and edge.target_id not in drop
-        ]
+        graph.replace_edges(
+            [edge for edge in graph.edges if edge.source_id not in drop and edge.target_id not in drop]
+        )
     return len(drop)
 
 

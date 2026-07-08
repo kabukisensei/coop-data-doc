@@ -53,7 +53,13 @@ Semver policy and rationale: `CONTRIBUTING.md` → "Releasing".
 1. **Determinism** (CI-enforced) — sorted iteration everywhere, no
    timestamps/randomness in output, and `newline="\n"` on every generated
    `write_text` (cross-OS byte-identity). `tests/test_determinism.py`
-   byte-compares two full builds.
+   byte-compares two full builds. Parallel SQL parsing (`--jobs N`,
+   `parsers/parallel.py`) must preserve this: only the SQL parsers fan out
+   across processes (the linker/renderers/TMDL/PBIR stay serial), and every
+   file's contribution is merged back in sorted `entry.path` order via the
+   issue-#17 `_replay_entry` path — so `--jobs N` is byte-identical to
+   `--jobs 1` and to a cold serial build. `tests/test_parallel_parse.py`
+   proves it. Never parallelize a cross-file pass.
 2. **Offline pipeline** — no network/DB/LLM anywhere in doc generation;
    built HTML must work over `file://` (vendored assets in
    `src/coop_data_doc/templates/assets/`). Sole exception: the explicit

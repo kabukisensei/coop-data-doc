@@ -27,7 +27,7 @@ from coop_data_doc.folders import (
     split_excludes,
     top_level_folders,
 )
-from coop_data_doc.diagnostics import Diagnostics
+from coop_data_doc.diagnostics import Diagnostics, severity_of
 from coop_data_doc.crawler import FileKind, crawl
 from coop_data_doc.graph.model import LineageGraph
 from coop_data_doc.graph.serialize import to_json_file
@@ -41,13 +41,11 @@ from coop_data_doc.parsers.pbir import (
     parse_legacy_reports,
     parse_pbir,
 )
+from coop_data_doc.parsers.parallel import _MAX_WORKERS, default_jobs, parse_sql_parallel
+from coop_data_doc.parsers.parse_cache import ParseCache
 from coop_data_doc.parsers.pbix import parse_pbix
-from coop_data_doc.parsers.sql_objects import parse_sql_objects
 from coop_data_doc.layering import assign_layers, prune_schemas
-from coop_data_doc.parsers.sql_procs import (
-    parse_sql_procs,
-    resolve_stub_references,
-)
+from coop_data_doc.parsers.sql_procs import resolve_stub_references
 from coop_data_doc.parsers.tmdl import link_composite_models, parse_tmdl
 from coop_data_doc.progress import Progress, should_enable
 from coop_data_doc.render.markdown import render_markdown, write_diagnostics
@@ -61,6 +59,8 @@ _log = logging.getLogger("coop_data_doc")
 def build_graph(
     config: Config,
     progress: Progress | None = None,
+    no_parse_cache: bool = False,
+    jobs: int | None = None,
 ) -> tuple[LineageGraph, list[ParseWarning]]:
     """Crawl -> parse -> structural links -> prune -> assign layers, returning
     (graph, warnings). This is everything that does NOT depend on
@@ -69,7 +69,19 @@ def build_graph(
     re-parsing — the expensive part. ``run_pipeline`` chains this into
     ``resolve_graph``; the setup wizard reuses one built graph across its
     suggest + verify passes.
+
+    ``no_parse_cache`` forces a cold SQL parse (bypass the per-file parse cache);
+    the cache is still repopulated for the next run. The cache is transparent —
+    a warm build is byte-identical to a cold one (see parsers/parse_cache.py).
+
+    ``jobs`` (default ``min(cpu_count, 8)``) parallelizes the per-file SQL parse
+    across processes; the deterministic merge (see parsers/parallel.py) keeps a
+    ``--jobs N`` build byte-identical to a ``--jobs 1`` build and to a cold
+    serial build. Only the SQL parsers fan out; every cross-file pass stays
+    serial. ``jobs == 1`` is today's exact sequential path.
     """
+    if jobs is None:
+        jobs = default_jobs()
     progress = progress or Progress(enabled=False)
     graph = LineageGraph()
     # A spinner (not a silent call) so the crawl — the first, fully blocking
@@ -81,9 +93,31 @@ def build_graph(
 
     sql_entries = inventory.by_kind(FileKind.SQL_FILE)
     _log.debug("parsing %d SQL files (dialect=%s)", len(sql_entries), config.sql_dialect)
+    # Shared across both passes so each SQL file is read + decoded exactly ONCE (the second
+    # pass is a cache hit — no disk read, no Windows Defender/OneDrive re-touch tax).
+    sql_read_cache: dict[str, str] = {}
+    # Per-file parse cache: skip re-parsing an unchanged SQL file (content-hash keyed).
+    # Load is tolerant (corrupt/version-mismatch -> cold run + warning); the cache is
+    # derivable so it is gitignored. A warm build is byte-identical to a cold one.
+    parse_cache = ParseCache.load(config.base_dir / ".coop-data-doc-parse-cache.json")
     with progress.bar("Parsing SQL", total=2 * len(sql_entries)) as tick:
-        warnings += parse_sql_objects(sql_entries, graph, config.sql_dialect, on_file=tick)
-        warnings += parse_sql_procs(sql_entries, graph, config.sql_dialect, on_file=tick)
+        warnings += parse_sql_parallel(
+            sql_entries,
+            graph,
+            config.sql_dialect,
+            jobs=jobs,
+            on_file=tick,
+            read_cache=sql_read_cache,
+            parse_cache=parse_cache,
+            no_parse_cache=no_parse_cache,
+        )
+    parse_cache.write()
+    # cache warnings (load: corrupt/version-mismatch; write: could-not-write) surface as
+    # diagnostics like any parser warning — collected AFTER write() so both are included.
+    warnings += parse_cache.warnings
+    if sql_entries:
+        progress.line(f"Parsing SQL ({parse_cache.hits} cached, {parse_cache.misses} parsed)")
+    _log.debug("parse cache: %d cached, %d parsed", parse_cache.hits, parse_cache.misses)
     resolve_stub_references(graph)
 
     tmdl = inventory.by_kind(FileKind.TMDL)
@@ -146,14 +180,19 @@ def run_pipeline(
     interactive: bool,
     progress: Progress | None = None,
     pending_out: list | None = None,
+    no_parse_cache: bool = False,
+    jobs: int | None = None,
 ) -> tuple[LineageGraph, ResolutionResult, list[ParseWarning]]:
     """Execute the full crawl -> parse -> link pipeline and return
     (graph, resolution result, warnings). Shared by scan/build/check.
 
     ``progress`` (optional) drives stderr progress bars; defaults to a
     disabled no-op so callers and tests that don't want output are silent.
+    ``no_parse_cache`` forces a cold SQL parse (see build_graph). ``jobs``
+    (default ``min(cpu_count, 8)``) sets the SQL-parse worker count; the merge
+    is deterministic so ``--jobs N`` == ``--jobs 1`` == cold (see build_graph).
     """
-    graph, warnings = build_graph(config, progress)
+    graph, warnings = build_graph(config, progress, no_parse_cache=no_parse_cache, jobs=jobs)
     result, link_warnings = resolve_graph(graph, config, interactive, progress, pending_out)
     warnings += link_warnings
     _log.debug(
@@ -167,11 +206,19 @@ def run_pipeline(
     return graph, result, warnings
 
 
+def _error_failures(warnings: list[ParseWarning]) -> list[str]:
+    """Failure lines for error-SEVERITY diagnostics (corrupt/undecodable files, truncated
+    procs, parse failures) — these mean whole objects are silently missing from the docs, so
+    they fail even `check --lenient` (a corrupt file is never "known and accepted")."""
+    return [f"{w.category}: {w.file}" for w in warnings if severity_of(w.category) == "error"]
+
+
 def _strict_failures(result: ResolutionResult, warnings: list[ParseWarning]) -> list[str]:
     failures = [f"unresolved reference: {key}" for key in result.unresolved]
-    failures += [
-        f"{warning.category}: {warning.file}" for warning in warnings if warning.category in STRICT_CATEGORIES
-    ]
+    # risky-parse warnings (regex_fallback/dynamic_sql) fail strict but are tolerated by
+    # --lenient; error-severity diagnostics fail BOTH (missing data is never acceptable).
+    failures += [f"{w.category}: {w.file}" for w in warnings if w.category in STRICT_CATEGORIES]
+    failures += _error_failures(warnings)
     return failures
 
 
@@ -181,6 +228,8 @@ def _scan(
     strict: bool,
     quiet: bool,
     progress: Progress | None = None,
+    no_parse_cache: bool = False,
+    jobs: int | None = None,
 ) -> tuple[LineageGraph, Diagnostics]:
     # Only prompt when stdin/stdout are a real terminal. Run as a subprocess (e.g.
     # by the coop agent or another program), questionary/prompt_toolkit can't open a
@@ -195,7 +244,9 @@ def _scan(
             "`coop-data-doc setup` (or `build`) in a terminal.",
             err=True,
         )
-    graph, result, warnings = run_pipeline(config, interactive=interactive, progress=progress)
+    graph, result, warnings = run_pipeline(
+        config, interactive=interactive, progress=progress, no_parse_cache=no_parse_cache, jobs=jobs
+    )
     out_dir = config.output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     to_json_file(graph, out_dir / "graph.json")
@@ -320,13 +371,15 @@ def _interactive_home(ctx: click.Context) -> None:
         return
     if action in (None, "exit"):
         return
-    # actions that read an existing config must use the DISCOVERED path (which
-    # may be in a parent dir), not the bare default filename — otherwise running
-    # the menu from a subdirectory advertises the parent config but fails to
-    # load it. setup/init create a new config and intentionally target cwd.
+    # Actions that read an existing config must use the DISCOVERED path (which may be in a
+    # parent dir), not the bare default filename — otherwise running the menu from a
+    # subdirectory advertises the parent config but fails to load it. The "Change settings"
+    # setup action is only offered because a config WAS found, so it must edit THAT config,
+    # not write a new nested one in cwd that would shadow it. `init` (offered only in the
+    # no-config branch) intentionally targets cwd.
     discovered = str(config_path) if config_path is not None else DEFAULT_CONFIG
     if action == "setup":
-        ctx.invoke(setup, path=DEFAULT_CONFIG)
+        ctx.invoke(setup, path=discovered)
     elif action == "init":
         ctx.invoke(init, path=DEFAULT_CONFIG, force=False)
     elif action == "scan":
@@ -961,18 +1014,59 @@ def resolve_apply(config_path: str | None, json_src) -> None:
     click.echo(f"Applied {applied} decision(s) to {cache.path}. Run `coop-data-doc build` to use them.")
 
 
+_JOBS_OPTION = click.option(
+    "--jobs",
+    "jobs",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Parallel SQL-parse workers (default: CPU count, capped at 8). "
+    "--jobs 1 is the exact sequential path; the parallel merge is deterministic "
+    "so --jobs N is byte-identical to --jobs 1.",
+)
+
+
+def _resolve_jobs(jobs: int | None) -> int:
+    """A user-supplied ``--jobs`` value, capped at the worker ceiling; ``None``
+    (flag omitted) resolves to the default (CPU count, already capped). Values
+    below 1 are rejected by click's IntRange before reaching here."""
+    if jobs is None:
+        return default_jobs()
+    return min(jobs, _MAX_WORKERS)
+
+
 @cli.command()
 @click.option(
     "--config", "config_path", default=None, help="Config file path (default: discover in cwd and parents)."
 )
 @click.option("--non-interactive", is_flag=True, help="Never prompt (CI mode).")
 @click.option("--strict", is_flag=True, help="Exit 2 on unresolved refs / risky parses.")
+@click.option(
+    "--no-parse-cache",
+    is_flag=True,
+    help="Force a cold SQL parse (bypass the incremental per-file parse cache).",
+)
+@_JOBS_OPTION
 @click.pass_context
-def scan(ctx: click.Context, config_path: str | None, non_interactive: bool, strict: bool) -> None:
+def scan(
+    ctx: click.Context,
+    config_path: str | None,
+    non_interactive: bool,
+    strict: bool,
+    no_parse_cache: bool,
+    jobs: int | None,
+) -> None:
     """Crawl, parse, and link both repos; write graph.json."""
     config = _load_config(config_path)
     progress = Progress(should_enable(ctx.obj["quiet"]))
-    _scan(config, non_interactive, strict, ctx.obj["quiet"], progress=progress)
+    _scan(
+        config,
+        non_interactive,
+        strict,
+        ctx.obj["quiet"],
+        progress=progress,
+        no_parse_cache=no_parse_cache,
+        jobs=_resolve_jobs(jobs),
+    )
 
 
 def _run_build(
@@ -982,11 +1076,21 @@ def _run_build(
     strict: bool,
     skip_html: bool,
     serve: bool,
+    no_parse_cache: bool = False,
+    jobs: int | None = None,
 ) -> None:
     """Shared implementation behind `build` and `update`."""
     config = _load_config(config_path)
     progress = Progress(should_enable(ctx.obj["quiet"]))
-    graph, diagnostics = _scan(config, non_interactive, strict, ctx.obj["quiet"], progress=progress)
+    graph, diagnostics = _scan(
+        config,
+        non_interactive,
+        strict,
+        ctx.obj["quiet"],
+        progress=progress,
+        no_parse_cache=no_parse_cache,
+        jobs=_resolve_jobs(jobs),
+    )
     out_dir = config.output_dir()
     with progress.bar("Rendering pages", total=len(graph.nodes)) as tick:
         render_markdown(graph, out_dir, config.project_name, on_node=tick)
@@ -1026,6 +1130,12 @@ _BUILD_OPTIONS = [
     click.option("--strict", is_flag=True, help="Exit 2 on unresolved refs / risky parses."),
     click.option("--skip-html", is_flag=True, help="Markdown only; skip the mkdocs site."),
     click.option("--serve", is_flag=True, help="Start `mkdocs serve` after building."),
+    click.option(
+        "--no-parse-cache",
+        is_flag=True,
+        help="Force a cold SQL parse (bypass the incremental per-file parse cache).",
+    ),
+    _JOBS_OPTION,
 ]
 
 
@@ -1045,9 +1155,11 @@ def build(
     strict: bool,
     skip_html: bool,
     serve: bool,
+    no_parse_cache: bool,
+    jobs: int | None,
 ) -> None:
     """Full pipeline: scan + markdown docs + searchable HTML portal."""
-    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve)
+    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve, no_parse_cache, jobs)
 
 
 @cli.command()
@@ -1060,9 +1172,11 @@ def update(
     strict: bool,
     skip_html: bool,
     serve: bool,
+    no_parse_cache: bool,
+    jobs: int | None,
 ) -> None:
     """Re-scan the repos and refresh all documentation (same as build)."""
-    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve)
+    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve, no_parse_cache, jobs)
 
 
 @cli.command()
@@ -1106,19 +1220,28 @@ def upgrade(ctx: click.Context) -> None:
 @click.option(
     "--lenient",
     is_flag=True,
-    help="Tolerate risky-parse warnings (regex_fallback/dynamic_sql); still "
-    "fail on unresolved references and stale docs.",
+    help="Tolerate risky-parse warnings (regex_fallback/dynamic_sql); still fail on "
+    "unresolved references, error-severity diagnostics (corrupt/undecodable files), and "
+    "stale docs.",
+)
+@click.option(
+    "--no-parse-cache",
+    is_flag=True,
+    help="Force a cold SQL parse (bypass the incremental per-file parse cache).",
 )
 @click.pass_context
-def check(ctx: click.Context, config_path: str | None, lenient: bool) -> None:
-    """CI gate: fail when committed docs are stale, references are
-    unresolved, or (unless --lenient) risky-parse warnings exist
-    (regex_fallback / dynamic_sql). Exit 2 for pipeline problems, 1 for
-    stale docs."""
+def check(ctx: click.Context, config_path: str | None, lenient: bool, no_parse_cache: bool) -> None:
+    """CI gate: fail when committed docs are stale, references are unresolved,
+    an error-severity diagnostic means data is missing (corrupt/undecodable file,
+    truncated proc), or (unless --lenient) risky-parse warnings exist
+    (regex_fallback / dynamic_sql). Exit 2 for pipeline problems, 1 for stale docs."""
     config = _load_config(config_path)
-    graph, result, warnings = run_pipeline(config, interactive=False)
+    graph, result, warnings = run_pipeline(config, interactive=False, no_parse_cache=no_parse_cache)
     if lenient:
+        # --lenient forgives risky-parse warnings, but a corrupt/undecodable file (error
+        # severity) is never "known and accepted" — it still fails.
         failures = [f"unresolved reference: {key}" for key in result.unresolved]
+        failures += _error_failures(warnings)
     else:
         failures = _strict_failures(result, warnings)
     if failures:

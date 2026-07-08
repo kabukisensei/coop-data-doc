@@ -157,23 +157,46 @@ def _contract_section(node: Node) -> str:
     return "\n".join(lines)
 
 
-def _lineage_table(graph: LineageGraph, node: Node, ids: list[str], direction: str) -> str:
+def _lineage_edge_info(graph: LineageGraph) -> tuple[dict, dict]:
+    """``(upstream_info, downstream_info)`` where each is ``{node_id: {other_id: (via,
+    evidence)}}``, built in ONE pass with first-edge-wins semantics (mirrors what
+    _lineage_table did per node per direction — but O(edges) once instead of
+    O(nodes×edges×directions)). render_markdown precomputes and threads it in."""
+    up: dict[str, dict[str, tuple[str, str]]] = {}
+    down: dict[str, dict[str, tuple[str, str]]] = {}
+    for edge in graph.edges:
+        upstream_id, downstream_id = edge.flow()
+        info = (edge.edge_type.value, edge.evidence)
+        up.setdefault(downstream_id, {}).setdefault(upstream_id, info)
+        down.setdefault(upstream_id, {}).setdefault(downstream_id, info)
+    return up, down
+
+
+def _lineage_table(
+    graph: LineageGraph,
+    node: Node,
+    ids: list[str],
+    direction: str,
+    edge_info: dict[str, tuple[str, str]] | None = None,
+) -> str:
     lines = [f"### {direction}", ""]
     if not ids:
         lines.append(f"_No {direction.lower()} objects._")
         return "\n".join(lines)
     lines.append("| Object | Type | Via | Evidence |")
     lines.append("| --- | --- | --- | --- |")
-    edge_info: dict[str, tuple[str, str]] = {}
-    for edge in graph.edges:
-        upstream_id, downstream_id = edge.flow()
-        other = None
-        if direction == "Upstream" and downstream_id == node.id:
-            other = upstream_id
-        elif direction == "Downstream" and upstream_id == node.id:
-            other = downstream_id
-        if other is not None and other not in edge_info:
-            edge_info[other] = (edge.edge_type.value, edge.evidence)
+    if edge_info is None:
+        # Standalone fallback: build just this node/direction's map (first-edge-wins).
+        edge_info = {}
+        for edge in graph.edges:
+            upstream_id, downstream_id = edge.flow()
+            other = None
+            if direction == "Upstream" and downstream_id == node.id:
+                other = upstream_id
+            elif direction == "Downstream" and upstream_id == node.id:
+                other = downstream_id
+            if other is not None and other not in edge_info:
+                edge_info[other] = (edge.edge_type.value, edge.evidence)
     for other_id in ids:
         other = graph.nodes.get(other_id)
         if other is None:
@@ -322,7 +345,9 @@ def _wants_upstream_tree(graph: LineageGraph, node: Node) -> bool:
     the objects a functional user reaches working backwards from a report or
     model, where they may not know the SQL that produced them."""
     if node.node_type is NodeType.MEASURE:
-        return any(edge.flow()[1] == node.id for edge in graph.edges)
+        # "Is anything upstream of this measure?" — i.e. does something reference/feed it.
+        # Cheap via the cached up-adjacency instead of a full per-measure edge scan.
+        return bool(graph.upstream(node.id, depth=1))
     if node.node_type in (NodeType.GOLD_TABLE, NodeType.VIEW):
         return any(
             (dn := graph.nodes.get(d)) is not None
@@ -505,18 +530,21 @@ def render_node_page(
     *,
     used_measures: set[str] | None = None,
     direct_upstream: dict[str, list[str]] | None = None,
+    edge_info: tuple[dict, dict] | None = None,
 ) -> str:
     """Full markdown page for one node, carrying forward any existing
     Business Intent block from out_path.
 
-    ``used_measures`` / ``direct_upstream`` are whole-graph computations that
-    :func:`render_markdown` precomputes once and threads in; when omitted (a
+    ``used_measures`` / ``direct_upstream`` / ``edge_info`` are whole-graph computations
+    that :func:`render_markdown` precomputes once and threads in; when omitted (a
     standalone call) they're derived on demand.
     """
     if used_measures is None:
         used_measures = _used_measure_ids(graph)
     if direct_upstream is None:
         direct_upstream = _direct_upstream(graph)
+    if edge_info is None:
+        edge_info = _lineage_edge_info(graph)
     if node.node_type is NodeType.REPORT:
         return _report_page(graph, node, out_path)
     has_dax = node.node_type is NodeType.MEASURE and node.metadata.get("dax")
@@ -563,9 +591,13 @@ def render_node_page(
     parts += [
         "## Lineage",
         "",
-        _lineage_table(graph, node, graph.upstream(node.id, depth=1), "Upstream"),
+        _lineage_table(
+            graph, node, graph.upstream(node.id, depth=1), "Upstream", edge_info[0].get(node.id, {})
+        ),
         "",
-        _lineage_table(graph, node, graph.downstream(node.id, depth=1), "Downstream"),
+        _lineage_table(
+            graph, node, graph.downstream(node.id, depth=1), "Downstream", edge_info[1].get(node.id, {})
+        ),
         "",
         "## Business Intent",
         "",
@@ -652,6 +684,7 @@ def render_markdown(
     # whole-graph scans hoisted out of the per-node loop (computed once, not per page)
     used_measures = _used_measure_ids(graph)
     direct_upstream = _direct_upstream(graph)
+    edge_info = _lineage_edge_info(graph)  # one pass; kills the per-node full-edge scan
     written: list[Path] = []
     for node_id in sorted(graph.nodes):
         node = graph.nodes[node_id]
@@ -662,7 +695,12 @@ def render_markdown(
         page_path = page_dir / f"{slug(node_id)}.md"
         page_path.write_text(
             render_node_page(
-                graph, node, page_path, used_measures=used_measures, direct_upstream=direct_upstream
+                graph,
+                node,
+                page_path,
+                used_measures=used_measures,
+                direct_upstream=direct_upstream,
+                edge_info=edge_info,
             ),
             encoding="utf-8",
             newline="\n",

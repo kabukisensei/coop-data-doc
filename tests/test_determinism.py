@@ -34,3 +34,26 @@ def test_rebuild_over_existing_output_idempotent(tmp_path: Path):
     first = tree_bytes(tmp_path / "data-docs")
     assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
     assert tree_bytes(tmp_path / "data-docs") == first
+
+
+def test_warm_parse_cache_matches_cold_build(tmp_path: Path):
+    """The incremental parse cache is transparent: a warm-cache build must be
+    byte-identical to a cold build (issue #17's non-negotiable constraint).
+
+    Sequence: cold (--no-parse-cache) -> warm (cache from the cold run's write) ->
+    cold again. All three doc trees must match to the byte.
+    """
+    setup_workspace(tmp_path)
+    # cold: cache is bypassed on read but still WRITTEN, so the next run is warm
+    assert run(["build", "--non-interactive", "--skip-html", "--no-parse-cache"], tmp_path).exit_code == 0
+    cold = tree_bytes(tmp_path / "data-docs")
+    # warm: every SQL file is a cache hit
+    assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
+    warm = tree_bytes(tmp_path / "data-docs")
+    # cold again for good measure
+    assert run(["build", "--non-interactive", "--skip-html", "--no-parse-cache"], tmp_path).exit_code == 0
+    cold_again = tree_bytes(tmp_path / "data-docs")
+    assert warm.keys() == cold.keys() == cold_again.keys()
+    for relative in cold:
+        assert warm[relative] == cold[relative], f"warm != cold: {relative}"
+        assert cold_again[relative] == cold[relative], f"cold != cold: {relative}"

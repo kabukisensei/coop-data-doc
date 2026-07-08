@@ -9,6 +9,7 @@ Dynamic SQL is never guessed at — it produces a warning instead.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 
@@ -42,13 +43,24 @@ from coop_data_doc.parsers.sql_common import (
     split_statements,
     table_parts,
 )
+from coop_data_doc.parsers.parse_cache import ParseCache, cache_key
 from coop_data_doc.parsers.sql_objects import (
+    _add_edge,
+    _add_node,
+    _Contribution,
+    _replay_entry,
     columns_from_schema,
     read_sql_file,
     stub_table,
 )
 
+_log = logging.getLogger("coop_data_doc")
+
 _AS_RE = re.compile(r"\bAS\b", re.IGNORECASE)
+# `EXECUTE AS <context>` (USER/LOGIN/CALLER/OWNER/SELF) is a security-context switch, not a
+# proc call. EXEC_RE captures the first identifier after EXECUTE, which is the bare keyword
+# `AS` here — reject it (and the context words, defensively) so no phantom proc node appears.
+_EXEC_AS_KEYWORDS = {"AS", "USER", "LOGIN", "CALLER", "OWNER", "SELF"}
 _BEGIN_END_LINE_RE = re.compile(r"^\s*(?:BEGIN|END)\s*;?\s*$", re.IGNORECASE | re.MULTILINE)
 
 # statement types we trust the AST extraction for; anything else falls
@@ -192,27 +204,223 @@ def _extract_statement(statement: exp.Expression) -> tuple[StatementLineage, lis
     return lineage, creates
 
 
-def _apply_lineage(graph: LineageGraph, proc: Node, lineage: StatementLineage, evidence_file: str) -> None:
+def _apply_lineage(
+    graph: LineageGraph,
+    proc: Node,
+    lineage: StatementLineage,
+    evidence_file: str,
+    contribution: _Contribution | None = None,
+) -> None:
     for schema, name in sorted(lineage.writes):
-        table = stub_table(graph, schema, name)
-        graph.add_edge(
+        table = stub_table(graph, schema, name, contribution)
+        _add_edge(
+            graph,
             Edge(
                 source_id=proc.id,
                 target_id=table.id,
                 edge_type=EdgeType.WRITES,
                 evidence=f"{evidence_file}: writes {schema}.{name}",
-            )
+            ),
+            contribution,
         )
     for schema, name in sorted(lineage.reads):
-        table = stub_table(graph, schema, name)
-        graph.add_edge(
+        table = stub_table(graph, schema, name, contribution)
+        _add_edge(
+            graph,
             Edge(
                 source_id=proc.id,
                 target_id=table.id,
                 edge_type=EdgeType.READS,
                 evidence=f"{evidence_file}: reads {schema}.{name}",
-            )
+            ),
+            contribution,
         )
+
+
+def _parse_procs_entry(
+    entry: FileEntry,
+    text: str,
+    graph: LineageGraph,
+    dialect: str,
+    warnings: list[ParseWarning],
+    contribution: _Contribution | None,
+) -> None:
+    """Parse ONE SQL file's CREATE PROCEDURE batches into the graph. Split out
+    from the entry loop so a cache MISS calls exactly this (recording the file's
+    contribution) and a HIT replays the cached contribution instead."""
+    for batch in split_batches(text):
+        found = _find_proc(batch)
+        if found is None:
+            header = PROC_HEADER_RE.search(blank_comments_and_strings(batch))
+            if header:
+                # a real header with no top-level body AS (truncated file,
+                # unsupported layout): skipping must be loud, never silent
+                warning = ParseWarning(
+                    file=entry.path,
+                    message=(f"CREATE PROCEDURE {header.group(1)}: no body AS found — batch skipped"),
+                    category="proc_body_not_found",
+                )
+                warnings.append(warning)
+                if contribution is not None:
+                    contribution.record_warning(warning)
+            continue
+        raw_name, body = found
+        schema, name = qualify(raw_name)
+        proc = _add_node(
+            graph,
+            Node(
+                id=Node.make_id(NodeType.STORED_PROC, schema, name),
+                node_type=NodeType.STORED_PROC,
+                name=name,
+                schema_name=schema,
+                display_name=original_name(raw_name),
+                source_file=entry.path,
+                source_code=batch,
+                metadata={"parse_quality": "ast"},
+            ),
+            contribution,
+        )
+        fallback_used = False
+
+        for chunk in split_statements(body):
+            chunk = _BEGIN_END_LINE_RE.sub("", chunk).strip()
+            if not chunk:
+                continue
+            stripped = scrub(chunk, strip_strings=True)
+
+            if DYNAMIC_SQL_RE.search(stripped):
+                # persistent marker so doc consumers (agents) can see
+                # this proc's lineage is knowingly incomplete — the
+                # ParseWarning alone only reaches the console
+                proc.metadata["dynamic_sql_untraced"] = True
+                warning = ParseWarning(
+                    file=entry.path,
+                    message=f"{schema}.{name}: dynamic SQL not traced",
+                    category="dynamic_sql",
+                )
+                warnings.append(warning)
+                if contribution is not None:
+                    contribution.record_warning(warning)
+                continue
+
+            # Find EVERY EXEC callee in the chunk, not just one at the chunk start: a
+            # conditional `IF <cond> EXEC x` shares its chunk with the IF line, and a
+            # semicolon-less body can hold several EXECs. Reject `EXECUTE AS <ctx>`
+            # (the captured callee is the bare keyword AS/USER/... — a phantom proc).
+            exec_callees: list[str] = []
+            non_exec_present = False
+            for line in stripped.splitlines():
+                if not line.strip():
+                    continue
+                m = EXEC_RE.match(line)
+                if m is None:
+                    non_exec_present = True
+                elif m.group(1).upper() not in _EXEC_AS_KEYWORDS:
+                    exec_callees.append(m.group(1))
+            seen_callees: set[tuple[str, str]] = set()
+            for raw_callee in exec_callees:
+                callee_schema, callee_name = qualify(raw_callee)
+                if (callee_schema, callee_name) in seen_callees:
+                    continue
+                seen_callees.add((callee_schema, callee_name))
+                callee = _add_node(
+                    graph,
+                    Node(
+                        id=Node.make_id(NodeType.STORED_PROC, callee_schema, callee_name),
+                        node_type=NodeType.STORED_PROC,
+                        name=callee_name,
+                        schema_name=callee_schema,
+                        display_name=original_name(raw_callee),
+                    ),
+                    contribution,
+                )
+                _add_edge(
+                    graph,
+                    Edge(
+                        source_id=proc.id,
+                        target_id=callee.id,
+                        edge_type=EdgeType.REFERENCES,
+                        evidence=f"{entry.path}: EXEC {callee_schema}.{callee_name}",
+                    ),
+                    contribution,
+                )
+            # Only skip sqlglot when the chunk was ENTIRELY EXEC statements; otherwise
+            # let the non-EXEC text (e.g. an IF-condition subquery) flow on for lineage.
+            if exec_callees and not non_exec_present:
+                continue
+
+            # RAISE, not IGNORE: a chunk sqlglot can't fully parse (e.g. a
+            # legacy semicolon-less multi-statement body, which IGNORE
+            # silently mangles into ONE statement, losing most lineage)
+            # must yield [] so it flows to the regex fallback below and is
+            # honestly flagged via parse_quality/regex_fallback.
+            usable = [
+                expression
+                for expression in parse_batch(chunk, dialect, error_level=sqlglot.ErrorLevel.RAISE)
+                if isinstance(expression, _USABLE)
+            ]
+            if usable:
+                for statement in usable:
+                    lineage, creates = _extract_statement(statement)
+                    _apply_lineage(graph, proc, lineage, entry.path, contribution)
+                    for create in creates:
+                        target = create.this
+                        schema_expr = target if isinstance(target, exp.Schema) else None
+                        table_expr = target.this if schema_expr is not None else target
+                        t_schema, t_name = table_parts(table_expr)
+                        if is_temp_table(table_expr):
+                            continue
+                        table = _add_node(
+                            graph,
+                            Node(
+                                id=Node.make_id(NodeType.GOLD_TABLE, t_schema, t_name),
+                                node_type=NodeType.GOLD_TABLE,
+                                name=t_name,
+                                schema_name=t_schema,
+                                display_name=original_name(table_expr.name),
+                                source_file=entry.path,
+                                columns=(
+                                    columns_from_schema(schema_expr, dialect)
+                                    if schema_expr is not None
+                                    else []
+                                ),
+                            ),
+                            contribution,
+                        )
+                        _add_edge(
+                            graph,
+                            Edge(
+                                source_id=proc.id,
+                                target_id=table.id,
+                                edge_type=EdgeType.DEFINES,
+                                evidence=f"{entry.path}: CREATE TABLE {t_schema}.{t_name}",
+                            ),
+                            contribution,
+                        )
+            else:
+                lineage = regex_extract(chunk)
+                if lineage.writes or lineage.reads:
+                    fallback_used = True
+                _apply_lineage(graph, proc, lineage, entry.path, contribution)
+
+        if fallback_used:
+            proc.metadata["parse_quality"] = "regex_fallback"
+            warning = ParseWarning(
+                file=entry.path,
+                message=f"{schema}.{name}: some statements traced via regex fallback",
+                category="regex_fallback",
+            )
+            warnings.append(warning)
+            if contribution is not None:
+                contribution.record_warning(warning)
+
+        # Re-record the proc node LAST so its cached dict carries the final
+        # in-place metadata (dynamic_sql_untraced / parse_quality=regex_fallback)
+        # applied during statement processing. The dict key already exists, so
+        # this updates the value in place and keeps the proc first in insertion
+        # order — the same order a cold parse adds it (before its callees/tables).
+        if contribution is not None:
+            contribution.record_node(proc)
 
 
 def parse_sql_procs(
@@ -221,11 +429,22 @@ def parse_sql_procs(
     dialect: str = "tsql",
     *,
     on_file: Callable[..., None] | None = None,
+    read_cache: dict[str, str] | None = None,
+    parse_cache: ParseCache | None = None,
+    no_parse_cache: bool = False,
 ) -> list[ParseWarning]:
     """Extract stored_proc nodes and writes/reads/references/defines edges
     from CREATE PROCEDURE batches, statement by statement.
 
     ``on_file`` (optional) is called once per entry for progress reporting.
+    ``read_cache`` (optional) is shared with parse_sql_objects so each file is
+    read + decoded exactly once across both passes (see read_sql_file).
+    ``parse_cache``/``no_parse_cache`` (optional) skip re-parsing an unchanged
+    file, replaying its cached contribution in sorted file order for a
+    byte-identical graph (see parse_sql_objects and parse_cache.py). This pass
+    does NOT touch the cache's hit/miss counters — the objects pass counts every
+    file once (both passes share the same per-file key), so the CLI's summary
+    reflects unique files, not passes.
     """
     warnings: list[ParseWarning] = []
     for entry in entries:
@@ -234,141 +453,18 @@ def parse_sql_procs(
         # encoding problems are warned about once per file by parse_sql_objects
         # (the pipeline runs both parsers over the same entries), so no
         # warnings list is passed here — that would duplicate the diagnostic.
-        text = read_sql_file(entry)
-        for batch in split_batches(text):
-            found = _find_proc(batch)
-            if found is None:
-                header = PROC_HEADER_RE.search(blank_comments_and_strings(batch))
-                if header:
-                    # a real header with no top-level body AS (truncated file,
-                    # unsupported layout): skipping must be loud, never silent
-                    warnings.append(
-                        ParseWarning(
-                            file=entry.path,
-                            message=(f"CREATE PROCEDURE {header.group(1)}: no body AS found — batch skipped"),
-                            category="proc_body_not_found",
-                        )
-                    )
-                continue
-            raw_name, body = found
-            schema, name = qualify(raw_name)
-            proc = graph.add_node(
-                Node(
-                    id=Node.make_id(NodeType.STORED_PROC, schema, name),
-                    node_type=NodeType.STORED_PROC,
-                    name=name,
-                    schema_name=schema,
-                    display_name=original_name(raw_name),
-                    source_file=entry.path,
-                    source_code=batch,
-                    metadata={"parse_quality": "ast"},
-                )
-            )
-            if not proc.source_file:
-                proc.source_file = entry.path
-            fallback_used = False
-
-            for chunk in split_statements(body):
-                chunk = _BEGIN_END_LINE_RE.sub("", chunk).strip()
-                if not chunk:
-                    continue
-                stripped = scrub(chunk, strip_strings=True)
-
-                if DYNAMIC_SQL_RE.search(stripped):
-                    # persistent marker so doc consumers (agents) can see
-                    # this proc's lineage is knowingly incomplete — the
-                    # ParseWarning alone only reaches the console
-                    proc.metadata["dynamic_sql_untraced"] = True
-                    warnings.append(
-                        ParseWarning(
-                            file=entry.path,
-                            message=f"{schema}.{name}: dynamic SQL not traced",
-                            category="dynamic_sql",
-                        )
-                    )
-                    continue
-
-                exec_match = EXEC_RE.match(stripped)
-                if exec_match:
-                    callee_schema, callee_name = qualify(exec_match.group(1))
-                    callee = graph.add_node(
-                        Node(
-                            id=Node.make_id(NodeType.STORED_PROC, callee_schema, callee_name),
-                            node_type=NodeType.STORED_PROC,
-                            name=callee_name,
-                            schema_name=callee_schema,
-                            display_name=original_name(exec_match.group(1)),
-                        )
-                    )
-                    graph.add_edge(
-                        Edge(
-                            source_id=proc.id,
-                            target_id=callee.id,
-                            edge_type=EdgeType.REFERENCES,
-                            evidence=f"{entry.path}: EXEC {callee_schema}.{callee_name}",
-                        )
-                    )
-                    continue
-
-                # RAISE, not IGNORE: a chunk sqlglot can't fully parse (e.g. a
-                # legacy semicolon-less multi-statement body, which IGNORE
-                # silently mangles into ONE statement, losing most lineage)
-                # must yield [] so it flows to the regex fallback below and is
-                # honestly flagged via parse_quality/regex_fallback.
-                usable = [
-                    expression
-                    for expression in parse_batch(chunk, dialect, error_level=sqlglot.ErrorLevel.RAISE)
-                    if isinstance(expression, _USABLE)
-                ]
-                if usable:
-                    for statement in usable:
-                        lineage, creates = _extract_statement(statement)
-                        _apply_lineage(graph, proc, lineage, entry.path)
-                        for create in creates:
-                            target = create.this
-                            schema_expr = target if isinstance(target, exp.Schema) else None
-                            table_expr = target.this if schema_expr is not None else target
-                            t_schema, t_name = table_parts(table_expr)
-                            if is_temp_table(table_expr):
-                                continue
-                            table = graph.add_node(
-                                Node(
-                                    id=Node.make_id(NodeType.GOLD_TABLE, t_schema, t_name),
-                                    node_type=NodeType.GOLD_TABLE,
-                                    name=t_name,
-                                    schema_name=t_schema,
-                                    display_name=original_name(table_expr.name),
-                                    source_file=entry.path,
-                                    columns=(
-                                        columns_from_schema(schema_expr, dialect)
-                                        if schema_expr is not None
-                                        else []
-                                    ),
-                                )
-                            )
-                            graph.add_edge(
-                                Edge(
-                                    source_id=proc.id,
-                                    target_id=table.id,
-                                    edge_type=EdgeType.DEFINES,
-                                    evidence=f"{entry.path}: CREATE TABLE {t_schema}.{t_name}",
-                                )
-                            )
-                else:
-                    lineage = regex_extract(chunk)
-                    if lineage.writes or lineage.reads:
-                        fallback_used = True
-                    _apply_lineage(graph, proc, lineage, entry.path)
-
-            if fallback_used:
-                proc.metadata["parse_quality"] = "regex_fallback"
-                warnings.append(
-                    ParseWarning(
-                        file=entry.path,
-                        message=f"{schema}.{name}: some statements traced via regex fallback",
-                        category="regex_fallback",
-                    )
-                )
+        text = read_sql_file(entry, None, read_cache)
+        key = cache_key(dialect, text, "procs") if parse_cache is not None else ""
+        cached = None if (parse_cache is None or no_parse_cache) else parse_cache.get(key)
+        if cached is not None:
+            _replay_entry(graph, cached, warnings)
+            _log.debug("parse cache hit (procs): %s", entry.path)
+            continue
+        contribution = _Contribution() if parse_cache is not None else None
+        _parse_procs_entry(entry, text, graph, dialect, warnings, contribution)
+        if parse_cache is not None:
+            parse_cache.put(key, contribution.to_entry())
+            _log.debug("parse cache miss (procs): %s", entry.path)
     return warnings
 
 
@@ -394,9 +490,16 @@ def resolve_stub_references(graph: LineageGraph) -> None:
             if edge.target_id == node_id:
                 edge.target_id = view_id
         del graph.nodes[node_id]
-    # edge rewrites can create duplicates; rebuild with the idempotent adder
-    edges = graph.edges
-    graph.edges = []
-    for edge in edges:
-        if edge.source_id != edge.target_id:
-            graph.add_edge(edge)
+    # The in-place endpoint rewrite can create duplicate or self- edges; dedup in ONE O(E)
+    # pass (keeping evidence backfill, dropping self-edges), then swap the list + index
+    # atomically via replace_edges — the old rebuild-through-add_edge loop was O(E²).
+    deduped: dict[tuple[str, str, str], Edge] = {}
+    for edge in graph.edges:
+        if edge.source_id == edge.target_id:
+            continue
+        kept = deduped.get(edge.key())
+        if kept is None:
+            deduped[edge.key()] = edge
+        elif not kept.evidence and edge.evidence:
+            kept.evidence = edge.evidence
+    graph.replace_edges(list(deduped.values()))

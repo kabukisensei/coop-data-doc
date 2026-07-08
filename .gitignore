@@ -36,6 +36,8 @@ data-docs-site/
 site/
 .coop-mkdocs.yml
 .lineage-cache.json
+# derivable incremental parse cache — rebuilt from the SQL repos each run
+.coop-data-doc-parse-cache.json
 
 # Databases
 *.db

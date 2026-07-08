@@ -53,6 +53,18 @@ class LineageCache:
                 )
             )
             return cache
+        # A structurally-valid-but-wrong-shape cache (top-level JSON list/number/string)
+        # must degrade, not crash: .get() on a non-dict AttributeErrors. Guard the shape
+        # before the version probe so "invalid -> empty cache with warnings" always holds.
+        if not isinstance(data, dict):
+            cache.warnings.append(
+                ParseWarning(
+                    file=str(path),
+                    message="cache is not a JSON object; ignoring file",
+                    category="cache_invalid",
+                )
+            )
+            return cache
         if data.get("version") != cls.VERSION:
             cache.warnings.append(
                 ParseWarning(

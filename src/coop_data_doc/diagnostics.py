@@ -25,16 +25,32 @@ _SEVERITY: dict[str, str] = {
     "pbix_unreadable": "error",
     "pbix_layout_parse": "error",
     "cache_invalid": "error",
+    # data genuinely missing from the docs — a corrupt/undecodable file or a truncated proc
+    # means whole objects are silently absent, which must fail the CI gate (issue #16).
+    "encoding_unreadable": "error",
+    "proc_body_not_found": "error",
+    # a parallel SQL-parse worker that raised: that whole file's objects/procs are absent
+    # from the docs (data missing), so — like encoding_unreadable — it is an ERROR that
+    # fails even `check --lenient`. It is also self-degrading: the file simply contributes
+    # nothing and the build completes; a re-run without --jobs re-parses it in-process.
+    "parse_worker_error": "error",
     # degraded / heuristic lineage
     "dynamic_sql": "warning",
     "regex_fallback": "warning",
     "unresolved_partition_source": "warning",
     "unresolved_reference": "warning",
+    "ambiguous_visual_binding": "warning",
     "fuzzy_auto": "warning",
     "cache_pruned": "warning",
+    # the SQL parse cache is DERIVABLE (gitignored) — a corrupt/stale one self-heals on
+    # the next build, so it degrades to a cold parse and is a warning, never a CI failure
+    # (unlike the committed .lineage-cache.json's "cache_invalid", which is an error).
+    "parse_cache_invalid": "warning",
     "pbix_opaque_model": "warning",
     "symlink_escape": "warning",
     "file_too_large": "warning",
+    "file_unreadable": "warning",
+    "interactive_unavailable": "warning",
     # expected / cosmetic
     "layer_unclassified": "info",
     "select_star_view": "info",

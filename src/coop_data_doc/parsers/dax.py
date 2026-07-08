@@ -83,9 +83,14 @@ def extract_refs(dax: str) -> tuple[set[str], set[str]]:
         while j >= 0 and text[j] in " \t\r\n":
             j -= 1
         prev = text[j] if j >= 0 else ""
-        # an identifier/quote immediately before '[' means Table[Column] —
-        # unless that identifier is a DAX keyword (`RETURN [Total]`)
-        if not (prev.isalnum() or prev in "_')]") or _word_before(text, j) in _DAX_KEYWORDS:
+        # An identifier/quote immediately before '[' means Table[Column] — unless that
+        # identifier is a DAX keyword (`RETURN [Total]`). ``prev`` must be non-empty for
+        # this: at the START of the expression (or after only whitespace) there is nothing
+        # before '[', so it is a bare [Measure] — and `"" in "_')]"` is True in Python, so
+        # without the `bool(prev)` guard a leading `[Measure] * 1.1` was wrongly dropped as
+        # a column ref (its target measure then looked "unused").
+        is_column_ref = bool(prev) and (prev.isalnum() or prev in "_')]")
+        if not is_column_ref or _word_before(text, j) in _DAX_KEYWORDS:
             measures.add(match.group(1).strip())
     for match in _QUOTED_TABLE_RE.finditer(text):
         tables.add(normalize_identifier(match.group(1)))

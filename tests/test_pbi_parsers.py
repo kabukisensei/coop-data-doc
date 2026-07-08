@@ -155,6 +155,64 @@ def test_dax_escaped_quotes_and_keyword_before_bracket():
     assert tables == set()
 
 
+def test_dax_leading_measure_reference_detected():
+    # A [Measure] at the START of the expression (nothing before '[') was dropped because
+    # `"" in "_')]"` is True in Python, so a measure used only via `[Ref] * x` looked unused.
+    measures, tables = extract_refs("[Total Sales] * 1.1")
+    assert measures == {"Total Sales"}
+    assert tables == set()
+    # a leading measure and a following Table[Column] are still told apart
+    measures2, tables2 = extract_refs("[Leading Measure] + fact_sales[order_total]")
+    assert measures2 == {"Leading Measure"}
+    assert tables2 == {"fact_sales"}
+
+
+def test_measure_referenced_by_another_measure_is_not_flagged_unused():
+    # End-to-end: a measure whose only consumer references it at the start of a DAX
+    # expression must count as USED, not shown as a dead measure.
+    from coop_data_doc.graph.model import Edge, EdgeType, Node, NodeType
+    from coop_data_doc.parsers.dax import link_measures
+    from coop_data_doc.render.markdown import _used_measure_ids
+
+    g = LineageGraph()
+    g.add_node(Node(id="semantic_model:x", node_type=NodeType.SEMANTIC_MODEL, name="x", schema_name="x"))
+    g.add_node(
+        Node(
+            id="measure:x.base",
+            node_type=NodeType.MEASURE,
+            name="base",
+            schema_name="x",
+            metadata={"dax": "SUM(t[c])"},
+        )
+    )
+    g.add_node(
+        Node(
+            id="measure:x.derived",
+            node_type=NodeType.MEASURE,
+            name="derived",
+            schema_name="x",
+            metadata={"dax": "[base] * 1.1"},
+        )
+    )
+    g.add_node(
+        Node(
+            id="measure:x.shown",
+            node_type=NodeType.MEASURE,
+            name="shown",
+            schema_name="x",
+            metadata={"dax": ""},
+        )
+    )
+    g.add_node(Node(id="report:r", node_type=NodeType.REPORT, name="r"))
+    g.add_edge(Edge(source_id="report:r", target_id="measure:x.shown", edge_type=EdgeType.VISUALIZES))
+    link_measures(g, "x")
+    used = _used_measure_ids(g)
+    assert ("measure:x.derived", "measure:x.base", "references") in edge_keys(g)
+    assert "measure:x.base" in used  # referenced by `derived` -> USED (was wrongly unused)
+    assert "measure:x.shown" in used  # shown in a report -> USED
+    assert "measure:x.derived" not in used  # nothing references it -> correctly unused
+
+
 # ---- TMDL model ------------------------------------------------------------
 
 
@@ -207,6 +265,46 @@ def test_tmdl_relationships_without_model_file(tmp_path):
         {"from": "fact.k", "to": "dim.k", "active": True, "bidirectional": False}
     ]
     assert model.source_file.endswith("relationships.tmdl")
+
+
+def test_tmdl_calculated_column_kept_and_does_not_corrupt_previous(tmp_path):
+    # issue #8: `column Name = <DAX>` (a calculated column) must appear in the contract
+    # with its OWN dataType, and its property lines must not bleed into the prior column.
+    from coop_data_doc.parsers.tmdl import parse_tmdl
+
+    defn = tmp_path / "Calc.SemanticModel" / "definition"
+    (defn / "tables").mkdir(parents=True)
+    (defn / "tables" / "Sales.tmdl").write_text(
+        "table Sales\n"
+        "\tcolumn Amount\n"
+        "\t\tdataType: decimal\n"
+        "\t\tsummarizeBy: sum\n"
+        "\n"
+        "\tcolumn Margin = [Amount] - [Cost]\n"
+        "\t\tdataType: double\n"
+        "\n"
+        "\tcolumn MultiLine =\n"
+        "\t\t\tIF(\n"
+        "\t\t\t\t[Amount] > 0,\n"
+        "\t\t\t\t[Amount],\n"
+        "\t\t\t\t0\n"
+        "\t\t\t)\n"
+        "\t\tdataType: int64\n",
+        encoding="utf-8",
+    )
+    config = Config(repos={"pbi": RepoConfig(path=str(tmp_path), include=["**/*.tmdl"])})
+    inventory, _ = crawl(config)
+    g = LineageGraph()
+    parse_tmdl(inventory.by_kind(FileKind.TMDL), g)
+    table = g.nodes["pbi_table:calc.sales"]
+    cols = {c.name: c for c in table.columns}
+    assert set(cols) == {"amount", "margin", "multiline"}  # all three present, none dropped
+    assert cols["amount"].data_type == "decimal"  # NOT overwritten by Margin's dataType
+    assert cols["margin"].data_type == "double"
+    assert cols["multiline"].data_type == "int64"  # a multi-line expr didn't corrupt state
+    assert "CALCULATED" in cols["margin"].constraints
+    assert "CALCULATED" in cols["multiline"].constraints
+    assert "CALCULATED" not in cols["amount"].constraints  # a plain column is not tagged
 
 
 def test_tmdl_partition_sources():
@@ -645,3 +743,72 @@ def test_mcode_navigation_anchored_not_poisoned_by_let_step():
         "in Data"
     )
     assert ref is not None and ref.schema_name == "sales" and ref.object_name == "dim_customer"
+
+
+def _binding(entity, prop, kind="column"):
+    return {"entity": entity, "property": prop, "kind": kind}
+
+
+def _two_model_report_graph(bindings):
+    """Two models (a, b) each with a `date` table; model a also has `sales`. One
+    report -> page -> visual whose bindings are the given list."""
+    from coop_data_doc.graph.model import Edge, EdgeType, Node, NodeType
+
+    g = LineageGraph()
+    for mid in ("a", "b"):
+        g.add_node(
+            Node(id=f"semantic_model:{mid}", node_type=NodeType.SEMANTIC_MODEL, name=mid, schema_name=mid)
+        )
+        g.add_node(
+            Node(id=f"pbi_table:{mid}.date", node_type=NodeType.PBI_TABLE, name="date", schema_name=mid)
+        )
+    g.add_node(Node(id="pbi_table:a.sales", node_type=NodeType.PBI_TABLE, name="sales", schema_name="a"))
+    g.add_node(Node(id="report:r1", node_type=NodeType.REPORT, name="r1", source_file="Report.pbip"))
+    g.add_node(Node(id="report_page:p1", node_type=NodeType.REPORT_PAGE, name="p1"))
+    g.add_node(
+        Node(
+            id="visual:v1",
+            node_type=NodeType.VISUAL,
+            name="v1",
+            source_file="Report.pbip",
+            metadata={"bindings": bindings},
+        )
+    )
+    g.add_edge(Edge(source_id="visual:v1", target_id="report_page:p1", edge_type=EdgeType.FEEDS))
+    g.add_edge(Edge(source_id="report_page:p1", target_id="report:r1", edge_type=EdgeType.FEEDS))
+    return g
+
+
+def test_ambiguous_binding_resolved_by_report_context():
+    # issue #11: `date` is shared by both models, but the report also binds model a's
+    # unique `sales` table — that context resolves the `date` binding to model a.
+    g = _two_model_report_graph([_binding("sales", "amount"), _binding("date", "year")])
+    warnings = link_visual_bindings(g)
+    from coop_data_doc.parsers.pbir import collapse_visuals, link_reports_to_models
+
+    link_reports_to_models(g)
+    collapse_visuals(g)
+    keys = edge_keys(g)
+    assert ("report:r1", "pbi_table:a.date", "visualizes") in keys  # resolved to model a
+    assert ("report:r1", "pbi_table:b.date", "visualizes") not in keys  # NOT model b
+    assert ("report:r1", "pbi_table:a.sales", "visualizes") in keys
+    assert ("semantic_model:a", "report:r1", "feeds") in keys
+    assert ("semantic_model:b", "report:r1", "feeds") not in keys  # linked to model a only
+    assert not any(w.category == "ambiguous_visual_binding" for w in warnings)
+
+
+def test_fully_ambiguous_binding_warns_and_marks_report():
+    # A report whose ONLY binding is ambiguous with no disambiguating context: no guessed
+    # edge, a warning is raised, and the report node carries unresolved_bindings after collapse.
+    g = _two_model_report_graph([_binding("date", "year")])
+    warnings = link_visual_bindings(g)
+    from coop_data_doc.parsers.pbir import collapse_visuals, link_reports_to_models
+
+    assert any(w.category == "ambiguous_visual_binding" for w in warnings)
+    link_reports_to_models(g)
+    collapse_visuals(g)
+    keys = edge_keys(g)
+    assert ("report:r1", "pbi_table:a.date", "visualizes") not in keys
+    assert ("report:r1", "pbi_table:b.date", "visualizes") not in keys
+    report = g.nodes["report:r1"]
+    assert report.metadata.get("unresolved_bindings") == [_binding("date", "year")]

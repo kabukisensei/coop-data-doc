@@ -432,7 +432,7 @@ markers is regenerated, so put your notes inside them.
 | `coop-data-doc update` | re-scan the repos and refresh all documentation |
 | `coop-data-doc build` | identical to `update` — two names for the same command |
 | `coop-data-doc scan` | crawl + parse + link only; writes `graph.json`, no rendering |
-| `coop-data-doc check [--lenient]` | CI gate — fails on stale docs, unresolved references, or risky parses (`--lenient` tolerates the latter) |
+| `coop-data-doc check [--lenient]` | CI gate — fails on stale docs, unresolved references, corrupt/undecodable files, or risky parses (`--lenient` tolerates only the risky parses, never a corrupt file) |
 | `coop-data-doc upgrade` | check for a newer release and print the exact upgrade command (does **not** self-update) |
 | `coop-data-doc help [command]` | show help (same as `--help`) |
 
@@ -440,11 +440,36 @@ markers is regenerated, so put your notes inside them.
 
 Options for `build`/`update`: `--skip-html` (markdown only), `--serve` (live-preview
  the site). `scan`/`build`/`update` all accept `--non-interactive` (never prompt; for
- CI) and `--strict` (exit code 2 on unresolved references or risky parses). Every
+ CI) and `--strict` (exit code 2 on unresolved references or risky parses). `scan`,
+ `build`, `update`, and `check` also accept `--no-parse-cache` — force a cold SQL parse,
+ bypassing the incremental per-file parse cache (see below). `scan`/`build`/`update`
+ accept `--jobs N` to parallelize SQL parsing across processes (see below). Every
  pipeline command accepts `--config PATH` (default: discover in cwd and parents). Global flags
  go *before* the subcommand: `--version`, `-v` (debug + tracebacks), `-q` (quiet), and
  `--log-file PATH` (write a verbose debug log to a file, leaving the console at warning
  level) — e.g. `coop-data-doc -q update` or `coop-data-doc --log-file build.log build`.
+
+**Parallel SQL parsing (`--jobs N`).** `scan`/`build`/`update` parse each SQL file
+across a process pool, defaulting to your CPU count (capped at 8). It is **transparent
+and deterministic**: the per-file results are merged back in sorted file order, so a
+`--jobs N` build is byte-for-byte identical to a `--jobs 1` build and to a cold serial
+build — the same determinism guarantee the parse cache already meets, warm or cold.
+Only the SQL parsers fan out; every cross-file pass stays serial. `--jobs 1` is the exact
+sequential path, and tiny estates parse serially automatically (the pool's startup cost
+would outweigh the win). Set a default without the flag via `COOP_DATA_DOC_JOBS` (e.g.
+`COOP_DATA_DOC_JOBS=1` for pool-free runs). The worker is spawn-safe, so it works on
+Windows; a file whose worker fails degrades to a `parse_worker_error` diagnostic and the
+build completes, and any failure to start the pool falls back to serial. The speedup
+scales with per-file parse cost — proc-heavy estates benefit most (a 200-proc corpus
+parses ~3x faster at `--jobs 4`); trivial table DDL parses too fast for it to matter.
+
+**Incremental parse cache.** Each run writes `.coop-data-doc-parse-cache.json` next to
+your config: a content-hashed, per-file cache so an unchanged SQL file is not re-parsed on
+the next build (the console prints e.g. `Parsing SQL (312 cached, 5 parsed)`). It is fully
+**transparent** — a warm build is byte-identical to a cold one — and **derivable**, so it
+is gitignored and never committed. It self-heals: a corrupt or version-mismatched cache
+degrades to a cold parse (a `parse_cache_invalid` warning, never a failure) and is rewritten.
+Pass `--no-parse-cache` to force a cold parse.
 
 ### Agent / CI commands
 
@@ -496,16 +521,19 @@ Two useful gates for a pipeline (e.g. GitHub Actions / Azure DevOps):
 
 ```bash
 coop-data-doc check              # fails if committed docs are stale,
-                                 # references are unresolved, or risky
-                                 # parses exist (use --lenient to tolerate
-                                 # known dynamic-SQL/cursor procs)
+                                 # references are unresolved, a file is
+                                 # corrupt/undecodable (objects missing), or
+                                 # risky parses exist (use --lenient to tolerate
+                                 # known dynamic-SQL/cursor procs — but NOT a
+                                 # corrupt file, which is never "accepted")
 
 coop-data-doc build --non-interactive --strict   # rebuild; exit 2 on problems
 ```
 
 Exit codes: `0` success · `1` stale docs / friendly error · `2` unresolved references,
-risky parses, or an invalid command line (typo'd flag/command) · `130` cancelled with
-Ctrl+C.
+risky parses, error-severity diagnostics (a corrupt/undecodable file or truncated proc —
+whole objects are silently missing), or an invalid command line (typo'd flag/command) ·
+`130` cancelled with Ctrl+C.
 
 ## 🤖 For AI agents
 
@@ -620,7 +648,7 @@ overwritten on the next `update`. To regenerate after source changes, run
 | `unresolved_partition_source` warning | A Power BI table loads from something unrecognized. Run interactively once and map it, or mark it external. |
 | `fuzzy_auto` warning | Two names were close enough to auto-match — listed so you can spot a wrong guess. |
 | `check` exits 1 | Committed docs are out of date — run `coop-data-doc update` and commit. |
-| `check` exits 2 | Unresolved references or risky parses. Resolve interactively, or use `check --lenient` if the risky parses are known and accepted. |
+| `check` exits 2 | Unresolved references, risky parses, or an **error-severity diagnostic** (a corrupt/undecodable file, truncated proc — objects are silently missing). Resolve interactively, or use `check --lenient` if the *risky parses* are known and accepted. `--lenient` does **not** forgive a corrupt file — fix or re-encode it (UTF-8). |
 | Search doesn't work in the browser | Make sure you opened `data-docs-site/index.html` (the built site), not a file in `data-docs/`. |
 | Want to change a saved mapping answer | Edit `.lineage-cache.json` (next to your config): delete the entry and re-run. |
 

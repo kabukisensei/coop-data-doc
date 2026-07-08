@@ -7,6 +7,13 @@ def test_severity_classification():
     assert severity_of("dynamic_sql") == "warning"
     assert severity_of("layer_unclassified") == "info"
     assert severity_of("totally_unknown_category") == "warning"  # default
+    # issue #16: missing-data categories are error (fail the CI gate); newly-classified
+    # advisory categories are warning (previously fell to the default).
+    assert severity_of("encoding_unreadable") == "error"
+    assert severity_of("proc_body_not_found") == "error"
+    assert severity_of("ambiguous_visual_binding") == "warning"
+    assert severity_of("file_unreadable") == "warning"
+    assert severity_of("interactive_unavailable") == "warning"
 
 
 def test_diagnostics_counts_and_console():

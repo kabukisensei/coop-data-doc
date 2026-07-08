@@ -1,9 +1,12 @@
 """Report parsing: PBIR folders and legacy report.json (Module 3).
 
 Visual field bindings are collected as structured (entity, property, kind)
-tuples; ``link_visual_bindings`` resolves them against loaded semantic
-models once everything is parsed. Anything ambiguous is left as
-``pending_model_resolution`` metadata for the Module 4 linker.
+tuples; ``link_visual_bindings`` resolves them against loaded semantic models
+once everything is parsed — first by unique name, then by report context. A
+binding still ambiguous after that raises an ``ambiguous_visual_binding``
+warning and is preserved (never dropped): ``collapse_visuals`` copies the
+surviving ``pending_model_resolution`` bindings onto the owning report as
+``unresolved_bindings`` metadata.
 """
 
 from __future__ import annotations
@@ -281,8 +284,13 @@ def parse_legacy_reports(
 def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
     """Resolve visual bindings against loaded semantic models.
 
-    A binding resolves when exactly one model contains a pbi_table with the
-    bound entity name; otherwise it is left for the Module 4 linker.
+    A binding resolves when exactly one model has a pbi_table with the bound entity
+    name. When several models share the name (near-universal — every model has a
+    ``Date`` dimension), a second pass disambiguates using REPORT CONTEXT: it restricts
+    candidates to the models the same report already draws from via its other resolved
+    bindings. Bindings still ambiguous after that are NOT dropped silently — they raise
+    an ``ambiguous_visual_binding`` warning and stay in ``pending_model_resolution``
+    metadata, which :func:`collapse_visuals` propagates onto the report (hard rule 4).
     """
     warnings: list[ParseWarning] = []
     tables_by_name: dict[str, list[Node]] = {}
@@ -293,39 +301,77 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
         elif node.node_type is NodeType.MEASURE:
             measures[(node.schema_name, node.name)] = node
 
+    page_of_visual, report_of_page = _page_visual_maps(graph)
+    report_of_visual = {
+        vid: report_of_page.get(pid) for vid, pid in page_of_visual.items() if report_of_page.get(pid)
+    }
+
+    def _resolve(visual: Node, binding: dict[str, str], table: Node) -> None:
+        graph.add_edge(
+            Edge(
+                source_id=visual.id,
+                target_id=table.id,
+                edge_type=EdgeType.VISUALIZES,
+                evidence=f"{visual.source_file}: {binding['entity']}.{binding['property']}",
+            )
+        )
+        measure = measures.get((table.schema_name, normalize_identifier(binding["property"])))
+        if measure is not None and binding["kind"] in ("measure", "unknown"):
+            graph.add_edge(
+                Edge(
+                    source_id=visual.id,
+                    target_id=measure.id,
+                    edge_type=EdgeType.VISUALIZES,
+                    evidence=f"{visual.source_file}: [{binding['property']}]",
+                )
+            )
+
+    # Pass 1: resolve the unambiguous bindings and record each report's models.
+    report_models: dict[str, set[str]] = {}
+    visual_pending: dict[str, list[dict[str, str]]] = {}
     for node_id in sorted(graph.nodes):
         visual = graph.nodes.get(node_id)
         if visual is None or visual.node_type is not NodeType.VISUAL:
             continue
+        visual.metadata.pop("pending_model_resolution", None)
         pending: list[dict[str, str]] = []
         for binding in visual.metadata.get("bindings", []):
             candidates = tables_by_name.get(binding["entity"], [])
-            if len(candidates) != 1:
+            if len(candidates) == 1:
+                _resolve(visual, binding, candidates[0])
+                report = report_of_visual.get(visual.id)
+                if report is not None:
+                    report_models.setdefault(report, set()).add(candidates[0].schema_name)
+            else:
                 pending.append(binding)
-                continue
-            table = candidates[0]
-            graph.add_edge(
-                Edge(
-                    source_id=visual.id,
-                    target_id=table.id,
-                    edge_type=EdgeType.VISUALIZES,
-                    evidence=f"{visual.source_file}: {binding['entity']}.{binding['property']}",
-                )
-            )
-            measure = measures.get((table.schema_name, normalize_identifier(binding["property"])))
-            if measure is not None and binding["kind"] in ("measure", "unknown"):
-                graph.add_edge(
-                    Edge(
-                        source_id=visual.id,
-                        target_id=measure.id,
-                        edge_type=EdgeType.VISUALIZES,
-                        evidence=f"{visual.source_file}: [{binding['property']}]",
+        if pending:
+            visual_pending[node_id] = pending
+
+    # Pass 2: disambiguate each pending binding within the report's resolved models.
+    for node_id in sorted(visual_pending):
+        visual = graph.nodes[node_id]
+        report = report_of_visual.get(visual.id)
+        models = report_models.get(report, set()) if report is not None else set()
+        still_pending: list[dict[str, str]] = []
+        for binding in visual_pending[node_id]:
+            candidates = tables_by_name.get(binding["entity"], [])
+            scoped = [t for t in candidates if t.schema_name in models] if models else candidates
+            if len(scoped) == 1:
+                _resolve(visual, binding, scoped[0])
+            else:
+                still_pending.append(binding)
+                warnings.append(
+                    ParseWarning(
+                        file=visual.source_file,
+                        message=(
+                            f"visual binding {binding['entity']}.{binding['property']} is ambiguous "
+                            f"across {len(candidates)} models — not linked"
+                        ),
+                        category="ambiguous_visual_binding",
                     )
                 )
-        if pending:
-            visual.metadata["pending_model_resolution"] = pending
-        elif "pending_model_resolution" in visual.metadata:
-            del visual.metadata["pending_model_resolution"]
+        if still_pending:
+            visual.metadata["pending_model_resolution"] = still_pending
     return warnings
 
 
@@ -420,10 +466,30 @@ def collapse_visuals(graph: LineageGraph) -> list[ParseWarning]:
             if report is not None and report != edge.target_id:
                 rewired.add((report, edge.target_id, edge.evidence))
 
-    # drop every edge that touches a folded node, then add the report-level edges
-    graph.edges = [
-        edge for edge in graph.edges if edge.source_id not in drop_ids and edge.target_id not in drop_ids
-    ]
+    # Preserve any still-ambiguous bindings onto the owning report BEFORE the visuals
+    # (which hold the metadata) are deleted, so agents reading manifest.json can see the
+    # report's lineage is knowingly incomplete (hard rule 4). Deterministic: sorted.
+    unresolved_by_report: dict[str, list[dict[str, str]]] = {}
+    for vid in sorted(drop_ids):
+        node = graph.nodes.get(vid)
+        if node is None or node.node_type is not NodeType.VISUAL:
+            continue
+        pend = node.metadata.get("pending_model_resolution")
+        if pend:
+            page = page_of_visual.get(vid)
+            report = report_of_page.get(page) if page is not None else None
+            if report is not None:
+                unresolved_by_report.setdefault(report, []).extend(pend)
+    for report_id, pend in unresolved_by_report.items():
+        graph.nodes[report_id].metadata["unresolved_bindings"] = sorted(
+            pend, key=lambda b: (b.get("entity", ""), b.get("property", ""), b.get("kind", ""))
+        )
+
+    # drop every edge that touches a folded node (replace_edges keeps the dedup index in
+    # sync so the add_edge calls below don't see stale/dropped keys), then add report edges
+    graph.replace_edges(
+        [edge for edge in graph.edges if edge.source_id not in drop_ids and edge.target_id not in drop_ids]
+    )
     for report, target, evidence in sorted(rewired):
         graph.add_edge(
             Edge(source_id=report, target_id=target, edge_type=EdgeType.VISUALIZES, evidence=evidence)

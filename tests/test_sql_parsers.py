@@ -144,6 +144,53 @@ def test_ctas_reads_source():
     assert graph.nodes["silver_table:dbo.agg_sales_daily"].source_file
 
 
+def _parse_objects_sql(tmp_path: Path, sql: str) -> tuple[LineageGraph, list]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "obj.sql").write_text(sql, encoding="utf-8")
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    graph = LineageGraph()
+    warnings = parse_sql_objects(inventory.by_kind(FileKind.SQL_FILE), graph)
+    return graph, warnings
+
+
+def test_openrowset_ctas_no_phantom_source(tmp_path: Path):
+    # Fabric review: OPENROWSET(BULK ...) option keywords (FORMAT/DATA_SOURCE) were
+    # recovered by sqlglot as phantom source tables (e.g. dbo.format) with a bogus
+    # reads-edge and NO warning — silently wrong lineage (hard rule 4). The external
+    # file is not a warehouse object, so like COPY INTO it contributes no source node.
+    graph, _ = _parse_objects_sql(
+        tmp_path,
+        "CREATE TABLE dbo.tgt AS SELECT c1 FROM OPENROWSET(BULK 'https://x/y.parquet', FORMAT='PARQUET') AS r;",
+    )
+    assert sorted(graph.nodes) == ["gold_table:dbo.tgt"]
+    assert "gold_table:dbo.format" not in graph.nodes
+    assert not any(e.edge_type.value == "reads" for e in graph.edges)
+
+
+def test_openrowset_with_real_join_keeps_real_source(tmp_path: Path):
+    # A genuine table joined alongside an OPENROWSET must still be captured — only the
+    # option-keyword phantom is dropped, never a real source.
+    graph, _ = _parse_objects_sql(
+        tmp_path,
+        "CREATE TABLE dbo.tgt AS SELECT a FROM dbo.real x JOIN OPENROWSET(BULK 'u', FORMAT='CSV') AS r ON 1=1;",
+    )
+    keys = edge_keys(graph)
+    assert ("gold_table:dbo.tgt", "gold_table:dbo.real", "reads") in keys
+    assert "gold_table:dbo.format" not in graph.nodes
+
+
+def test_clone_of_captures_source_lineage(tmp_path: Path):
+    # Fabric review: `CREATE TABLE tgt AS CLONE OF src` degrades to an opaque Command;
+    # the target was created via regex fallback but the clone SOURCE was silently
+    # dropped, losing the genuine table->table lineage. It must now be captured.
+    graph, warnings = _parse_objects_sql(tmp_path, "CREATE TABLE dbo.tgt AS CLONE OF dbo.src;")
+    keys = edge_keys(graph)
+    assert ("gold_table:dbo.tgt", "gold_table:dbo.src", "reads") in keys
+    assert any(w.category == "regex_fallback" for w in warnings)
+
+
 def test_cursor_proc_traced():
     graph, _ = parse_all()
     keys = edge_keys(graph)
@@ -299,6 +346,67 @@ def test_proc_body_as_after_parenthesized_default():
     assert body.strip() == "INSERT INTO dbo.target SELECT col FROM dbo.src"
 
 
+def _parse_proc_sql(tmp_path: Path, sql: str) -> tuple[LineageGraph, list]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "proc.sql").write_text(sql, encoding="utf-8")
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    graph = LineageGraph()
+    warnings = parse_sql_procs(inventory.by_kind(FileKind.SQL_FILE), graph)
+    return graph, warnings
+
+
+def test_conditional_exec_creates_reference_edge(tmp_path: Path):
+    # issue #10: a conditional `IF <cond> EXEC x` shares its chunk with the IF line, so the
+    # start-anchored EXEC match missed it and the callee vanished with no warning.
+    graph, _ = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE dbo.orchestrator AS\n"
+        "BEGIN\n"
+        "    IF @full_load = 1\n"
+        "        EXEC etl.load_customers;\n"
+        "    EXEC etl.load_orders;\n"
+        "END\n"
+        "GO\n",
+    )
+    keys = edge_keys(graph)
+    src = "stored_proc:dbo.orchestrator"
+    assert (src, "stored_proc:etl.load_customers", "references") in keys
+    assert (src, "stored_proc:etl.load_orders", "references") in keys
+
+
+def test_two_execs_in_one_semicolonless_chunk(tmp_path: Path):
+    graph, _ = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE dbo.runner AS\nBEGIN\n    EXEC etl.a\n    EXEC etl.b\nEND\nGO\n",
+    )
+    keys = edge_keys(graph)
+    src = "stored_proc:dbo.runner"
+    assert (src, "stored_proc:etl.a", "references") in keys
+    assert (src, "stored_proc:etl.b", "references") in keys
+
+
+def test_execute_as_context_is_not_a_phantom_proc(tmp_path: Path):
+    graph, _ = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE dbo.secure AS\n"
+        "BEGIN\n"
+        "    EXECUTE AS USER = 'dbo';\n"
+        "    EXEC etl.load;\n"
+        "    REVERT;\n"
+        "END\n"
+        "GO\n",
+    )
+    proc_names = {n.name for n in graph.nodes.values()}
+    assert "as" not in proc_names  # EXECUTE AS did not invent a proc named 'as'
+    assert (
+        "stored_proc:dbo.secure",
+        "stored_proc:etl.load",
+        "references",
+    ) in edge_keys(graph)
+
+
 def test_dynamic_sql_warned_not_guessed():
     graph, warnings = parse_all()
     assert any(w.category == "dynamic_sql" for w in warnings)
@@ -325,6 +433,27 @@ def test_view_reading_view_resolves_stub(tmp_path: Path):
     resolve_stub_references(graph)
     assert "gold_table:dbo.v_base" not in graph.nodes
     assert ("view:dbo.v_derived", "view:dbo.v_base", "reads") in edge_keys(graph)
+
+
+def test_regex_fallback_ignores_create_in_comments_and_strings(tmp_path: Path):
+    # issue #9: an unparseable batch that only MENTIONS CREATE TABLE/VIEW inside a `--`
+    # comment, a /* */ comment, or a '...' string literal must NOT create a phantom node
+    # (hard rule 4: never guess lineage). The fallback now probes the scrubbed text.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "deploy.sql").write_text(
+        "-- NOTE: CREATE TABLE dbo.retired_table was removed in 2024; see wiki.\n"
+        "/* also CREATE VIEW dbo.old_view (removed) */\n"
+        "PRINT 'CREATE TABLE dbo.string_table';\n"
+        ':setvar Environment "prod"\n'
+        "EXOTIC NONSQL SYNTAX %%~ GO-AWAY\n",
+        encoding="utf-8",
+    )
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    graph = LineageGraph()
+    parse_sql_objects(inventory.by_kind(FileKind.SQL_FILE), graph)
+    assert graph.nodes == {}  # none of the commented/quoted CREATEs became a node
 
 
 def test_end_to_end_lineage_chain():
@@ -562,3 +691,32 @@ def test_edge_repo_determinism():
     first, _ = parse_edge_repo()
     second, _ = parse_edge_repo()
     assert to_json_str(first) == to_json_str(second)
+
+
+def test_sql_file_read_exactly_once_across_both_parsers(tmp_path: Path, monkeypatch):
+    # issue #15: a shared read_cache makes each SQL file read + decoded ONCE across the
+    # object AND proc passes (the second pass is a cache hit — no re-read, no Defender tax).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.sql").write_text(
+        "CREATE TABLE dbo.t (a int);\nGO\nCREATE PROCEDURE dbo.p AS SELECT 1 FROM dbo.t;\n",
+        encoding="utf-8",
+    )
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
+    inventory, _ = crawl(config)  # crawl before patching so only the parser reads are counted
+    entries = inventory.by_kind(FileKind.SQL_FILE)
+
+    counts: dict[str, int] = {}
+    real_read = Path.read_bytes
+
+    def counting_read(self):
+        counts[str(self)] = counts.get(str(self), 0) + 1
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read)
+    graph = LineageGraph()
+    cache: dict[str, str] = {}
+    parse_sql_objects(entries, graph, read_cache=cache)
+    parse_sql_procs(entries, graph, read_cache=cache)
+    sql_reads = [n for p, n in counts.items() if p.endswith("a.sql")]
+    assert sql_reads == [1], counts  # one file, two parser passes, ONE read

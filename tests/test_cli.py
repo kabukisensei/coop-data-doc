@@ -548,6 +548,48 @@ def test_interactive_menu_from_subdir_uses_discovered_config(tmp_path: Path, mon
     assert (tmp_path / "data-docs" / "graph.json").is_file()
 
 
+def test_interactive_menu_setup_from_subdir_edits_discovered_config(tmp_path: Path, monkeypatch):
+    """issue #12: 'Change settings' is only offered because a config WAS found, so it must
+    edit THAT (parent) config — not write a new nested one in cwd that shadows it."""
+    from coop_data_doc import cli as cli_module
+    from coop_data_doc import wizard as wizard_module
+
+    setup_workspace(tmp_path)
+    nested = tmp_path / "sub" / "deep"
+    nested.mkdir(parents=True)
+
+    class FakeQuestionary:
+        class Choice:
+            def __init__(self, title, value):
+                self.title = title
+                self.value = value
+
+        @staticmethod
+        def select(message, choices):
+            assert "Found coop-data-doc.yml" in message
+
+            class _Result:
+                @staticmethod
+                def unsafe_ask():
+                    return "setup"
+
+            return _Result()
+
+    captured = {}
+
+    def fake_run_setup(path):
+        captured["path"] = path
+        return None  # setup prints "Saved {path}" and returns cleanly
+
+    monkeypatch.setattr(cli_module, "questionary", FakeQuestionary)
+    monkeypatch.setattr(cli_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(wizard_module, "run_setup", fake_run_setup)
+    result = run([], nested)
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == tmp_path / "coop-data-doc.yml"  # the discovered parent config
+    assert not (nested / "coop-data-doc.yml").exists()  # no shadowing nested config
+
+
 def test_status_detects_staleness(tmp_path: Path):
     """status reports stale when the committed docs no longer match a fresh render."""
     setup_workspace(tmp_path)
@@ -561,3 +603,34 @@ def test_status_detects_staleness(tmp_path: Path):
     result = run(["status"], tmp_path)
     assert result.exit_code == 0  # status reports, never fails the way `check` does
     assert "stale" in result.output
+
+
+def test_undecodable_sql_file_fails_ci_gate(tmp_path: Path):
+    # issue #16: a BOM-less UTF-16 (undecodable) SQL file means objects are silently
+    # missing — an error-severity diagnostic that must fail build --strict AND check.
+    setup_workspace(tmp_path)
+    (tmp_path / "sql-repo" / "nobom.sql").write_bytes(
+        "CREATE TABLE dbo.orders (id INT);\nGO\n".encode("utf-16-le")
+    )
+    build = run(["build", "--non-interactive", "--strict", "--skip-html"], tmp_path)
+    assert build.exit_code == 2, build.output
+    assert "encoding_unreadable" in build.output and "nobom.sql" in build.output
+    chk = run(["check"], tmp_path)
+    assert chk.exit_code == 2, chk.output
+    assert "encoding_unreadable" in chk.output
+
+
+def test_corrupt_bim_fails_ci_gate(tmp_path: Path):
+    setup_workspace(tmp_path)
+    (tmp_path / "pbi-repo" / "broken.bim").write_text("{ not valid json", encoding="utf-8")
+    build = run(["build", "--non-interactive", "--strict", "--skip-html"], tmp_path)
+    assert build.exit_code == 2, build.output
+    assert "bim_parse" in build.output
+
+
+def test_lenient_check_still_fails_on_error_severity(tmp_path: Path):
+    # --lenient forgives risky-parse warnings, but a corrupt/undecodable file (error
+    # severity) is never "known and accepted" — it still fails.
+    setup_workspace(tmp_path)
+    (tmp_path / "sql-repo" / "nobom.sql").write_bytes("SELECT 1\n".encode("utf-16-le"))
+    assert run(["check", "--lenient"], tmp_path).exit_code == 2

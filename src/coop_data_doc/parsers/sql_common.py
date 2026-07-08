@@ -51,6 +51,10 @@ _READ_RX = [
     re.compile(rf"\bFROM\s+({_IDENT})", re.IGNORECASE),
     re.compile(rf"\bJOIN\s+({_IDENT})", re.IGNORECASE),
     re.compile(rf"\bUSING\s+({_IDENT})", re.IGNORECASE),
+    # Fabric DW zero-copy clone: `CREATE TABLE tgt AS CLONE OF src` — sqlglot degrades
+    # it to an opaque Command, so the clone's real table->table source lineage would be
+    # silently dropped without this. The target is captured by the CREATE TABLE fallback.
+    re.compile(rf"\bCLONE\s+OF\s+({_IDENT})", re.IGNORECASE),
 ]
 # A CTE alias: the name after WITH or a following comma, optionally bracketed
 # (so it may contain spaces) and optionally followed by an explicit column list
@@ -346,10 +350,28 @@ def cte_names(expression: exp.Expression) -> set[str]:
     return {normalize_identifier(cte.alias_or_name) for cte in expression.find_all(exp.CTE)}
 
 
+# OPENROWSET(BULK ...) named-option keywords. sqlglot's tsql grammar can't parse the
+# named-option arg list, so under IGNORE recovery an option name (FORMAT / DATA_SOURCE /
+# ...) is left behind as a phantom *unqualified* exp.Table. When an OPENROWSET call is in
+# scope these are parse artifacts, not real sources — treating one as a table invents a
+# bogus reads-edge to e.g. `dbo.format` (hard rule 4: never guess lineage). The external
+# file itself isn't a warehouse object, so like COPY INTO it contributes no source node.
+_OPENROWSET_OPTION_NAMES = frozenset({"bulk", "format", "data_source", "parser_version", "rowset_options"})
+
+
+def _has_openrowset(expression: exp.Expression) -> bool:
+    return any(
+        isinstance(fn, exp.Anonymous) and fn.name.upper() == "OPENROWSET"
+        for fn in expression.find_all(exp.Anonymous)
+    )
+
+
 def collect_source_tables(expression: exp.Expression) -> set[tuple[str, str]]:
     """All real tables under an expression, excluding CTE aliases, temp
-    tables, table variables, and table-valued functions."""
+    tables, table variables, table-valued functions, and OPENROWSET option-keyword
+    phantoms (see :data:`_OPENROWSET_OPTION_NAMES`)."""
     ctes = cte_names(expression)
+    has_openrowset = _has_openrowset(expression)
     found: set[tuple[str, str]] = set()
     for table in expression.find_all(exp.Table):
         if is_temp_table(table):
@@ -358,6 +380,10 @@ def collect_source_tables(expression: exp.Expression) -> set[tuple[str, str]]:
             continue
         schema, name = table_parts(table)
         if not table.text("db") and name in ctes:
+            continue
+        # An unqualified OPENROWSET option keyword is a recovery artifact, not a source;
+        # a genuinely-joined real table (schema-qualified, or any other name) is kept.
+        if has_openrowset and not table.text("db") and name in _OPENROWSET_OPTION_NAMES:
             continue
         found.add((schema, name))
     return found
@@ -418,3 +444,76 @@ def regex_extract(statement: str) -> StatementLineage:
             lineage.reads.add((schema, name))
     lineage.reads -= lineage.writes
     return lineage
+
+
+# -- parallel SQL parsing worker (issue #18) -----------------------------------
+#
+# ``parse_worker_both_passes`` is the ONLY function shipped across a process
+# boundary, so it MUST be a picklable module-level function (no closures,
+# lambdas, or bound methods) — Windows uses the spawn start-method, which
+# re-imports this module and looks the function up by qualified name. Its inputs
+# are a FileEntry dump (dict), the already-decoded file text (str), and the
+# dialect (str) — all picklable. It parses ONE file into a throwaway graph via
+# the same per-file entry parsers a cache MISS uses, so the ParseCacheEntry it
+# returns is byte-for-byte what the sequential path would have cached. The
+# parent merges every file's entry in sorted entry.path order via the shared
+# _replay_entry path, so a --jobs N build is byte-identical to --jobs 1 and to a
+# cold serial build by the same argument the parse cache already proves.
+
+
+def parse_worker_both_passes(
+    args: tuple[dict, str, str],
+) -> tuple[str, dict | None, dict | None, str | None]:
+    """Parse one SQL file's objects + procs passes in an isolated worker process.
+
+    ``args`` is ``(entry_dump, text, dialect)`` where ``entry_dump`` is
+    ``FileEntry.model_dump()`` (picklable) and ``text`` is the file's
+    already-decoded content (read ONCE in the parent so the worker never touches
+    disk and can't see a different encoding). Returns
+    ``(path, objects_entry_dump | None, procs_entry_dump | None, error | None)``:
+
+    - On success, the two entry dumps are ``ParseCacheEntry.model_dump()`` for
+      the objects and procs passes — exactly what a sequential cache MISS stores.
+    - On ANY exception, both entry dumps are ``None`` and ``error`` is the string
+      the parent degrades into a ``parse_worker_error`` warning; the file
+      contributes nothing but the build never hangs or aborts (HAZARD: a worker
+      that raises must never take down the pool).
+
+    All heavy parser imports are lazy (inside the function) to avoid a
+    module-import cycle: ``sql_objects``/``sql_procs`` import from this module.
+    """
+    entry_dump, text, dialect = args
+    # Best-effort path for the return tuple / error diagnostic, even if the
+    # entry dump is somehow malformed — never let extracting it raise.
+    path = entry_dump.get("path", "") if isinstance(entry_dump, dict) else ""
+    try:
+        from coop_data_doc.crawler import FileEntry
+        from coop_data_doc.graph.model import LineageGraph
+        from coop_data_doc.parsers.sql_objects import (
+            _Contribution,
+            _parse_objects_entry,
+        )
+        from coop_data_doc.parsers.sql_procs import _parse_procs_entry
+
+        entry = FileEntry.model_validate(entry_dump)
+        # A throwaway graph constructed INSIDE the worker (never shipped from the
+        # parent): the contributions are recorded against it, but only the
+        # recorders' entries are returned. Warnings are captured on the
+        # contribution too (record_warning), so the discarded list is fine.
+        graph = LineageGraph()
+        discard: list = []
+
+        objects_contribution = _Contribution()
+        _parse_objects_entry(entry, text, graph, dialect, discard, objects_contribution)
+
+        procs_contribution = _Contribution()
+        _parse_procs_entry(entry, text, graph, dialect, discard, procs_contribution)
+
+        return (
+            entry.path,
+            objects_contribution.to_entry().model_dump(),
+            procs_contribution.to_entry().model_dump(),
+            None,
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade, never crash the pool
+        return (path, None, None, f"{type(exc).__name__}: {exc}")
