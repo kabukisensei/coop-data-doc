@@ -185,7 +185,7 @@ def _semantic_model_includes(model_folders: list[str]) -> list[str]:
     for folder in model_folders:
         globs.append(f"**/{folder}/**/*.tmdl")
         globs.append(f"**/{folder}/**/*.bim")
-    globs += ["**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
+    globs += ["**/report.json", "**/visual.json", "**/page.json", "**/definition.pbir", "**/*.pbix"]
     return globs
 
 

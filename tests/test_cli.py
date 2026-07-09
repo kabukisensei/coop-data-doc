@@ -30,7 +30,7 @@ repos:
     exclude: ["**/archive/**"]
   powerbi:
     path: ./pbi-repo
-    include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
+    include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/definition.pbir", "**/*.pbix"]
 schema_mappings:
   - schema: sales
     model: Sales

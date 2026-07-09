@@ -279,6 +279,7 @@ DEFAULT_PBI_INCLUDE = [
     "**/report.json",
     "**/visual.json",
     "**/page.json",
+    "**/definition.pbir",
     "**/*.pbix",
 ]
 

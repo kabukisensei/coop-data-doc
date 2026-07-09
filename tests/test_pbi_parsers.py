@@ -8,7 +8,12 @@ from coop_data_doc.crawler import FileEntry, FileKind, crawl
 from coop_data_doc.graph import LineageGraph, to_json_str
 from coop_data_doc.parsers.dax import extract_refs
 from coop_data_doc.parsers.mcode import extract_source
-from coop_data_doc.parsers.pbir import link_visual_bindings, parse_legacy_reports, parse_pbir
+from coop_data_doc.parsers.pbir import (
+    link_visual_bindings,
+    parse_legacy_reports,
+    parse_pbir,
+    parse_pbir_definitions,
+)
 from coop_data_doc.parsers.pbix import parse_pbix
 from coop_data_doc.parsers.tmdl import parse_tmdl
 
@@ -26,6 +31,7 @@ def pbi_inventory():
                     "**/report.json",
                     "**/visual.json",
                     "**/page.json",
+                    "**/definition.pbir",
                     "**/*.pbix",
                 ],
             )
@@ -45,6 +51,7 @@ def parse_all() -> tuple[LineageGraph, list]:
         graph,
     )
     warnings += parse_legacy_reports(inventory.by_kind(FileKind.REPORT_JSON_LEGACY), graph)
+    warnings += parse_pbir_definitions(inventory.by_kind(FileKind.PBIR_DEFINITION), graph)
     warnings += link_visual_bindings(graph)
     return graph, warnings
 
@@ -362,6 +369,109 @@ def test_legacy_report_structure():
     assert (visual, "report_page:legacything.overview", "feeds") in keys
     assert (visual, "pbi_table:sales.dim_customer", "visualizes") in keys
     assert (visual, "measure:sales.customer count", "visualizes") in keys
+
+
+def test_pbir_definition_declares_model():
+    # definition.pbir (byPath: ../Sales.SemanticModel) authoritatively binds the
+    # report to its model: report node carries declared_model and a direct
+    # semantic_model --feeds--> report edge (issue #19).
+    graph, warnings = parse_all()
+    report = graph.nodes["report:sales"]
+    assert report.metadata["declared_model"] == "sales"
+    assert ("semantic_model:sales", "report:sales", "feeds") in edge_keys(graph)
+    assert not any(w.category == "pbir_external_model" for w in warnings)
+
+
+def _declared_report_graph(bindings, declared: str):
+    """_two_model_report_graph but with the report AUTHORITATIVELY declaring a
+    model (as parse_pbir_definitions would from a definition.pbir)."""
+    g = _two_model_report_graph(bindings)
+    g.nodes["report:r1"].metadata["declared_model"] = declared
+    return g
+
+
+def test_declared_model_scopes_ambiguous_bindings():
+    # issue #19: every entity name is ambiguous across models a and b, and there
+    # is NO disambiguating context — but the report declares model a, so all
+    # bindings resolve to a with no ambiguous_visual_binding warnings.
+    g = _declared_report_graph([_binding("date", "year")], declared="a")
+    warnings = link_visual_bindings(g)
+    from coop_data_doc.parsers.pbir import collapse_visuals, link_reports_to_models
+
+    link_reports_to_models(g)
+    collapse_visuals(g)
+    keys = edge_keys(g)
+    assert ("report:r1", "pbi_table:a.date", "visualizes") in keys  # scoped to declared model a
+    assert ("report:r1", "pbi_table:b.date", "visualizes") not in keys
+    assert ("semantic_model:a", "report:r1", "feeds") in keys
+    assert ("semantic_model:b", "report:r1", "feeds") not in keys
+    assert not any(w.category == "ambiguous_visual_binding" for w in warnings)
+    assert "unresolved_bindings" not in g.nodes["report:r1"].metadata
+
+
+def test_declared_model_byconnection_external_warns(tmp_path: Path):
+    # a byConnection catalog naming a model NOT in the repos yields a warning and
+    # an external marker on the report — never a fabricated edge (hard rule 4).
+    from coop_data_doc.crawler import FileEntry
+
+    report_dir = tmp_path / "Published.Report"
+    report_dir.mkdir()
+    pbir = report_dir / "definition.pbir"
+    pbir.write_text(
+        json.dumps(
+            {
+                "version": "4.0",
+                "datasetReference": {
+                    "byConnection": {
+                        "connectionString": (
+                            'Data Source="powerbi://api.powerbi.com/v1.0/myorg/WS";'
+                            'initial catalog="Not In Repos";integrated security=ClaimsToken'
+                        )
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    entry = FileEntry(
+        path="Published.Report/definition.pbir",
+        abs_path=str(pbir),
+        repo_key="powerbi",
+        kind=FileKind.PBIR_DEFINITION,
+        size=pbir.stat().st_size,
+    )
+    graph = LineageGraph()
+    warnings = parse_pbir_definitions([entry], graph)
+    report = graph.nodes["report:published"]
+    assert report.metadata["declared_model"] == "not in repos"
+    assert report.metadata["declared_model_unresolved"] is True
+    assert any(w.category == "pbir_external_model" for w in warnings)
+    # no edge to any guessed model
+    assert not any(e.target_id == "report:published" and e.edge_type.value == "feeds" for e in graph.edges)
+
+
+def test_declared_model_name_parsing():
+    from coop_data_doc.parsers.pbir import _declared_model_name
+
+    assert (
+        _declared_model_name({"datasetReference": {"byPath": {"path": "../Sales.SemanticModel"}}}) == "Sales"
+    )
+    assert (
+        _declared_model_name({"datasetReference": {"byPath": {"path": "../models/Finance.SemanticModel/"}}})
+        == "Finance"
+    )
+    assert (
+        _declared_model_name(
+            {
+                "datasetReference": {
+                    "byConnection": {"connectionString": 'x="y";initial catalog="Sales Analytics";z=1'}
+                }
+            }
+        )
+        == "Sales Analytics"
+    )
+    assert _declared_model_name({"datasetReference": {}}) is None
+    assert _declared_model_name({}) is None
 
 
 # ---- pbix ------------------------------------------------------------------

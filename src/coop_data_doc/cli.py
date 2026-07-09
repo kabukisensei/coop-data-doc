@@ -40,6 +40,7 @@ from coop_data_doc.parsers.pbir import (
     link_visual_bindings,
     parse_legacy_reports,
     parse_pbir,
+    parse_pbir_definitions,
 )
 from coop_data_doc.parsers.parallel import _MAX_WORKERS, default_jobs, parse_sql_parallel
 from coop_data_doc.parsers.parse_cache import ParseCache
@@ -123,15 +124,21 @@ def build_graph(
     tmdl = inventory.by_kind(FileKind.TMDL)
     bim = inventory.by_kind(FileKind.BIM)
     visuals = inventory.by_kind(FileKind.PBIR_VISUAL)
+    definitions = inventory.by_kind(FileKind.PBIR_DEFINITION)
     legacy = inventory.by_kind(FileKind.REPORT_JSON_LEGACY)
     pbix = inventory.by_kind(FileKind.PBIX)
-    pbi_total = len(tmdl) + len(bim) + len(visuals) + len(legacy) + len(pbix)
+    pbi_total = len(tmdl) + len(bim) + len(visuals) + len(definitions) + len(legacy) + len(pbix)
     with progress.bar("Parsing Power BI", total=pbi_total) as tick:
         warnings += parse_tmdl(tmdl, graph, on_file=tick)
         warnings += parse_bim(bim, graph, on_file=tick)
         warnings += parse_pbir(visuals, inventory.by_kind(FileKind.PBIR_PAGE), graph, on_file=tick)
         warnings += parse_legacy_reports(legacy, graph, on_file=tick)
         warnings += parse_pbix(pbix, graph, on_file=tick)
+        # definition.pbir carries the report's authoritative report->model
+        # declaration; parse it AFTER the model parsers (so the model nodes exist
+        # to match) and BEFORE link_visual_bindings (so its declared-model scoping
+        # is in place).
+        warnings += parse_pbir_definitions(definitions, graph, on_file=tick)
     warnings += link_visual_bindings(graph)
     warnings += link_composite_models(graph)
 

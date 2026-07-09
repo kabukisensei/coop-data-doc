@@ -40,6 +40,10 @@ _SEVERITY: dict[str, str] = {
     "unresolved_partition_source": "warning",
     "unresolved_reference": "warning",
     "ambiguous_visual_binding": "warning",
+    # a report's definition.pbir declares a model not among the loaded repos
+    # (e.g. a published model reached byConnection): the report's table/measure
+    # lineage is knowingly incomplete, never wired to a guessed local model.
+    "pbir_external_model": "warning",
     "fuzzy_auto": "warning",
     "cache_pruned": "warning",
     # the SQL parse cache is DERIVABLE (gitignored) — a corrupt/stale one self-heals on

@@ -12,6 +12,7 @@ surviving ``pending_model_resolution`` bindings onto the owning report as
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
@@ -281,6 +282,107 @@ def parse_legacy_reports(
     return warnings
 
 
+_INITIAL_CATALOG_RE = re.compile(r'initial\s+catalog\s*=\s*"?([^";]+)"?', re.IGNORECASE)
+
+
+def _declared_model_name(data: dict) -> str | None:
+    """The semantic model a ``definition.pbir`` authoritatively declares.
+
+    ``datasetReference.byPath.path`` (``"../Sales.SemanticModel"``) → the folder's
+    base name minus a ``.SemanticModel`` suffix (``Sales``); or
+    ``datasetReference.byConnection.connectionString`` → its ``initial catalog``
+    value. ``None`` when neither is present/parseable (caller falls back to
+    name-based inference).
+    """
+    ref = data.get("datasetReference")
+    if not isinstance(ref, dict):
+        return None
+    by_path = ref.get("byPath")
+    if isinstance(by_path, dict) and isinstance(by_path.get("path"), str) and by_path["path"].strip():
+        folder = PurePosixPath(by_path["path"].strip()).name
+        if folder.lower().endswith(".semanticmodel"):
+            return folder[: -len(".SemanticModel")] or None
+        return folder or None
+    by_conn = ref.get("byConnection")
+    if isinstance(by_conn, dict) and isinstance(by_conn.get("connectionString"), str):
+        match = _INITIAL_CATALOG_RE.search(by_conn["connectionString"])
+        if match:
+            return match.group(1).strip() or None
+    return None
+
+
+def parse_pbir_definitions(
+    entries: list[FileEntry],
+    graph: LineageGraph,
+    *,
+    on_file: Callable[..., None] | None = None,
+) -> list[ParseWarning]:
+    """Parse each report's ``definition.pbir`` — the file that AUTHORITATIVELY
+    declares which semantic model the report is bound to (``datasetReference``).
+
+    The declared model is stored on the report node as
+    ``metadata["declared_model"]`` (normalized) and, when that model is loaded,
+    wired directly as a ``model --feeds--> report`` edge. :func:`link_visual_bindings`
+    then scopes the report's binding resolution to the declared model, so a thin
+    report whose entity names are ambiguous across two models (a model and its
+    fork) resolves instead of collapsing to nothing. A declaration naming a model
+    NOT among the loaded repos (e.g. a published model reached ``byConnection``)
+    is marked ``declared_model_unresolved`` and warned — never wired to a guessed
+    model that merely shares a name (hard rule 4).
+
+    Runs after the semantic-model parsers (so the model nodes exist to match) and
+    before :func:`link_visual_bindings`. ``on_file`` (optional) ticks once per entry.
+    """
+    warnings: list[ParseWarning] = []
+    for entry in sorted(entries, key=lambda e: e.path):
+        if on_file:
+            on_file(entry.path)
+        try:
+            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
+        except (OSError, json.JSONDecodeError) as exc:
+            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
+            continue
+        if not isinstance(data, dict):
+            warnings.append(
+                ParseWarning(
+                    file=entry.path, message="definition.pbir is not a JSON object", category="pbir_parse"
+                )
+            )
+            continue
+        declared = _declared_model_name(data)
+        if not declared:
+            # No parseable datasetReference: fall back to name-based inference
+            # silently (this is the normal shape for some bindings, not an error).
+            continue
+        _, report_name = report_root(entry.path)
+        report = _ensure_report(graph, report_name, entry.path)
+        model_key = normalize_identifier(declared)
+        report.metadata["declared_model"] = model_key
+        model_id = Node.make_id(NodeType.SEMANTIC_MODEL, "", declared)
+        if model_id in graph.nodes:
+            graph.add_edge(
+                Edge(
+                    source_id=model_id,
+                    target_id=report.id,
+                    edge_type=EdgeType.FEEDS,
+                    evidence=f"{entry.path}: definition.pbir declares this model",
+                )
+            )
+        else:
+            # The declaration names a model not among the loaded repos — surface
+            # it; never fabricate an edge to a local model that merely shares a
+            # name (hard rule 4).
+            report.metadata["declared_model_unresolved"] = True
+            warnings.append(
+                ParseWarning(
+                    file=entry.path,
+                    message=f"declared model '{declared}' is not among the loaded semantic models",
+                    category="pbir_external_model",
+                )
+            )
+    return warnings
+
+
 def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
     """Resolve visual bindings against loaded semantic models.
 
@@ -304,6 +406,16 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
     page_of_visual, report_of_page = _page_visual_maps(graph)
     report_of_visual = {
         vid: report_of_page.get(pid) for vid, pid in page_of_visual.items() if report_of_page.get(pid)
+    }
+    # A report's authoritatively-declared model (from definition.pbir, issue #19).
+    # The declared name is normalized and equals the pbi_table.schema_name, so it
+    # scopes candidate tables directly. Used to disambiguate name-collisions BEFORE
+    # the uniqueness check, so a thin report bound to a model that shares every
+    # table name with a fork still resolves.
+    declared_by_report = {
+        nid: node.metadata["declared_model"]
+        for nid, node in graph.nodes.items()
+        if node.node_type is NodeType.REPORT and node.metadata.get("declared_model")
     }
 
     def _resolve(visual: Node, binding: dict[str, str], table: Node) -> None:
@@ -334,12 +446,20 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
         if visual is None or visual.node_type is not NodeType.VISUAL:
             continue
         visual.metadata.pop("pending_model_resolution", None)
+        report = report_of_visual.get(visual.id)
+        declared = declared_by_report.get(report) if report is not None else None
         pending: list[dict[str, str]] = []
         for binding in visual.metadata.get("bindings", []):
             candidates = tables_by_name.get(binding["entity"], [])
+            if declared:
+                # Restrict to the declared model when it actually has the table;
+                # a table the declaration doesn't cover falls through to normal
+                # inference (so a globally-unique name still resolves).
+                scoped = [t for t in candidates if t.schema_name == declared]
+                if scoped:
+                    candidates = scoped
             if len(candidates) == 1:
                 _resolve(visual, binding, candidates[0])
-                report = report_of_visual.get(visual.id)
                 if report is not None:
                     report_models.setdefault(report, set()).add(candidates[0].schema_name)
             else:
