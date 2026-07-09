@@ -23,13 +23,20 @@
 
 /* Relationship Grid: real gridlines on every cell (scoped to the
    .rel-grid wrapper so the wide lineage/contract tables keep their lighter
-   row-only look), and made responsive — table-layout:fixed + width:100% means
-   the matrix always fits the viewport (labels wrap) instead of forcing a
-   horizontal scrollbar, however many fact columns there are. */
+   row-only look). Fit-if-you-can, scroll-if-you-must: the wrapper scrolls
+   horizontally, and the table takes `width: max-content` with `min-width: 100%`
+   so a small model fills the viewport with no lonely gap, while a large model
+   (many fact columns) grows past the viewport and scrolls instead of squishing
+   every cell into an illegible sliver. Per-column min-widths keep the cells
+   readable in the scrolling case. */
+.md-typeset .rel-grid {
+  overflow-x: auto;
+}
 .md-typeset .rel-grid table {
   display: table;
-  width: 100%;
-  table-layout: fixed;
+  table-layout: auto;
+  width: max-content; /* grow beyond the viewport for large models... */
+  min-width: 100%; /* ...but fill it (no gap) for small ones */
   font-size: 0.66rem;
   border: 1px solid var(--md-default-fg-color--light);
 }
@@ -40,6 +47,7 @@
   text-align: center;
   overflow-wrap: anywhere; /* wrap long table names rather than overflow */
   word-break: break-word;
+  min-width: 3.25em; /* fact columns stay legible; wide models scroll */
 }
 .md-typeset .rel-grid th {
   background: var(--md-default-fg-color--lightest);
@@ -48,7 +56,8 @@
 /* the dimension-label column (first) gets more room + left-aligns its names */
 .md-typeset .rel-grid th:first-child,
 .md-typeset .rel-grid td:first-child {
-  width: 16%;
+  min-width: 9em;
+  max-width: 18em;
   text-align: left;
 }
 
