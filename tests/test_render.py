@@ -699,7 +699,8 @@ def test_semantic_model_relationship_grid(tmp_path: Path):
     ]
     render_markdown(g, tmp_path, "Test")
     page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
-    assert "## Joel's Relationship Grid" in page
+    assert "## Relationship Grid" in page
+    assert "Joel" not in page  # client-neutral heading (issue #24)
     # count header + legend
     assert "2 fact(s) × 2 dimension(s), 3 relationship(s) (3 active)" in page
     assert "🟢 active" in page and "⚪ inactive" in page and "⇅ bidirectional" in page
@@ -768,7 +769,7 @@ def test_relationship_grid_placeholder_when_empty(tmp_path: Path):
     g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "Empty", display_name="Empty"))
     render_markdown(g, tmp_path, "Test")
     page = page_path(tmp_path, "semantic_model:empty").read_text(encoding="utf-8")
-    assert "## Joel's Relationship Grid" in page  # section always present on a model
+    assert "## Relationship Grid" in page  # section always present on a model
     assert "_No relationships defined in this semantic model._" in page
     assert "🟢" not in page
 
@@ -778,8 +779,10 @@ def test_relationship_grid_only_on_semantic_models(tmp_path: Path):
     render_markdown(build_graph(), tmp_path, "Test")
     pbit = page_path(tmp_path, "pbi_table:sales.dim_customer").read_text(encoding="utf-8")
     model = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
-    assert "Joel's Relationship Grid" not in pbit  # not on table pages
-    assert "## Joel's Relationship Grid" in model  # present on the model page
+    assert "Relationship Grid" not in pbit  # not on table pages
+    assert "## Relationship Grid" in model  # present on the model page
+    # issue #24: the internal first-name nickname never reaches a rendered page
+    assert "Joel" not in pbit and "Joel" not in model
 
 
 def test_source_fence_survives_backticks_in_code(tmp_path: Path):

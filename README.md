@@ -198,7 +198,7 @@ model, measure, and report — each with its defining SQL/DAX up top, its column
 its data comes from, and what depends on it (upstream/downstream, each entry linking to
 its own page). Model-facing pages add extras: a **collapsible "trace back to
 source" tree** that walks a measure or gold table all the way down to its bronze sources,
-**Joel's Relationship Grid** (a fact × dimension matrix) on each semantic model, an
+**Relationship Grid** (a fact × dimension matrix) on each semantic model, an
 **Unused measures** roll-up for cleanup, and reports nested under the model they draw
 from.
 

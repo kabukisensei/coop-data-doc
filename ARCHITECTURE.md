@@ -133,7 +133,7 @@ the `path` field is the source of truth for where a node's page lives. Beyond
 the contract + lineage tables, pages carry purpose-built sections, all
 deterministic:
 
-- **Joel's Relationship Grid** (semantic models) — a fact × dimension matrix
+- **Relationship Grid** (semantic models) — a fact × dimension matrix
   from the model's parsed relationships (TMDL `relationships.tmdl` or the older
   inline `model.tmdl`, and `.bim`), marking active/inactive/bidirectional edges.
 - **Upstream lineage** (measures + the gold tables/views that feed a model) — a

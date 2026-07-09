@@ -21,7 +21,7 @@
   opacity: 0.85;
 }
 
-/* Joel's Relationship Grid: real gridlines on every cell (scoped to the
+/* Relationship Grid: real gridlines on every cell (scoped to the
    .rel-grid wrapper so the wide lineage/contract tables keep their lighter
    row-only look), and made responsive — table-layout:fixed + width:100% means
    the matrix always fits the viewport (labels wrap) instead of forcing a

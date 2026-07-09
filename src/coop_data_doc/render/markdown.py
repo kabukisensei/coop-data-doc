@@ -219,7 +219,7 @@ def _lineage_table(
 
 
 def _relationship_grid(graph: LineageGraph, node: Node) -> str:
-    """Render "Joel's Relationship Grid" — a fact × dimension matrix for a
+    """Render the "Relationship Grid" — a fact × dimension matrix for a
     semantic model, built from its parsed relationships (``metadata["relationships"]``,
     each a ``{"from": "<table>.<col>", "to": "<table>.<col>"}`` pair).
 
@@ -229,7 +229,9 @@ def _relationship_grid(graph: LineageGraph, node: Node) -> str:
     Tables resolve to their page links and original-case display names; a
     table with no node (e.g. unparsed) falls back to its bare name.
     """
-    lines = ["## Joel's Relationship Grid", ""]
+    # Client-facing heading is deliberately neutral ("Relationship Grid"); the
+    # feature was internally nicknamed "Joel's Relationship Grid".
+    lines = ["## Relationship Grid", ""]
     relationships = node.metadata.get("relationships") or []
     if not relationships:
         lines.append("_No relationships defined in this semantic model._")
