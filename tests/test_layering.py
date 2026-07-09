@@ -1,6 +1,8 @@
 from coop_data_doc.config import Config, LayerRule, RepoConfig
+from coop_data_doc.crawler import FileKind, crawl
 from coop_data_doc.graph import Edge, EdgeType, LineageGraph, Node, NodeType
 from coop_data_doc.layering import assign_layers, prune_schemas
+from coop_data_doc.parsers.sql_objects import parse_sql_objects
 
 
 def node(graph, node_type, schema, name, source_file=""):
@@ -88,6 +90,46 @@ def test_heuristic_fallback_when_no_rule_matches():
     warnings = assign_layers(g, cfg({"gold": LayerRule(schemas=["mart"])}))
     assert "silver_table:mystery.src" in g.nodes
     assert any(w.category == "layer_unclassified" for w in warnings)
+
+
+def test_repo_ddl_table_stays_gold_without_writer(tmp_path):
+    # issue #29: a standalone CREATE TABLE DDL file produces a gold_table node
+    # with a source_file but NO writes/defines edge. Being defined in the repo
+    # is the strongest "created here" evidence, so the heuristic must not
+    # demote it to silver — and must not warn about it.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "ext.thing.sql").write_text(
+        "CREATE TABLE ext.thing (id INT NOT NULL, label NVARCHAR(50) NULL);\nGO\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])},
+        layers={"gold": LayerRule(schemas=["mart"])},  # no rule covers "ext"
+    )
+    inventory, _ = crawl(config)
+    g = LineageGraph()
+    parse_sql_objects(inventory.by_kind(FileKind.SQL_FILE), g)
+    assert not any(e.edge_type in (EdgeType.WRITES, EdgeType.DEFINES) for e in g.edges)
+    warnings = assign_layers(g, config)
+    assert "gold_table:ext.thing" in g.nodes
+    assert g.nodes["gold_table:ext.thing"].source_file
+    assert not any(w.category == "layer_unclassified" for w in warnings)
+
+
+def test_heuristic_demotes_only_sourceless_stub_tables():
+    # a stub table (referenced by a read, no source_file, no writer) still
+    # demotes to silver with the warning; a repo-defined sibling does not.
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "mystery", "src")  # stub: no source_file
+    node(g, NodeType.GOLD_TABLE, "ext", "thing", source_file="tables/ext.thing.sql")
+    g.add_edge(Edge(source_id="view:dbo.v", target_id="gold_table:mystery.src", edge_type=EdgeType.READS))
+    warnings = assign_layers(g, cfg({"gold": LayerRule(schemas=["mart"])}))
+    assert "silver_table:mystery.src" in g.nodes
+    assert "gold_table:ext.thing" in g.nodes
+    unclassified = [w for w in warnings if w.category == "layer_unclassified"]
+    assert len(unclassified) == 1
+    assert "mystery" in unclassified[0].file or "src" in unclassified[0].file
 
 
 def test_bronze_only_via_rules_never_heuristic():

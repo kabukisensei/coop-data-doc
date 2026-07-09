@@ -6,10 +6,11 @@ assigned here from user-declared rules in ``config.layers`` — by schema and/or
 source-file path. Tables get retyped to the layer's node type; views and procs
 carry their layer in ``metadata["layer"]``.
 
-Anything no rule matches falls back to a read/write heuristic: a table that is
-never created/written in the repo is treated as a silver source, otherwise gold.
-Bronze is only ever produced by an explicit rule, so skipping bronze (or silver)
-is just a matter of not declaring it.
+Anything no rule matches falls back to a read/write heuristic: a table with no
+defining evidence in the repos — no WRITES/DEFINES edge *and* no ``source_file``
+(repo DDL) — is treated as a silver source, otherwise gold. Bronze is only ever
+produced by an explicit rule, so skipping bronze (or silver) is just a matter of
+not declaring it.
 """
 
 from __future__ import annotations
@@ -139,8 +140,12 @@ def assign_layers(graph: LineageGraph, config: Config) -> list[ParseWarning]:
         node = graph.nodes.get(node_id)
         if node is None or node.node_type not in _TABLE_TYPES or node_id in explicit_tables:
             continue
-        # a table never written/created in the repo is an external source
-        if node.node_type is NodeType.GOLD_TABLE and node_id not in written:
+        # a table with no defining evidence at all is an external source: no
+        # WRITES/DEFINES edge AND no source_file. A node with a source_file
+        # was parsed from repo DDL (a standalone CREATE TABLE emits no edge),
+        # so it is repo-defined by construction and keeps gold, silently —
+        # the same treatment as a written table (issue #29).
+        if node.node_type is NodeType.GOLD_TABLE and node_id not in written and not node.source_file:
             graph.retype_node(node_id, NodeType.SILVER_TABLE)
             if config.layers:
                 warnings.append(
@@ -148,7 +153,8 @@ def assign_layers(graph: LineageGraph, config: Config) -> list[ParseWarning]:
                         file=node.source_file or node.name,
                         message=(
                             f"{node.name}: no layer rule matched; defaulted to silver "
-                            "(read-only source). Add a rule to classify it explicitly."
+                            "(read-only source: never created or written in these repos). "
+                            "Add a rule to classify it explicitly."
                         ),
                         category="layer_unclassified",
                     )

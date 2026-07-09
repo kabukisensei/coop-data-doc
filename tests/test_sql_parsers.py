@@ -56,10 +56,11 @@ def test_expected_nodes():
         "stored_proc:dbo.usp_dynamic_refresh",
         "stored_proc:dbo.usp_audit_load",  # stub from EXEC
         "gold_table:dbo.fact_sales",
-        # a CTAS table emits only reads (no WRITES/DEFINES edge), so the
-        # layering heuristic treats it as a read-only source -> silver, matching
-        # the live pipeline (run_pipeline -> assign_layers pass 2).
-        "silver_table:dbo.agg_sales_daily",
+        # a CTAS table emits only reads (no WRITES/DEFINES edge), but it has a
+        # source_file — it is defined by repo DDL — so the layering heuristic
+        # keeps it gold (issue #29), matching the live pipeline
+        # (run_pipeline -> assign_layers pass 2).
+        "gold_table:dbo.agg_sales_daily",
         "gold_table:dbo.audit_log",  # written (WRITES edge) but never defined: stays gold
         "view:sales.dim_customer",
         "view:sales.v_orders_star",
@@ -134,14 +135,15 @@ def test_create_table_columns():
 
 def test_ctas_reads_source():
     graph, _ = parse_all()
-    # a CTAS table reads its source and (having no WRITES/DEFINES edge) is
-    # classified silver by the layering heuristic, as in the live pipeline.
+    # a CTAS table reads its source; despite having no WRITES/DEFINES edge it
+    # stays gold because its source_file proves it is defined by repo DDL
+    # (issue #29), as in the live pipeline.
     assert (
-        "silver_table:dbo.agg_sales_daily",
+        "gold_table:dbo.agg_sales_daily",
         "gold_table:dbo.fact_sales",
         "reads",
     ) in edge_keys(graph)
-    assert graph.nodes["silver_table:dbo.agg_sales_daily"].source_file
+    assert graph.nodes["gold_table:dbo.agg_sales_daily"].source_file
 
 
 def _parse_objects_sql(tmp_path: Path, sql: str) -> tuple[LineageGraph, list]:
