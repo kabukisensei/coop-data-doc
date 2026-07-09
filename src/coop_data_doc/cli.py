@@ -1105,6 +1105,15 @@ def _run_build(
     with progress.bar("Rendering pages", total=len(graph.nodes)) as tick:
         render_markdown(graph, out_dir, config.project_name, on_node=tick)
     write_diagnostics(out_dir, diagnostics, config.project_name)
+    # The ONE place stale lineage-cache answers are actually deleted: an explicit
+    # build that got this far succeeded against the full configured estate, so an
+    # entry whose target still isn't in the graph is genuinely dead. Reload from
+    # disk (interactive answers were written during linking) and prune for real —
+    # read-only commands (check/status/resolve/scan, wizard dry-runs) only ever
+    # ignore such entries for the run (see LineageCache.prune_invalid).
+    pruned = LineageCache.load(config.base_dir / ".lineage-cache.json").prune_invalid(graph, persist=True)
+    if pruned:
+        _log.debug("pruned %d stale lineage-cache entr%s", len(pruned), "y" if len(pruned) == 1 else "ies")
     click.echo(f"Markdown docs: {out_dir}", err=True)
     if skip_html:
         return

@@ -161,12 +161,20 @@ def link_graph(
     result = ResolutionResult()
     warnings: list[ParseWarning] = list(cache.warnings)
 
-    dropped = cache.prune_invalid(graph)
+    # persist=False: entries whose target isn't in THIS graph are ignored for
+    # this run (the ladder re-resolves) but kept on disk — this run may be a
+    # check/status/resolve/wizard dry-run against a branch or narrower scope,
+    # and destroying committed human answers there is not acceptable. Only a
+    # successful explicit `build` prunes for real (cli._run_build).
+    dropped = cache.prune_invalid(graph, persist=False)
     for key in dropped:
         warnings.append(
             ParseWarning(
                 file=str(cache.path),
-                message=f"cache entry {key!r} pointed at a vanished node; will re-resolve",
+                message=(
+                    f"cache entry {key!r} points at a node not in this build; "
+                    "ignored this run (kept on disk — a successful `build` prunes it)"
+                ),
                 category="cache_pruned",
             )
         )

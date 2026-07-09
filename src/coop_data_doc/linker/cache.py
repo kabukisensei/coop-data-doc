@@ -32,6 +32,12 @@ class LineageCache:
         self.path = Path(path)
         self.mappings: dict[str, CacheEntry] = mappings or {}
         self.warnings: list[ParseWarning] = []
+        # Keys whose target vanished from the CURRENT graph: ignored by get()
+        # for this run but kept in mappings (and therefore on disk). Only a
+        # persist=True prune_invalid actually deletes them — a check/status/
+        # resolve/wizard-dry-run against a branch or a narrower scope must
+        # never destroy committed human answers.
+        self._ignored: set[str] = set()
 
     @classmethod
     def load(cls, path: Path | str) -> "LineageCache":
@@ -88,25 +94,42 @@ class LineageCache:
         return cache
 
     def get(self, key: str) -> CacheEntry | None:
-        """Look up a remembered answer by cache key."""
+        """Look up a remembered answer by cache key (None for ignored entries)."""
+        if key in self._ignored:
+            return None
         return self.mappings.get(key)
 
     def put(self, key: str, entry: CacheEntry) -> None:
         """Store an answer and write the file immediately (crash-safe)."""
+        self._ignored.discard(key)  # a fresh answer supersedes "ignored"
         self.mappings[key] = entry
         self.write()
 
-    def prune_invalid(self, graph: LineageGraph) -> list[str]:
-        """Drop entries whose target node no longer exists; return them."""
+    def prune_invalid(self, graph: LineageGraph, persist: bool = False) -> list[str]:
+        """Handle entries whose target node isn't in ``graph``; return their keys.
+
+        ``persist=False`` (the default — check/status/resolve/wizard dry-runs):
+        the entries are merely *ignored this run* (``get`` returns None so the
+        ladder re-resolves) but stay in ``mappings`` and on disk. The current
+        graph may simply be a different branch or a narrower scope than the one
+        the human answered against; deleting would destroy committed answers.
+
+        ``persist=True`` (only after a successful explicit ``build``): the
+        entries are deleted and the file rewritten.
+        """
         dropped = sorted(
             key
             for key, entry in self.mappings.items()
             if entry.target is not None and entry.target not in graph.nodes
         )
-        for key in dropped:
-            del self.mappings[key]
-        if dropped:
-            self.write()
+        if persist:
+            for key in dropped:
+                del self.mappings[key]
+                self._ignored.discard(key)
+            if dropped:
+                self.write()
+        else:
+            self._ignored.update(dropped)
         return dropped
 
     def write(self) -> None:

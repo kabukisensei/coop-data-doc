@@ -426,6 +426,69 @@ def test_wizard_autosuggests_schema_mapping_from_dry_run(tmp_path: Path, monkeyp
     assert ("mart", "X") in rules  # derived + confirmed, not typed
 
 
+def test_wizard_dry_run_leaves_lineage_cache_untouched(tmp_path: Path, monkeypatch):
+    # The dry-run scans with a candidate (often narrower) config; a committed
+    # answer whose target isn't in that scan must survive byte-identically —
+    # the wizard's "Ctrl-C writes nothing" promise extends to the cache file.
+    sql = tmp_path / "sql-repo"
+    sql.mkdir()
+    (sql / "fact.sql").write_text(
+        "CREATE VIEW mart.fact_sales AS SELECT a FROM mart.base;\nGO\n", encoding="utf-8"
+    )
+    defn = tmp_path / "pbi-repo" / "X.SemanticModel" / "definition"
+    (defn / "tables").mkdir(parents=True)
+    (defn / "model.tmdl").write_text("model Model\n\tculture: en-US\n", encoding="utf-8")
+    (defn / "tables" / "fact_sales.tmdl").write_text(
+        "table fact_sales\n"
+        "\tcolumn a\n"
+        "\t\tdataType: int64\n"
+        "\tpartition fact_sales = m\n"
+        "\t\tmode: import\n"
+        "\t\tsource =\n"
+        "\t\t\t\tlet\n"
+        '\t\t\t\t    Source = Sql.Database("srv", "wh"),\n'
+        '\t\t\t\t    d = Source{[Schema="sales",Item="fact_sales"]}[Data]\n'
+        "\t\t\t\tin\n"
+        "\t\t\t\t    d\n",
+        encoding="utf-8",
+    )
+    cache_file = tmp_path / ".lineage-cache.json"
+    cache_file.write_text(
+        '{\n  "version": 1,\n  "mappings": {\n'
+        '    "pbi_table:x.answered_elsewhere": {\n'
+        '      "target": "view:sales.only_on_other_branch",\n'
+        '      "method": "interactive"\n    }\n  }\n}\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    before = cache_file.read_bytes()
+
+    def router(kind, message, kwargs):
+        m = message.lower()
+        if "project name" in m:
+            return "MapTest"
+        if "sql repo path" in m:
+            return "./sql-repo"
+        if "power bi repo path" in m:
+            return "./pbi-repo"
+        if "markdown output" in m:
+            return "./docs"
+        if "html site" in m:
+            return "./site"
+        if "map x" in m and kind == "confirm":
+            return True
+        if kind == "confirm":
+            return False
+        if kind == "checkbox":
+            return [c.value for c in kwargs.get("choices", [])]
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
+    assert config is not None
+    assert cache_file.read_bytes() == before
+
+
 def test_skip_bronze_and_silver(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
     answers = {

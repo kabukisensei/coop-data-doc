@@ -137,6 +137,51 @@ def test_check_passes_then_detects_staleness(tmp_path: Path):
     assert "stale" in result.output
 
 
+def seed_stale_cache(tmp_path: Path) -> bytes:
+    """Write a .lineage-cache.json holding a committed human answer whose target
+    isn't in the current graph (e.g. answered on another branch or a wider
+    scope); return the file bytes for byte-identity assertions."""
+    cache = tmp_path / ".lineage-cache.json"
+    cache.write_text(
+        '{\n  "version": 1,\n  "mappings": {\n'
+        '    "pbi_table:sales.answered_elsewhere": {\n'
+        '      "target": "view:sales.only_on_other_branch",\n'
+        '      "method": "interactive"\n    }\n  }\n}\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    return cache.read_bytes()
+
+
+def test_check_leaves_lineage_cache_untouched(tmp_path: Path):
+    # CI `check` must never mutate the working tree: a committed answer whose
+    # target isn't in this build is ignored for the run, not deleted.
+    setup_workspace(tmp_path)
+    assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
+    before = seed_stale_cache(tmp_path)
+    run(["check", "--lenient"], tmp_path)  # exit code irrelevant: fixtures have warnings
+    assert (tmp_path / ".lineage-cache.json").read_bytes() == before
+
+
+def test_status_leaves_lineage_cache_untouched(tmp_path: Path):
+    setup_workspace(tmp_path)
+    before = seed_stale_cache(tmp_path)
+    result = run(["status"], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".lineage-cache.json").read_bytes() == before
+
+
+def test_build_prunes_stale_lineage_cache_entries(tmp_path: Path):
+    # an explicit successful build is the ONE place stale answers are deleted
+    setup_workspace(tmp_path)
+    seed_stale_cache(tmp_path)
+    assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
+    import json as _json
+
+    mappings = _json.loads((tmp_path / ".lineage-cache.json").read_text(encoding="utf-8"))["mappings"]
+    assert "pbi_table:sales.answered_elsewhere" not in mappings
+
+
 def test_version():
     runner = CliRunner()
     result = runner.invoke(cli, ["--version"], obj={})

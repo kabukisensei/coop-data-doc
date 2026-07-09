@@ -146,8 +146,53 @@ def test_prune_invalid_reprompts(tmp_path: Path, fake_q):
     )
     result, warnings = link_graph(build_graph(), make_config(), cache, interactive_mode=True)
     assert any(w.category == "cache_pruned" for w in warnings)
-    assert fake_q.calls == 1  # re-prompted after prune
+    assert fake_q.calls == 1  # re-prompted after the entry is ignored
     assert cache.get(f"pbi_table:{MODEL_KEY}.dcust").target == "view:sales.dim_customer"
+
+
+def test_stale_entry_ignored_but_kept_on_disk(tmp_path: Path):
+    # A vanished-target entry (branch switch, narrower scope) is ignored for the
+    # run — the ladder re-resolves — but the committed file is left byte-identical:
+    # check/status/resolve/wizard dry-runs must never destroy human answers.
+    key = f"pbi_table:{MODEL_KEY}.dcust"
+    cache = cache_at(tmp_path)
+    cache.put(key, CacheEntry(target="view:sales.does_not_exist", method="interactive"))
+    before = cache.path.read_bytes()
+
+    cache2 = cache_at(tmp_path)
+    _, warnings = link_graph(build_graph(), make_config(), cache2, interactive_mode=False)
+
+    assert any(w.category == "cache_pruned" for w in warnings)
+    assert cache2.get(key) is None  # ignored this run
+    assert cache2.path.read_bytes() == before  # file untouched
+    assert cache_at(tmp_path).mappings[key].target == "view:sales.does_not_exist"
+
+
+def test_prune_invalid_persist_deletes_and_writes(tmp_path: Path):
+    # persist=True (only a successful explicit build) actually removes the
+    # entry and rewrites the file; valid entries survive.
+    stale = f"pbi_table:{MODEL_KEY}.dcust"
+    valid = f"pbi_table:{MODEL_KEY}.dim_customer"
+    cache = cache_at(tmp_path)
+    cache.put(stale, CacheEntry(target="view:sales.does_not_exist", method="interactive"))
+    cache.put(valid, CacheEntry(target="view:sales.dim_customer", method="interactive"))
+
+    dropped = cache.prune_invalid(build_graph(), persist=True)
+
+    assert dropped == [stale]
+    reloaded = cache_at(tmp_path)
+    assert stale not in reloaded.mappings
+    assert reloaded.mappings[valid].target == "view:sales.dim_customer"
+
+
+def test_ignored_entry_superseded_by_fresh_answer(tmp_path: Path, fake_q):
+    # after a stale entry is ignored and the human re-answers, put() replaces it
+    # (and the replacement — not the stale target — is what persists)
+    key = f"pbi_table:{MODEL_KEY}.dcust"
+    cache = cache_at(tmp_path)
+    cache.put(key, CacheEntry(target="view:sales.does_not_exist", method="interactive"))
+    link_graph(build_graph(), make_config(), cache, interactive_mode=True)
+    assert cache_at(tmp_path).mappings[key].target == "view:sales.dim_customer"
 
 
 def test_external_choice_cached(tmp_path: Path, monkeypatch):
@@ -393,7 +438,7 @@ def test_multi_table_native_query_resolves_each_table(tmp_path: Path):
 def test_multi_table_native_query_composite_cache_keys_round_trip(tmp_path: Path):
     # composite '#' keys flow through the cache: an interactive-style answer
     # stored under a composite key is honored on the next run, and a stale
-    # composite key is pruned (not crashed on)
+    # composite key is ignored for the run (not crashed on, not deleted)
     node_id = f"pbi_table:{MODEL_KEY}.combo"
     cache = cache_at(tmp_path)
     cache.put(f"{node_id}#dbo.orders", CacheEntry(target="gold_table:dbo.orders", method="interactive"))
@@ -404,7 +449,8 @@ def test_multi_table_native_query_composite_cache_keys_round_trip(tmp_path: Path
     result, warnings = link_graph(graph, make_config(), cache_at(tmp_path), interactive_mode=False)
 
     assert result.methods == {"cache": 1, "exact": 1}  # orders from cache, order_lines exact
-    assert any(w.category == "cache_pruned" for w in warnings)  # stale composite key dropped
+    assert any(w.category == "cache_pruned" for w in warnings)  # stale composite key ignored
+    assert f"{node_id}#dbo.gone" in cache_at(tmp_path).mappings  # ...but kept on disk
     keys = edge_keys(graph)
     assert ("gold_table:dbo.orders", node_id, "feeds") in keys
     assert ("gold_table:dbo.order_lines", node_id, "feeds") in keys
