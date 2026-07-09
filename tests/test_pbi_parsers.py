@@ -457,6 +457,128 @@ def test_legacy_section_filter_becomes_page_filter():
     assert ("report:legacything", "pbi_table:sales.fact_sales", "visualizes") in edge_keys(graph)
 
 
+def test_legacy_top_level_filter_becomes_report_filter():
+    # a legacy top-level `filters` string is a report-scope filter (issue #26).
+    graph, _ = parse_all_collapsed()
+    refs = graph.nodes["report:legacything"].metadata.get("field_refs", [])
+    assert any(r["role"] == "filter" and r["scope"] == "report" for r in refs)
+
+
+def test_report_filter_globally_unique_cross_model_resolves():
+    # a report/page filter on an entity unique to a model the report shows
+    # NOTHING from is still provable — it must resolve (edge + field_ref), not be
+    # silently dropped (issue #26, hard rule 4 — a single global candidate is not
+    # a guess). Regression guard for the review's cross-model filter finding.
+    from coop_data_doc.graph.model import Edge, EdgeType, Node, NodeType
+
+    g = LineageGraph()
+    for model, table in (("sales", "dim_customer"), ("governance", "auditlog")):
+        g.add_node(Node(id=f"semantic_model:{model}", node_type=NodeType.SEMANTIC_MODEL, name=model))
+        g.add_node(
+            Node(id=f"pbi_table:{model}.{table}", node_type=NodeType.PBI_TABLE, name=table, schema_name=model)
+        )
+    g.add_node(
+        Node(
+            id="report:r",
+            node_type=NodeType.REPORT,
+            name="r",
+            source_file="R.pbip",
+            metadata={
+                "pending_filters": [
+                    {"entity": "auditlog", "property": "ts", "kind": "column", "scope": "report"}
+                ]
+            },
+        )
+    )
+    g.add_node(Node(id="report_page:p", node_type=NodeType.REPORT_PAGE, name="p", schema_name="r"))
+    g.add_node(
+        Node(
+            id="visual:v",
+            node_type=NodeType.VISUAL,
+            name="v",
+            schema_name="r",
+            source_file="R.pbip",
+            metadata={"bindings": [_binding("dim_customer", "name")]},
+        )
+    )
+    g.add_edge(Edge(source_id="visual:v", target_id="report_page:p", edge_type=EdgeType.FEEDS))
+    g.add_edge(Edge(source_id="report_page:p", target_id="report:r", edge_type=EdgeType.FEEDS))
+    warnings = link_visual_bindings(g)
+    keys = edge_keys(g)
+    assert ("report:r", "pbi_table:governance.auditlog", "visualizes") in keys  # provable -> edge
+    assert ("semantic_model:governance", "report:r", "feeds") in keys  # downstream of the filtered model
+    refs = g.nodes["report:r"].metadata["field_refs"]
+    assert any(r["target"] == "pbi_table:governance.auditlog" and r["role"] == "filter" for r in refs)
+    assert not any(w.category == "ambiguous_visual_binding" for w in warnings)
+
+
+def test_pbir_non_object_json_degrades_to_warning(tmp_path: Path):
+    # a report.json/page.json/visual.json that is valid JSON but not an object
+    # (e.g. a top-level array) degrades to a pbir_parse warning — never raises
+    # and aborts the build (hard rule 3). Regression guard for the review finding.
+    from coop_data_doc.crawler import FileEntry
+
+    bad = tmp_path / "report.json"
+    bad.write_text("[]", encoding="utf-8")
+    entry = FileEntry(
+        path="X.Report/definition/report.json",
+        abs_path=str(bad),
+        repo_key="powerbi",
+        kind=FileKind.PBIR_REPORT,
+        size=bad.stat().st_size,
+    )
+    graph = LineageGraph()
+    warnings = parse_pbir([], [], [entry], graph)  # must not raise
+    assert any(w.category == "pbir_parse" for w in warnings)
+
+
+def test_declared_model_byconnection_local_match(tmp_path: Path):
+    # a byConnection definition.pbir whose `initial catalog` matches a LOADED model
+    # wires the direct feeds edge, no external warning (issue #19).
+    from coop_data_doc.crawler import FileEntry
+    from coop_data_doc.graph.model import Node, NodeType
+
+    graph = LineageGraph()
+    graph.add_node(
+        Node(
+            id="semantic_model:sales analytics",
+            node_type=NodeType.SEMANTIC_MODEL,
+            name="sales analytics",
+            display_name="Sales Analytics",
+        )
+    )
+    pbir = tmp_path / "definition.pbir"
+    pbir.write_text(
+        json.dumps(
+            {
+                "version": "4.0",
+                "datasetReference": {
+                    "byConnection": {
+                        "connectionString": (
+                            'Data Source="powerbi://api.powerbi.com/v1.0/myorg/WS";'
+                            'initial catalog="Sales Analytics";integrated security=ClaimsToken'
+                        )
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    entry = FileEntry(
+        path="Rev.Report/definition.pbir",
+        abs_path=str(pbir),
+        repo_key="powerbi",
+        kind=FileKind.PBIR_DEFINITION,
+        size=pbir.stat().st_size,
+    )
+    warnings = parse_pbir_definitions([entry], graph)
+    report = graph.nodes["report:rev"]
+    assert report.metadata["declared_model"] == "sales analytics"
+    assert ("semantic_model:sales analytics", "report:rev", "feeds") in edge_keys(graph)
+    assert "declared_model_unresolved" not in report.metadata
+    assert not any(w.category == "pbir_external_model" for w in warnings)
+
+
 def test_pbir_definition_declares_model():
     # definition.pbir (byPath: ../Sales.SemanticModel) authoritatively binds the
     # report to its model: report node carries declared_model and a direct

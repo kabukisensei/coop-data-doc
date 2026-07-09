@@ -1,4 +1,5 @@
 {
+  "filters": "[{\"name\":\"legacyReportFilter\",\"expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Entity\":\"fact_sales\"}},\"Property\":\"order_id\"}}}]",
   "sections": [
     {
       "name": "ReportSection1",

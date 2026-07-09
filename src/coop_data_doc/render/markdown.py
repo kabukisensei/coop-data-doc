@@ -105,6 +105,22 @@ def _attr(value: str) -> str:
     return html.escape(value or "", quote=True).replace("|", "\\|")
 
 
+def _inline_code(value: str) -> str:
+    """A model-supplied name wrapped in an inline code span whose backtick fence
+    is longer than any backtick run inside it (padded per the GFM rule when the
+    content starts/ends with a backtick), so an embedded `` ` `` in a Power BI
+    column/measure name can't close the span early. Newlines collapse to spaces;
+    the markdown renderer HTML-escapes code-span content, so `<>&` are inert."""
+    text = (value or "").replace("\n", " ").replace("\r", " ")
+    longest = run = 0
+    for ch in text:
+        run = run + 1 if ch == "`" else 0
+        longest = max(longest, run)
+    fence = "`" * (longest + 1)
+    pad = " " if text[:1] == "`" or text[-1:] == "`" else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
 def _front_matter(graph: LineageGraph, node: Node) -> str:
     lines = ["---"]
     lines.append(f"id: {_quote(node.id)}")
@@ -494,14 +510,16 @@ def _report_refs(
                 elif tgt.node_type is NodeType.PBI_TABLE:
                     tables.append(tgt)
 
-    # A shown table is a "measure home table" for this report when it carries the
-    # structural marker, OR the report reached it ONLY through measure bindings
-    # (a table reached by any column/filter binding is a real data table).
+    # A shown table is a "measure home table" for THIS report when the report
+    # reached it ONLY through measure bindings — a table reached by any
+    # column/filter binding is a real data table (issue #27). Usage-based, so a
+    # table reached by both column and measure counts as data; the structural
+    # measure_table marker only badges the table's own page (a measure-only table
+    # has no data columns, so it can only ever be measure-reached anyway).
     measure_home_ids = {
         table.id
         for table in {t.id: t for t in tables}.values()
-        if table.metadata.get("measure_table")
-        or (table.id in shown_table_kinds and shown_table_kinds[table.id] <= {"measure"})
+        if shown_table_kinds.get(table.id) and shown_table_kinds[table.id] <= {"measure"}
     }
 
     def group(children: list[Node]) -> dict[str, list[Node]]:
@@ -576,7 +594,7 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     if filters:
         parts += ["## Filters", ""]
         for target, prop, scope in filters:
-            field = f" · `{_cell(prop)}`" if prop else ""
+            field = f" · {_inline_code(prop)}" if prop else ""
             scope_note = f" · _{_cell(scope)} filter_" if scope else ""
             parts += [f"- [{_link_text(target.display)}]({doc_relpath(target)}){field}{scope_note}"]
         parts += [""]
@@ -586,7 +604,7 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     if unresolved:
         parts += ["## Unresolved bindings", ""]
         parts += ["_These fields couldn't be matched to a model — verify manually:_", ""]
-        parts += [f"- `{_cell(b.get('entity', ''))}.{_cell(b.get('property', ''))}`" for b in unresolved]
+        parts += [f"- {_inline_code(b.get('entity', '') + '.' + b.get('property', ''))}" for b in unresolved]
         parts += [""]
 
     parts += ["## Business Intent", "", INTENT_BEGIN, _existing_intent(out_path), INTENT_END, ""]
@@ -772,12 +790,16 @@ def _index_page(graph: LineageGraph, project_name: str) -> str:
         lines.append("| Report | Draws from | Tables | Measures |")
         lines.append("| --- | --- | --- | --- |")
         for report in reports:
-            models, tables_by_model, measures_by_model, _filters, _mh = _report_refs(graph, report)
+            models, tables_by_model, measures_by_model, _filters, measure_home_ids = _report_refs(
+                graph, report
+            )
             model_links = (
                 ", ".join(f"[{_link_text(m.display)}](semantic_model/{slug(m.id)}.md)" for m in models)
                 or "_none_"
             )
-            n_tables = sum(len(v) for v in tables_by_model.values())
+            # count DATA tables only, matching the report page's "Tables used"
+            # (measure home tables are excluded, like on the page) — issue #27
+            n_tables = sum(1 for v in tables_by_model.values() for t in v if t.id not in measure_home_ids)
             n_measures = sum(len(v) for v in measures_by_model.values())
             report_link = f"[{_link_text(report.display)}](report/{slug(report.id)}.md)"
             lines.append(f"| {report_link} | {model_links} | {n_tables} | {n_measures} |")

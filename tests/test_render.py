@@ -686,6 +686,46 @@ def test_report_page_filters_section(tmp_path: Path):
     assert "`order_date`" in filters_block and "_page filter_" in filters_block
 
 
+def test_report_page_filter_backtick_in_property_does_not_break_span(tmp_path: Path):
+    # a backtick in a filtered field name must not close the inline code span
+    # early — the fence widens to survive it (issue #26 hardening).
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "fact", display_name="Fact"))
+    g.add_node(
+        make_node(
+            NodeType.REPORT,
+            "",
+            "dash",
+            display_name="Dash",
+            metadata={
+                "field_refs": [_ref("pbi_table:sales.fact", "od`er", "column", role="filter", scope="page")]
+            },
+        )
+    )
+    g.add_edge(Edge(source_id="semantic_model:sales", target_id="report:dash", edge_type=EdgeType.FEEDS))
+    g.add_edge(Edge(source_id="report:dash", target_id="pbi_table:sales.fact", edge_type=EdgeType.VISUALIZES))
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "report:dash").read_text(encoding="utf-8")
+    assert "``od`er``" in page  # 2-backtick fence wraps the 1-backtick name intact
+
+
+def test_index_reports_overview_multi_report_sorted(tmp_path: Path):
+    # the reports overview lists reports deterministically by display name (#21)
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    for name, disp in [("charlie", "Charlie"), ("alpha", "Alpha"), ("bravo", "Bravo")]:
+        g.add_node(make_node(NodeType.REPORT, "", name, display_name=disp))
+        g.add_edge(
+            Edge(source_id="semantic_model:sales", target_id=f"report:{name}", edge_type=EdgeType.FEEDS)
+        )
+    render_markdown(g, tmp_path, "Test")
+    index = (tmp_path / "index.md").read_text(encoding="utf-8")
+    rows = [ln for ln in index.splitlines() if ln.startswith("| [")]
+    order = [r.split("]")[0].lstrip("| [") for r in rows]
+    assert order == ["Alpha", "Bravo", "Charlie"]  # sorted, not insertion order
+
+
 def test_index_reports_overview(tmp_path: Path):
     # index.md carries a reports->models overview table with counts (issue #21)
     g = LineageGraph()

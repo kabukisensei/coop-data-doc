@@ -190,6 +190,28 @@ def _append_report_filters(
         pending.append({"entity": entity, "property": prop, "kind": kind, "scope": scope})
 
 
+def _load_pbir_json(entry: FileEntry, warnings: list[ParseWarning]) -> dict | None:
+    """Read + JSON-parse a PBIR file into a dict, or append a ``pbir_parse``
+    warning and return ``None``. Valid-but-non-object JSON (a top-level array,
+    string, or number) degrades to a warning too — the parser never raises on
+    malformed input (hard rule 3)."""
+    try:
+        data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
+    except (OSError, json.JSONDecodeError) as exc:
+        warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
+        return None
+    if not isinstance(data, dict):
+        warnings.append(
+            ParseWarning(
+                file=entry.path,
+                message=f"{PurePosixPath(entry.path).name} is not a JSON object",
+                category="pbir_parse",
+            )
+        )
+        return None
+    return data
+
+
 def parse_pbir(
     visual_entries: list[FileEntry],
     page_entries: list[FileEntry],
@@ -210,10 +232,8 @@ def parse_pbir(
 
     # Report-scoped filters: definition/report.json filterConfig.
     for entry in report_entries:
-        try:
-            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
-        except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
+        data = _load_pbir_json(entry, warnings)
+        if data is None:
             continue
         _, report_name = report_root(entry.path)
         _append_report_filters(
@@ -222,10 +242,8 @@ def parse_pbir(
 
     page_display: dict[tuple[str, str], str] = {}
     for entry in page_entries:
-        try:
-            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
-        except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
+        data = _load_pbir_json(entry, warnings)
+        if data is None:
             continue
         parts = PurePosixPath(entry.path).parts
         # .../definition/pages/<page_folder>/page.json
@@ -240,10 +258,8 @@ def parse_pbir(
     for entry in sorted(visual_entries, key=lambda e: e.path):
         if on_file:
             on_file(entry.path)
-        try:
-            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
-        except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
+        data = _load_pbir_json(entry, warnings)
+        if data is None:
             continue
         root, report_name = report_root(entry.path)
         parts = PurePosixPath(entry.path).parts
@@ -616,7 +632,16 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
             entity, prop, kind, scope = flt["entity"], flt["property"], flt["kind"], flt["scope"]
             candidates = tables_by_name.get(entity, [])
             scoped = [t for t in candidates if t.schema_name in models] if models else candidates
-            if len(scoped) != 1:
+            if len(scoped) == 1:
+                table = scoped[0]
+            elif len(candidates) == 1:
+                # A single GLOBAL candidate is provable, not a guess: resolve it
+                # even when it sits outside the report's shown models (a filter
+                # on a model the report shows nothing from — the filter-only-model
+                # case #26 exists to capture). Mirrors the shown-binding pass 1,
+                # which resolves any globally-unique entity regardless of context.
+                table = candidates[0]
+            else:
                 if len(candidates) > 1:
                     warnings.append(
                         ParseWarning(
@@ -629,7 +654,6 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
                         )
                     )
                 continue
-            table = scoped[0]
             graph.add_edge(
                 Edge(
                     source_id=report.id,
