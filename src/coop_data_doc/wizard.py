@@ -215,14 +215,20 @@ def _ask_semantic_models(pbi_abs: Path, existing_includes: list[str] | None) -> 
         file=sys.stderr,
     )
     prev = _previously_selected_models(existing_includes)
-    choices = [questionary.Choice(name, checked=(name in prev) if prev else True) for name in found]
-    selected = _ask(
-        questionary.checkbox(
-            "Semantic models to include (Space toggles, Enter confirms):",
-            choices=choices,
+    while True:
+        choices = [questionary.Choice(name, checked=(name in prev) if prev else True) for name in found]
+        selected = _ask(
+            questionary.checkbox(
+                "Semantic models to include (Space toggles, Enter confirms):",
+                choices=choices,
+            )
         )
-    )
-    return list(selected) if selected else found  # unchecking everything keeps all
+        if selected:
+            return list(selected)
+        # An empty selection silently meaning "document everything" is
+        # surprising (the opposite of what unchecking implies) — re-ask instead.
+        # _ask still raises KeyboardInterrupt on Ctrl-C, so this stays escapable.
+        print("  Select at least one semantic model (or press Ctrl-C to cancel).", file=sys.stderr)
 
 
 def _ask_manual_schema(default: str) -> str | None:
@@ -541,20 +547,29 @@ def run_setup(config_path: Path) -> Config | None:
     pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
     selected_models = _ask_semantic_models(pbi_abs, pbi_repo.include if pbi_repo else None)
     if selected_models is not None:
+        # The model picker IS the "what to document" decision for an on-disk PBI
+        # repo, so DON'T also show the top-level-folder skip checkbox (issue #22):
+        # to a user it reads as the same question asked twice, and because exclude
+        # beats include, unchecking the folder the models live in would silently
+        # drop the models just picked. Preserve any hand-written excludes from a
+        # loaded config untouched.
         pbi_include = _semantic_model_includes(selected_models)
+        pbi_exclude = list(pbi_repo.exclude) if pbi_repo else []
     else:
+        # Fallback (repo not cloned yet / no .SemanticModel folders): the folder
+        # checkbox is the only scoping mechanism here, so keep it.
         pbi_include = _ask_csv(
             "Power BI — files/patterns to INCLUDE (comma-separated globs):",
             pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
         )
-    pbi_exclude = _ask_folders_to_skip(
-        "Power BI",
-        pbi_path,
-        base_dir,
-        pbi_repo.exclude if pbi_repo else [],
-        "Power BI — folders to SKIP (optional, e.g. **/BACKUP/**, **/Documentation/**, "
-        "**/Editor and Theme Files/** — blank for none):",
-    )
+        pbi_exclude = _ask_folders_to_skip(
+            "Power BI",
+            pbi_path,
+            base_dir,
+            pbi_repo.exclude if pbi_repo else [],
+            "Power BI — folders to SKIP (optional, e.g. **/BACKUP/**, **/Documentation/**, "
+            "**/Editor and Theme Files/** — blank for none):",
+        )
 
     # --- medallion layers: assign by SCHEMA (the common case) ---
     print("\n── Medallion layers ──", file=sys.stderr)

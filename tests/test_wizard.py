@@ -275,6 +275,103 @@ def test_wizard_rerun_preserves_pbix_glob_and_prechecks_models(tmp_path: Path, m
     assert checked["Finance.SemanticModel"] is False  # not in prior include -> unchecked
 
 
+def test_wizard_skips_pbi_folder_checkbox_when_models_found(tmp_path: Path, monkeypatch):
+    # with .SemanticModel folders on disk, the model picker IS the scope, so the
+    # redundant top-level-folder checkbox is skipped for the PBI repo (issue #22)
+    # — otherwise unchecking the models' folder would silently drop them.
+    (tmp_path / "sql-repo").mkdir()
+    pbi = tmp_path / "pbi-repo"
+    (pbi / "Sales.SemanticModel" / "definition").mkdir(parents=True)
+    (pbi / "Documentation").mkdir()  # an extra top-level folder the old checkbox would offer
+    answers = {
+        "Project name": "Scoped",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "Semantic models to include": ["Sales.SemanticModel"],
+    }
+    fake = RoutedQuestionary(default_router(answers))
+    monkeypatch.setattr(wizard, "questionary", fake)
+    config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
+    assert config is not None
+    # no PBI top-level-folder checkbox was shown
+    assert not any(kind == "checkbox" and "Power BI — pick the folders" in msg for kind, msg, _ in fake.calls)
+    # and nothing silently excluded the picked model
+    assert config.repos["powerbi"].exclude == []
+    assert "**/Sales.SemanticModel/**/*.tmdl" in config.repos["powerbi"].include
+
+
+def test_wizard_preserves_custom_pbi_excludes_when_models_found(tmp_path: Path, monkeypatch):
+    # a hand-written exclude in a loaded config survives a re-run even though the
+    # folder-skip checkbox is now skipped on the models-found path (issue #22).
+    (tmp_path / "sql-repo").mkdir()
+    pbi = tmp_path / "pbi-repo"
+    (pbi / "Sales.SemanticModel" / "definition").mkdir(parents=True)
+    config_path = tmp_path / "coop-data-doc.yml"
+    config_path.write_text(
+        render_config_yaml(
+            project_name="Estate",
+            sql_path="./sql-repo",
+            pbi_path="./pbi-repo",
+            mappings=[],
+            pbi_include=["**/Sales.SemanticModel/**/*.tmdl", "**/report.json", "**/*.pbix"],
+            pbi_exclude=["**/BACKUP/**"],
+            output_dir="./docs",
+            site_dir="./site",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    answers = {
+        "Project name": "Estate",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "Semantic models to include": ["Sales.SemanticModel"],
+    }
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    config = wizard.run_setup(config_path)
+    assert config is not None
+    assert config.repos["powerbi"].exclude == ["**/BACKUP/**"]  # custom exclude preserved
+
+
+def test_wizard_reprompts_when_no_model_selected(tmp_path: Path, monkeypatch):
+    # unchecking every model re-prompts instead of silently selecting all (#22).
+    (tmp_path / "sql-repo").mkdir()
+    pbi = tmp_path / "pbi-repo"
+    (pbi / "Sales.SemanticModel" / "definition").mkdir(parents=True)
+    model_answers = iter([[], ["Sales.SemanticModel"]])  # empty first -> re-ask
+
+    def router(kind, message, kwargs):
+        if kind == "checkbox" and "Semantic models to include" in message:
+            return next(model_answers)
+        if "Project name" in message:
+            return "Estate"
+        if "SQL repo path" in message:
+            return "./sql-repo"
+        if "Power BI repo path" in message:
+            return "./pbi-repo"
+        if "Markdown output" in message:
+            return "./docs"
+        if "HTML site" in message:
+            return "./site"
+        if kind == "checkbox":
+            return [c.value for c in kwargs.get("choices", [])]
+        if kind == "confirm":
+            return False
+        return kwargs.get("default", "")
+
+    fake = RoutedQuestionary(router)
+    monkeypatch.setattr(wizard, "questionary", fake)
+    config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
+    assert config is not None
+    # the model picker was shown twice: the empty selection re-prompted
+    assert sum("Semantic models to include" in msg for _, msg, _ in fake.calls) == 2
+    assert "**/Sales.SemanticModel/**/*.tmdl" in config.repos["powerbi"].include
+
+
 def test_wizard_autosuggests_schema_mapping_from_dry_run(tmp_path: Path, monkeypatch):
     # a model whose M-code reads schema "sales" but whose object actually lives
     # in SQL schema "mart" is unresolved; the wizard dry-run derives "mart" from
