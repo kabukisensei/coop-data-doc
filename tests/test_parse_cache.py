@@ -275,6 +275,40 @@ def test_identical_content_files_attribute_warnings_per_path(tmp_path: Path):
     assert cache.hits == len(entries) == 2
 
 
+def test_procs_cache_entry_holds_pristine_node_not_merged(tmp_path: Path):
+    """The procs pass must cache the PRISTINE pre-merge node (_Contribution's
+    contract): with a_caller.sql (sorted first) EXECing dbo.LOAD_THING and
+    b_def.sql defining Load_Thing, the merged graph node keeps the stub's
+    display_name — but b_def's cache entry must carry b_def's own casing, plus
+    its own metadata flags (dynamic_sql_untraced) applied during processing."""
+    repo = tmp_path / "sql"
+    repo.mkdir()
+    (repo / "a_caller.sql").write_text(
+        "CREATE PROCEDURE dbo.usp_caller AS\nEXEC dbo.LOAD_THING;\nGO\n", encoding="utf-8"
+    )
+    b_text = (
+        "CREATE PROCEDURE dbo.Load_Thing AS\n"
+        "DECLARE @s NVARCHAR(100) = N'SELECT 1';\n"
+        "EXEC (@s);\n"
+        "INSERT INTO dbo.things SELECT * FROM silver.src;\nGO\n"
+    )
+    (repo / "b_def.sql").write_text(b_text, encoding="utf-8")
+    entries = _sql_entries(repo)
+
+    cache = ParseCache(tmp_path / PARSE_CACHE)
+    graph = LineageGraph()
+    parse_sql_procs(entries, graph, parse_cache=cache, no_parse_cache=True)
+
+    # the graph node merged the earlier stub (existing display_name wins)...
+    assert graph.nodes["stored_proc:dbo.load_thing"].display_name == "LOAD_THING"
+    # ...but the cached contribution holds the pristine node with its own flags
+    key = cache_key("tsql", b_text, "procs", "b_def.sql")
+    cached_node = cache.entries[key].nodes["stored_proc:dbo.load_thing"]
+    assert cached_node["display_name"] == "Load_Thing"
+    assert cached_node["metadata"]["dynamic_sql_untraced"] is True
+    assert cached_node["source_file"] == "b_def.sql"
+
+
 # -- end-to-end via the CLI ------------------------------------------------------
 
 
@@ -343,6 +377,39 @@ def test_cli_edited_sql_partial_reparse_matches_cold(tmp_path: Path):
     assert run(["build", "--non-interactive", "--skip-html", "--no-parse-cache"], tmp_path).exit_code == 0
     cold = _tree_bytes(tmp_path / "data-docs")
     assert warm == cold
+
+
+def test_cli_deleted_caller_warm_rebuild_matches_cold(tmp_path: Path):
+    """The reproduction scenario for the merged-node cache bug: a_caller.sql
+    EXECs dbo.LOAD_THING (stubbing the proc with the CALLER's casing before
+    b_def.sql defines Load_Thing), the estate is built (cache populated), then
+    the caller is deleted. The warm rebuild — which replays b_def.sql's cache
+    entry — must render byte-identically to --no-parse-cache; the stub's
+    display_name must not replay from the definer's cache entry."""
+    setup_workspace(tmp_path)
+    procs = tmp_path / "sql-repo" / "procs"
+    caller = procs / "a_caller.sql"
+    caller.write_text("CREATE PROCEDURE dbo.usp_caller AS\nEXEC dbo.LOAD_THING;\nGO\n", encoding="utf-8")
+    (procs / "b_def.sql").write_text(
+        "CREATE PROCEDURE dbo.Load_Thing AS\nINSERT INTO dbo.things SELECT * FROM silver.src;\nGO\n",
+        encoding="utf-8",
+    )
+    # build with both files: populates the parse cache (b_def.sql entry included)
+    assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
+
+    caller.unlink()
+    # warm rebuild: b_def.sql is unchanged, so its cached contribution replays
+    assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
+    warm = _tree_bytes(tmp_path / "data-docs")
+    # cold rebuild of the same (caller-less) estate
+    assert run(["build", "--non-interactive", "--skip-html", "--no-parse-cache"], tmp_path).exit_code == 0
+    cold = _tree_bytes(tmp_path / "data-docs")
+    assert warm.keys() == cold.keys()
+    for rel in cold:
+        assert warm[rel] == cold[rel], f"warm != cold after caller deletion: {rel}"
+    # and the proc page carries the DEFINER's casing, not the deleted caller's stub
+    manifest = json.loads((tmp_path / "data-docs" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["nodes"]["stored_proc:dbo.load_thing"]["display_name"] == "Load_Thing"
 
 
 def test_cli_no_parse_cache_flag_on_scan_and_check(tmp_path: Path):

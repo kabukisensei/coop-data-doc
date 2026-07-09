@@ -266,20 +266,22 @@ def _parse_procs_entry(
             continue
         raw_name, body = found
         schema, name = qualify(raw_name)
-        proc = _add_node(
-            graph,
-            Node(
-                id=Node.make_id(NodeType.STORED_PROC, schema, name),
-                node_type=NodeType.STORED_PROC,
-                name=name,
-                schema_name=schema,
-                display_name=original_name(raw_name),
-                source_file=entry.path,
-                source_code=batch,
-                metadata={"parse_quality": "ast"},
-            ),
-            contribution,
+        # Keep a handle on the PRISTINE node as passed to add_node: when an
+        # earlier-sorted file already stubbed this proc (an EXEC callee), the
+        # object add_node returns is the MERGED node carrying the stub's fields
+        # (e.g. its display_name) — which must never enter this file's cache
+        # entry (see the re-record at the end of this batch).
+        pristine = Node(
+            id=Node.make_id(NodeType.STORED_PROC, schema, name),
+            node_type=NodeType.STORED_PROC,
+            name=name,
+            schema_name=schema,
+            display_name=original_name(raw_name),
+            source_file=entry.path,
+            source_code=batch,
+            metadata={"parse_quality": "ast"},
         )
+        proc = _add_node(graph, pristine, contribution)
         fallback_used = False
 
         for chunk in split_statements(body):
@@ -416,11 +418,20 @@ def _parse_procs_entry(
 
         # Re-record the proc node LAST so its cached dict carries the final
         # in-place metadata (dynamic_sql_untraced / parse_quality=regex_fallback)
-        # applied during statement processing. The dict key already exists, so
-        # this updates the value in place and keeps the proc first in insertion
-        # order — the same order a cold parse adds it (before its callees/tables).
+        # applied during statement processing. Record the PRISTINE pre-merge
+        # node — never `proc`, which may be a MERGED node carrying another
+        # file's stub fields (_Contribution's contract: cache what was PASSED
+        # to add_node, so replay-after-that-file-is-deleted equals a cold
+        # parse). Only the proc's OWN metadata flags (set on the graph node
+        # during statement processing) are copied across. The dict key already
+        # exists, so this updates the value in place and keeps the proc first
+        # in insertion order — the same order a cold parse adds it (before its
+        # callees/tables).
         if contribution is not None:
-            contribution.record_node(proc)
+            for flag in ("dynamic_sql_untraced", "parse_quality"):
+                if flag in proc.metadata:
+                    pristine.metadata[flag] = proc.metadata[flag]
+            contribution.record_node(pristine)
 
 
 def parse_sql_procs(
