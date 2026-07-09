@@ -30,7 +30,8 @@
    every cell into an illegible sliver. Per-column min-widths keep the cells
    readable in the scrolling case. */
 .md-typeset .rel-grid {
-  overflow-x: auto;
+  overflow: auto; /* both axes: wide models scroll right, tall models scroll down... */
+  max-height: calc(100vh - 11rem); /* ...against a bounded viewport so the frozen header can stick */
 }
 .md-typeset .rel-grid table {
   display: table;
@@ -38,27 +39,111 @@
   width: max-content; /* grow beyond the viewport for large models... */
   min-width: 100%; /* ...but fill it (no gap) for small ones */
   font-size: 0.66rem;
-  border: 1px solid var(--md-default-fg-color--light);
+  /* `separate` (not collapse): with collapsed borders a position:sticky cell
+     scrolls away from its border lines. Cells draw right+bottom edges only and
+     the table supplies top+left, so seams stay a single pixel. */
+  border-collapse: separate;
+  border-spacing: 0;
+  border-top: 1px solid var(--md-default-fg-color--light);
+  border-left: 1px solid var(--md-default-fg-color--light);
 }
 .md-typeset .rel-grid th,
 .md-typeset .rel-grid td {
-  border: 1px solid var(--md-default-fg-color--lighter);
+  border: 0;
+  border-right: 1px solid var(--md-default-fg-color--lighter);
+  border-bottom: 1px solid var(--md-default-fg-color--lighter);
   padding: 0.25em 0.2em;
   text-align: center;
   overflow-wrap: anywhere; /* wrap long table names rather than overflow */
   word-break: break-word;
   min-width: 3.25em; /* fact columns stay legible; wide models scroll */
 }
-.md-typeset .rel-grid th {
-  background: var(--md-default-fg-color--lightest);
+/* FROZEN header row: fact names stay visible while scrolling down. Material's
+   --lightest tint is translucent, so it is layered over the opaque page
+   background — otherwise scrolled cells would ghost through the header (the
+   vars adapt to light/dark schemes). */
+.md-typeset .rel-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background-color: var(--md-default-bg-color);
+  background-image: linear-gradient(
+    var(--md-default-fg-color--lightest),
+    var(--md-default-fg-color--lightest)
+  );
   vertical-align: bottom;
 }
-/* the dimension-label column (first) gets more room + left-aligns its names */
+/* FROZEN first column: dimension names stay visible while scrolling right.
+   Gets more room + left-aligns its names. */
 .md-typeset .rel-grid th:first-child,
 .md-typeset .rel-grid td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
   min-width: 9em;
   max-width: 18em;
   text-align: left;
+  background-color: var(--md-default-bg-color);
+}
+.md-typeset .rel-grid tbody th:first-child {
+  background-image: linear-gradient(
+    var(--md-default-fg-color--lightest),
+    var(--md-default-fg-color--lightest)
+  );
+}
+/* the corner cell sits above both frozen axes */
+.md-typeset .rel-grid thead th:first-child {
+  z-index: 4;
+}
+
+/* Collapsible left nav (nav-collapse.js injects the toggle + body class; the
+   choice persists per browser via localStorage). The sidebar SLIDES closed —
+   width animates to zero and the content column glides in to take the space —
+   welcome on wide relationship grids. Desktop only: below Material's 76.25em
+   breakpoint the sidebar already lives behind the hamburger, so the toggle
+   hides itself there. */
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--primary {
+    transition:
+      width 0.25s ease,
+      opacity 0.2s ease;
+    overflow: hidden;
+    white-space: nowrap; /* nav labels glide off-edge instead of rewrapping mid-slide */
+  }
+  body.nav-collapsed .md-sidebar--primary {
+    width: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+.nav-collapse-toggle {
+  display: none;
+}
+@media screen and (min-width: 76.25em) {
+  .nav-collapse-toggle {
+    display: block;
+    position: fixed;
+    bottom: 0.9rem;
+    left: 0.9rem;
+    z-index: 5;
+    width: 1.9rem;
+    height: 1.9rem;
+    padding: 0;
+    border: 1px solid var(--md-default-fg-color--lighter);
+    border-radius: 50%;
+    background: var(--md-default-bg-color);
+    color: var(--md-default-fg-color--light);
+    font: inherit;
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  }
+  .nav-collapse-toggle:hover,
+  .nav-collapse-toggle:focus-visible {
+    color: var(--md-accent-fg-color);
+    border-color: var(--md-accent-fg-color);
+  }
 }
 
 /* collapsible upstream-lineage trees (doc-tree.js). Inert until that script

@@ -96,6 +96,7 @@ markdown_extensions:
 
 extra_javascript:
   - assets/javascripts/vendor/doc-tree.js
+  - assets/javascripts/vendor/nav-collapse.js
 
 extra_css:
   - assets/stylesheets/custom.css
@@ -329,7 +330,7 @@ def write_mkdocs_config(
     docs_dir = Path(docs_dir).resolve()
     vendor_dir = docs_dir / _VENDOR_REL
     vendor_dir.mkdir(parents=True, exist_ok=True)
-    for asset in ("doc-tree.js", "iframe-worker-shim.js"):
+    for asset in ("doc-tree.js", "nav-collapse.js", "iframe-worker-shim.js"):
         shutil.copyfile(_VENDOR_SRC / asset, vendor_dir / asset)
     css_dir = docs_dir / _CSS_REL
     css_dir.mkdir(parents=True, exist_ok=True)

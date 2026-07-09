@@ -1089,8 +1089,10 @@ def test_doc_tree_asset_copied_and_referenced(tmp_path: Path):
     cfg = write_mkdocs_config(docs, tmp_path / "site", "Test", build_graph())
     vendor = docs / "assets" / "javascripts" / "vendor"
     assert (vendor / "doc-tree.js").is_file()
+    assert (vendor / "nav-collapse.js").is_file()
     text = cfg.read_text(encoding="utf-8")
     assert "assets/javascripts/vendor/doc-tree.js" in text
+    assert "assets/javascripts/vendor/nav-collapse.js" in text
 
 
 def test_display_name_schema_qualified_original_case(tmp_path: Path):
