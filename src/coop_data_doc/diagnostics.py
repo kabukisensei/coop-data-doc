@@ -51,6 +51,9 @@ _SEVERITY: dict[str, str] = {
     # (unlike the committed .lineage-cache.json's "cache_invalid", which is an error).
     "parse_cache_invalid": "warning",
     "pbix_opaque_model": "warning",
+    # a classified .sql file that contributed zero nodes and zero warnings
+    # (unsupported DDL, empty file) — a coverage gap, never silent (issue #31)
+    "sql_no_objects": "warning",
     "symlink_escape": "warning",
     "file_too_large": "warning",
     "file_unreadable": "warning",

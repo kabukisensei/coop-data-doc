@@ -46,6 +46,7 @@ from coop_data_doc.parsers.parallel import _MAX_WORKERS, default_jobs, parse_sql
 from coop_data_doc.parsers.parse_cache import ParseCache
 from coop_data_doc.parsers.pbix import parse_pbix
 from coop_data_doc.layering import assign_layers, prune_schemas
+from coop_data_doc.parsers.sql_objects import flag_silent_sql_files
 from coop_data_doc.parsers.sql_procs import resolve_stub_references
 from coop_data_doc.parsers.tmdl import link_composite_models, parse_tmdl
 from coop_data_doc.progress import Progress, should_enable
@@ -119,6 +120,9 @@ def build_graph(
     if sql_entries:
         progress.line(f"Parsing SQL ({parse_cache.hits} cached, {parse_cache.misses} parsed)")
     _log.debug("parse cache: %d cached, %d parsed", parse_cache.hits, parse_cache.misses)
+    # safety net (issue #31): a classified .sql file that contributed nothing —
+    # no nodes, no diagnostics — must be flagged, never silently uncovered
+    warnings += flag_silent_sql_files(sql_entries, graph, warnings)
     resolve_stub_references(graph)
 
     tmdl = inventory.by_kind(FileKind.TMDL)

@@ -377,6 +377,14 @@ def collect_source_tables(expression: exp.Expression) -> set[tuple[str, str]]:
         if is_temp_table(table):
             continue
         if isinstance(table.this, exp.Func):
+            # FROM <schema>.<fn>(...): a schema-QUALIFIED table-valued function
+            # is a real user object (built-ins are never schema-qualified), so
+            # keep it as a source — callers of an inline TVF get lineage, and
+            # resolve_stub_references folds the stub into the TVF's view node
+            # (issue #31). Unqualified calls (STRING_SPLIT, OPENJSON,
+            # OPENROWSET…) stay dropped — never guess lineage.
+            if table.text("db"):
+                found.add(table_parts(table))
             continue
         schema, name = table_parts(table)
         if not table.text("db") and name in ctes:

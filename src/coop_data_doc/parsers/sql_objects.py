@@ -1,4 +1,4 @@
-"""CREATE TABLE / CREATE VIEW lineage extraction (Module 2)."""
+"""CREATE TABLE / CREATE VIEW / inline TVF lineage extraction (Module 2)."""
 
 from __future__ import annotations
 
@@ -344,6 +344,64 @@ def _handle_create_view(
         _add_reads(graph, node.id, collect_source_tables(select), entry.path, contribution)
 
 
+def _handle_create_function(
+    create: exp.Create,
+    graph: LineageGraph,
+    entry: FileEntry,
+    warnings: list[ParseWarning],
+    source: str,
+    contribution: _Contribution | None = None,
+) -> bool:
+    """An inline table-valued function (``CREATE FUNCTION … RETURNS TABLE AS
+    RETURN SELECT …``) is a view-shaped object — a name, a column contract, and
+    reads — so it becomes a ``view`` node tagged ``object_kind: inline_tvf``
+    (issue #31). Returns False for anything else under CREATE FUNCTION (scalar
+    functions, multi-statement TVFs — proc-shaped, out of scope); those files
+    are caught by the ``sql_no_objects`` safety net instead of vanishing.
+    """
+    target = create.this
+    if isinstance(target, exp.UserDefinedFunction):
+        target = target.this
+    if not isinstance(target, exp.Table):
+        return False
+    returned = create.expression
+    if create.args.get("begin") or not isinstance(returned, exp.Return):
+        return False
+    select = returned.this
+    if isinstance(select, exp.Subquery):
+        select = select.this
+    if not isinstance(select, exp.Select):
+        return False
+    schema, name = table_parts(target)
+    node = Node(
+        id=Node.make_id(NodeType.VIEW, schema, name),
+        node_type=NodeType.VIEW,
+        name=name,
+        schema_name=schema,
+        display_name=original_name(target.name),
+        source_file=entry.path,
+        source_code=source,
+        metadata={"object_kind": "inline_tvf"},
+    )
+    columns, unresolved = _projection_columns(select)
+    node.columns.extend(columns)
+    fn_warning: ParseWarning | None = None
+    if unresolved:
+        node.metadata["columns_unresolved"] = True
+        fn_warning = ParseWarning(
+            file=entry.path,
+            message=f"inline TVF {schema}.{name} uses SELECT * — output columns unresolved",
+            category="select_star_view",
+        )
+    _add_node(graph, node, contribution)
+    if fn_warning is not None:
+        warnings.append(fn_warning)
+        if contribution is not None:
+            contribution.record_warning(fn_warning)
+    _add_reads(graph, node.id, collect_source_tables(select), entry.path, contribution)
+    return True
+
+
 def _parse_objects_entry(
     entry: FileEntry,
     text: str,
@@ -368,14 +426,18 @@ def _parse_objects_entry(
         creates = [
             expression
             for expression in parse_batch(batch, dialect)
-            if isinstance(expression, exp.Create) and (expression.kind or "").upper() in ("TABLE", "VIEW")
+            if isinstance(expression, exp.Create)
+            and (expression.kind or "").upper() in ("TABLE", "VIEW", "FUNCTION")
         ]
         if creates:
             for create in creates:
-                if (create.kind or "").upper() == "TABLE":
+                kind = (create.kind or "").upper()
+                if kind == "TABLE":
                     _handle_create_table(create, graph, entry, dialect, batch, contribution)
-                else:
+                elif kind == "VIEW":
                     _handle_create_view(create, graph, entry, dialect, warnings, batch, contribution)
+                else:  # FUNCTION — only inline TVFs produce a node (issue #31)
+                    _handle_create_function(create, graph, entry, warnings, batch, contribution)
             continue
         # regex fallback for batches sqlglot couldn't parse — on the SCRUBBED text, so
         # a CREATE TABLE/VIEW mentioned only in a comment/string doesn't become a node.
@@ -414,6 +476,37 @@ def _parse_objects_entry(
         warnings.append(warning)
         if contribution is not None:
             contribution.record_warning(warning)
+
+
+def flag_silent_sql_files(
+    entries: list[FileEntry],
+    graph: LineageGraph,
+    warnings: list[ParseWarning],
+) -> list[ParseWarning]:
+    """Safety net (issue #31): a classified ``.sql`` file that contributed zero
+    nodes and zero warnings across both SQL passes is invisible — unsupported
+    DDL (scalar functions, multi-statement TVFs, GRANT scripts…) or an
+    accidentally-empty file. Emit one ``sql_no_objects`` warning per such file
+    so a coverage gap is never silent (hard rule 4).
+
+    Runs AFTER both passes as a cross-file check (never inside the per-file
+    parsers/parse cache — it depends on the whole run's outcome, and a derived
+    deterministic post-pass keeps warm/parallel builds byte-identical for free).
+    """
+    documented = {node.source_file for node in graph.nodes.values() if node.source_file}
+    warned = {warning.file for warning in warnings}
+    return [
+        ParseWarning(
+            file=entry.path,
+            message=(
+                "no documentable objects found (no CREATE TABLE/VIEW/PROCEDURE "
+                "or inline TVF, and no diagnostics) — the file contributes nothing"
+            ),
+            category="sql_no_objects",
+        )
+        for entry in entries
+        if entry.path not in documented and entry.path not in warned
+    ]
 
 
 def parse_sql_objects(

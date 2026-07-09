@@ -96,7 +96,7 @@ def test_determinism():
 def test_by_kind():
     inventory, _ = crawl(fixture_config())
     sql = inventory.by_kind(FileKind.SQL_FILE)
-    assert len(sql) == 7
+    assert len(sql) == 9
     assert all(entry.repo_key == "sql" for entry in sql)
 
 

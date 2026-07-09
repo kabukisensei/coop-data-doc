@@ -64,6 +64,8 @@ def test_expected_nodes():
         "gold_table:dbo.audit_log",  # written (WRITES edge) but never defined: stays gold
         "view:sales.dim_customer",
         "view:sales.v_orders_star",
+        "view:dbo.fn_sales_window",  # inline TVF: a view-shaped node (issue #31)
+        "view:sales.v_sales_window_recent",  # reads the TVF like a view
         "silver_table:silver.sales_orders",
         "silver_table:silver.customers",
         "silver_table:silver.events",
@@ -144,6 +146,79 @@ def test_ctas_reads_source():
         "reads",
     ) in edge_keys(graph)
     assert graph.nodes["gold_table:dbo.agg_sales_daily"].source_file
+
+
+def test_inline_tvf_parsed_as_view_like_node():
+    # issue #31: an inline table-valued function is a view-shaped object — a
+    # name, a column contract, and reads — tagged object_kind: inline_tvf.
+    graph, warnings = parse_all()
+    fn = graph.nodes["view:dbo.fn_sales_window"]
+    assert fn.metadata["object_kind"] == "inline_tvf"
+    assert fn.source_file
+    assert [c.name for c in fn.columns] == ["order_id", "order_total", "customer_name"]
+    keys = edge_keys(graph)
+    assert ("view:dbo.fn_sales_window", "gold_table:dbo.fact_sales", "reads") in keys
+    assert ("view:dbo.fn_sales_window", "silver_table:silver.customers", "reads") in keys
+    # a cleanly parsed TVF emits no warnings for its file
+    assert not any(w.file.endswith("fn_sales_window.sql") for w in warnings)
+
+
+def test_inline_tvf_caller_gets_reads_edge():
+    # issue #31: `FROM dbo.fn_sales_window(...)` in a caller resolves to the
+    # TVF's view node (the schema-qualified function-call source is kept and
+    # the stub folded by resolve_stub_references).
+    graph, _ = parse_all()
+    keys = edge_keys(graph)
+    assert ("view:sales.v_sales_window_recent", "view:dbo.fn_sales_window", "reads") in keys
+    assert "gold_table:dbo.fn_sales_window" not in graph.nodes
+
+
+def test_unqualified_table_functions_never_become_sources(tmp_path: Path):
+    # built-ins (STRING_SPLIT, OPENJSON…) are never schema-qualified — they
+    # must stay dropped, never guessed into lineage (hard rule 4).
+    graph, _ = _parse_objects_sql(
+        tmp_path,
+        "CREATE VIEW dbo.v_split AS "
+        "SELECT s.value FROM STRING_SPLIT('a,b', ',') AS s JOIN dbo.real_table AS r ON r.k = s.value;",
+    )
+    assert "view:dbo.v_split" in graph.nodes
+    reads = {e.target_id for e in graph.edges if e.edge_type.value == "reads"}
+    assert reads == {"gold_table:dbo.real_table"}
+
+
+def test_sql_no_objects_safety_net(tmp_path: Path):
+    # issue #31: a classified .sql file yielding zero nodes and zero warnings
+    # (a scalar function, a GRANT script, an empty file) is flagged — never a
+    # silent coverage gap. Files that contribute a node or a warning are not.
+    from coop_data_doc.parsers.sql_objects import flag_silent_sql_files
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "fn_scalar.sql").write_text(
+        "CREATE FUNCTION dbo.fn_add (@a INT) RETURNS INT AS BEGIN RETURN @a + 1; END;",
+        encoding="utf-8",
+    )
+    (repo / "grants.sql").write_text("GRANT SELECT ON SCHEMA::sales TO reporting_role;", encoding="utf-8")
+    (repo / "table.sql").write_text("CREATE TABLE dbo.t (id INT);", encoding="utf-8")
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    entries = inventory.by_kind(FileKind.SQL_FILE)
+    graph = LineageGraph()
+    warnings = parse_sql_objects(entries, graph)
+    warnings += parse_sql_procs(entries, graph)
+    flagged = flag_silent_sql_files(entries, graph, warnings)
+    assert [w.file for w in flagged] == ["fn_scalar.sql", "grants.sql"]
+    assert all(w.category == "sql_no_objects" for w in flagged)
+
+
+def test_no_sql_no_objects_for_contributing_fixture_files():
+    # every fixture file contributes a node or a diagnostic, so the safety
+    # net stays quiet on the estate (including the inline TVF, which now
+    # contributes a node).
+    from coop_data_doc.parsers.sql_objects import flag_silent_sql_files
+
+    graph, warnings = parse_all()
+    assert flag_silent_sql_files(sql_entries(), graph, warnings) == []
 
 
 def _parse_objects_sql(tmp_path: Path, sql: str) -> tuple[LineageGraph, list]:

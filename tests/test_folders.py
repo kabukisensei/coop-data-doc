@@ -92,6 +92,7 @@ def test_folders_command_json(tmp_path: Path):
     assert sql["exists"] is True
     assert {f["name"]: f["documented"] for f in sql["folders"]} == {
         "archive": False,
+        "functions": True,
         "procs": True,
         "tables": True,
         "views": True,
