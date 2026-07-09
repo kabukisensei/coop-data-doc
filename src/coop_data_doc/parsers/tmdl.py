@@ -24,7 +24,7 @@ from coop_data_doc.graph.model import (
     merge_relationships,
     normalize_identifier,
 )
-from coop_data_doc.parsers.dax import link_measures
+from coop_data_doc.parsers.dax import link_calculated_tables, link_measures
 from coop_data_doc.parsers.mcode import extract_source
 from coop_data_doc.parsers.sql_common import collect_source_tables, decode_text, parse_batch
 
@@ -127,40 +127,61 @@ def model_root(path: str) -> tuple[str, str]:
     return parts[0] if len(parts) > 1 else "", parts[0].rsplit(".", 1)[0]
 
 
+def _attach_native_sql(
+    table_node: Node, sql_texts: list[str], source_file: str, warnings: list[ParseWarning]
+) -> None:
+    """Extract source tables from native SQL (Value.NativeQuery M, or a legacy
+    ``query`` partition) into ``native_query_tables``/``partition_source``."""
+    tables: set[tuple[str, str]] = set()
+    for sql in sql_texts:
+        for statement in parse_batch(sql):
+            tables |= collect_source_tables(statement)
+    table_node.metadata["native_query_tables"] = sorted(f"{schema}.{name}" for schema, name in tables)
+    if len(tables) == 1:
+        schema, name = next(iter(tables))
+        table_node.metadata["partition_source"] = {
+            "schema": schema,
+            "object": name,
+            "raw_kind": "native_query",
+        }
+    elif not tables:
+        # zero extractable tables (ODBC {CALL}, non-T-SQL passthrough,
+        # broken SQL): the source exists but can't be statically traced —
+        # mark it unresolved and warn, never leave the table looking
+        # healthy with no upstream (hard rule 4)
+        table_node.metadata["partition_source_unresolved"] = True
+        warnings.append(
+            ParseWarning(
+                file=source_file,
+                message=(f"native query of {table_node.name} could not be analyzed — no source tables found"),
+                category="unresolved_partition_source",
+            )
+        )
+    # multiple tables: recorded above; each is resolved separately by the linker
+
+
+def _mark_partition_unresolved(
+    table_node: Node, detail: str, source_file: str, warnings: list[ParseWarning]
+) -> None:
+    """The hard-rule-4 safety net: an untraceable partition must never leave
+    the table looking healthy with no upstream — mark it and warn."""
+    table_node.metadata["partition_source_unresolved"] = True
+    warnings.append(
+        ParseWarning(
+            file=source_file,
+            message=f"partition source of {table_node.name} not recognized ({detail})",
+            category="unresolved_partition_source",
+        )
+    )
+
+
 def _attach_partition_source(
     table_node: Node, m_text: str, source_file: str, warnings: list[ParseWarning]
 ) -> None:
     ref, native_sql = extract_source(m_text)
     if native_sql:
-        tables: set[tuple[str, str]] = set()
-        for sql in native_sql:
-            for statement in parse_batch(sql):
-                tables |= collect_source_tables(statement)
-        table_node.metadata["native_query_tables"] = sorted(f"{schema}.{name}" for schema, name in tables)
-        if len(tables) == 1:
-            schema, name = next(iter(tables))
-            table_node.metadata["partition_source"] = {
-                "schema": schema,
-                "object": name,
-                "raw_kind": "native_query",
-            }
-            return
-        if not tables:
-            # zero extractable tables (ODBC {CALL}, non-T-SQL passthrough,
-            # broken SQL): the source exists but can't be statically traced —
-            # mark it unresolved and warn, never leave the table looking
-            # healthy with no upstream (hard rule 4)
-            table_node.metadata["partition_source_unresolved"] = True
-            warnings.append(
-                ParseWarning(
-                    file=source_file,
-                    message=(
-                        f"native query of {table_node.name} could not be analyzed — no source tables found"
-                    ),
-                    category="unresolved_partition_source",
-                )
-            )
-            return
+        _attach_native_sql(table_node, native_sql, source_file, warnings)
+        return
     if ref is not None and ref.raw_kind == "static":
         # inline/calculation/parameter table — no database lineage by design
         table_node.metadata["partition_static"] = True
@@ -177,16 +198,7 @@ def _attach_partition_source(
             "raw_kind": ref.raw_kind,
         }
         return
-    if ref is not None and ref.raw_kind == "native_query":
-        return  # tables recorded above; multiple sources resolved by linker
-    table_node.metadata["partition_source_unresolved"] = True
-    warnings.append(
-        ParseWarning(
-            file=source_file,
-            message=f"partition source of {table_node.name} not recognized",
-            category="unresolved_partition_source",
-        )
-    )
+    _mark_partition_unresolved(table_node, "M source not traceable", source_file, warnings)
 
 
 def _mark_measure_table(table_node: Node | None, measure_count: int, hidden_cols: set[str]) -> None:
@@ -404,8 +416,21 @@ def parse_table_file(
             # a composite model; kept even when the source itself is unresolved
             if mode:
                 table_node.metadata["storage_mode"] = mode
+            body = "\n".join(m_parts)
             if partition_type == "m":
-                _attach_partition_source(table_node, "\n".join(m_parts), entry.path, warnings)
+                _attach_partition_source(table_node, body, entry.path, warnings)
+            elif partition_type == "calculated" and body.strip():
+                # a DAX calculated table: its references are resolved against
+                # the whole model by link_calculated_tables (issue #30)
+                table_node.metadata["partition_calculated"] = True
+                table_node.metadata["calculated_dax"] = body
+            elif partition_type == "query" and body.strip():
+                # legacy provider partition: the source body is native SQL —
+                # same lineage extraction as Value.NativeQuery (issue #30)
+                _attach_native_sql(table_node, [body], entry.path, warnings)
+            elif partition_type == "calculationgroup":
+                # a calculation group's partition has no data source by design
+                table_node.metadata["partition_static"] = True
             elif partition_type == "entity" and expression_source:
                 # DirectQuery-to-AS table: its source lives in a shared
                 # expression, resolved later by link_composite_models.
@@ -413,6 +438,13 @@ def parse_table_file(
                     "entity": entity_name or "",
                     "expression": expression_source,
                 }
+            else:
+                # any other partition flavor (policyRange, inferred, an entity
+                # with no expressionSource, an empty body…) is untraceable —
+                # never silently healthy (hard rule 4, issue #30)
+                _mark_partition_unresolved(
+                    table_node, f"partition type '{partition_type}'", entry.path, warnings
+                )
             pending_doc.clear()
             continue
 
@@ -589,6 +621,7 @@ def parse_tmdl(
                     model_node.source_file = entry.path
             warnings += parse_table_file(text, model_name, model_node.id, entry, graph)
         link_measures(graph, model_name)
+        link_calculated_tables(graph, model_name)
     return warnings
 
 

@@ -92,6 +92,51 @@
             "expression": "[Total Sales] + [Order Count]"
           }
         ]
+      },
+      {
+        "name": "Sales Summary",
+        "columns": [
+          {
+            "name": "customer_id",
+            "dataType": "int64"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "Sales Summary-partition",
+            "mode": "import",
+            "source": {
+              "type": "calculated",
+              "expression": [
+                "SUMMARIZE(",
+                "    fact_sales,",
+                "    fact_sales[customer_id],",
+                "    \"Customer Total\", [Total Sales]",
+                ")"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "legacy_orders",
+        "columns": [
+          {
+            "name": "order_id",
+            "dataType": "int64"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "legacy_orders-partition",
+            "mode": "import",
+            "source": {
+              "type": "query",
+              "query": "SELECT order_id FROM sales.dim_customer",
+              "dataSource": "SqlAzure gold"
+            }
+          }
+        ]
       }
     ],
     "relationships": [

@@ -101,10 +101,8 @@ def extract_refs(dax: str) -> tuple[set[str], set[str]]:
     return measures, tables
 
 
-def link_measures(graph: LineageGraph, model_name: str) -> list[ParseWarning]:
-    """Resolve each measure's DAX references within one semantic model."""
-    warnings: list[ParseWarning] = []
-    model_key = normalize_identifier(model_name)
+def _model_nodes(graph: LineageGraph, model_key: str) -> tuple[dict[str, Node], dict[str, Node]]:
+    """One model's (measures, tables), keyed by normalized name."""
     measures: dict[str, Node] = {}
     tables: dict[str, Node] = {}
     for node in graph.nodes.values():
@@ -114,39 +112,76 @@ def link_measures(graph: LineageGraph, model_name: str) -> list[ParseWarning]:
             measures[normalize_identifier(node.name)] = node
         elif node.node_type is NodeType.PBI_TABLE:
             tables[normalize_identifier(node.name)] = node
+    return measures, tables
 
+
+def _resolve_dax_refs(
+    graph: LineageGraph,
+    node: Node,
+    dax: str,
+    measures: dict[str, Node],
+    tables: dict[str, Node],
+) -> None:
+    """Wire one node's DAX references into ``references`` edges (heuristic —
+    the node gets the ``dax_refs_heuristic`` trust marker, and candidates that
+    match no known measure land in ``unmatched_dax_refs``)."""
+    node.metadata["dax_refs_heuristic"] = True
+    if not dax:
+        return
+    candidate_measures, candidate_tables = extract_refs(dax)
+    unmatched: list[str] = []
+    for candidate in sorted(candidate_measures, key=str.lower):
+        target = measures.get(normalize_identifier(candidate))
+        if target is not None and target.id != node.id:
+            graph.add_edge(
+                Edge(
+                    source_id=node.id,
+                    target_id=target.id,
+                    edge_type=EdgeType.REFERENCES,
+                    evidence=f"{node.source_file}: DAX [{candidate}]",
+                )
+            )
+        elif target is None:
+            unmatched.append(candidate)
+    for candidate in sorted(candidate_tables):
+        target = tables.get(candidate)
+        if target is not None and target.id != node.id:
+            graph.add_edge(
+                Edge(
+                    source_id=node.id,
+                    target_id=target.id,
+                    edge_type=EdgeType.REFERENCES,
+                    evidence=f"{node.source_file}: DAX {candidate}[...]",
+                )
+            )
+    if unmatched:
+        node.metadata["unmatched_dax_refs"] = sorted(unmatched)
+
+
+def link_measures(graph: LineageGraph, model_name: str) -> list[ParseWarning]:
+    """Resolve each measure's DAX references within one semantic model."""
+    warnings: list[ParseWarning] = []
+    model_key = normalize_identifier(model_name)
+    measures, tables = _model_nodes(graph, model_key)
     for key in sorted(measures):
         measure = measures[key]
-        dax = measure.metadata.get("dax", "")
-        measure.metadata["dax_refs_heuristic"] = True
-        if not dax:
-            continue
-        candidate_measures, candidate_tables = extract_refs(dax)
-        unmatched: list[str] = []
-        for candidate in sorted(candidate_measures, key=str.lower):
-            target = measures.get(normalize_identifier(candidate))
-            if target is not None and target.id != measure.id:
-                graph.add_edge(
-                    Edge(
-                        source_id=measure.id,
-                        target_id=target.id,
-                        edge_type=EdgeType.REFERENCES,
-                        evidence=f"{measure.source_file}: DAX [{candidate}]",
-                    )
-                )
-            elif target is None:
-                unmatched.append(candidate)
-        for candidate in sorted(candidate_tables):
-            target = tables.get(candidate)
-            if target is not None:
-                graph.add_edge(
-                    Edge(
-                        source_id=measure.id,
-                        target_id=target.id,
-                        edge_type=EdgeType.REFERENCES,
-                        evidence=f"{measure.source_file}: DAX {candidate}[...]",
-                    )
-                )
-        if unmatched:
-            measure.metadata["unmatched_dax_refs"] = sorted(unmatched)
+        _resolve_dax_refs(graph, measure, measure.metadata.get("dax", ""), measures, tables)
     return warnings
+
+
+def link_calculated_tables(graph: LineageGraph, model_name: str) -> None:
+    """Resolve each calculated table's DAX references within one semantic model.
+
+    A ``partition X = calculated`` table (TMDL) or ``source.type ==
+    "calculated"`` partition (BIM) derives from other tables/measures in the
+    same model; its expression goes through the same heuristic as measure DAX
+    (issue #30), producing ``references`` edges from the table to what it
+    derives from.
+    """
+    model_key = normalize_identifier(model_name)
+    measures, tables = _model_nodes(graph, model_key)
+    for key in sorted(tables):
+        table = tables[key]
+        if not table.metadata.get("partition_calculated"):
+            continue
+        _resolve_dax_refs(graph, table, table.metadata.get("calculated_dax", ""), measures, tables)

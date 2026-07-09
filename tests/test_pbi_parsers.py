@@ -342,6 +342,32 @@ def test_tmdl_partition_sources():
     assert any(w.category == "unresolved_partition_source" for w in warnings)
 
 
+def test_tmdl_calculated_partition_lineage():
+    # issue #30: a `partition X = calculated` table gets references edges to
+    # the tables/measures its DAX derives from, plus the trust markers — it
+    # must never render as a silent healthy table with no upstream.
+    graph, warnings = parse_all()
+    summary = graph.nodes["pbi_table:sales.sales_summary"]
+    assert summary.metadata["partition_calculated"] is True
+    assert summary.metadata["dax_refs_heuristic"] is True
+    keys = edge_keys(graph)
+    assert ("pbi_table:sales.sales_summary", "pbi_table:sales.fact_sales", "references") in keys
+    assert ("pbi_table:sales.sales_summary", "measure:sales.total sales", "references") in keys
+    assert "partition_source_unresolved" not in summary.metadata
+    assert not any(
+        w.category == "unresolved_partition_source" and "sales_summary" in w.message for w in warnings
+    )
+
+
+def test_tmdl_unknown_partition_type_flagged():
+    # issue #30: an unrecognized partition flavor (policyRange here) must be
+    # marked unresolved and warned — never silent (hard rule 4).
+    graph, warnings = parse_all()
+    weird = graph.nodes["pbi_table:sales.ext_weird"]
+    assert weird.metadata.get("partition_source_unresolved") is True
+    assert any(w.category == "unresolved_partition_source" and "ext_weird" in w.message for w in warnings)
+
+
 def test_measure_dependencies():
     graph, _ = parse_all()
     keys = edge_keys(graph)

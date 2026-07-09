@@ -198,7 +198,8 @@ tags:
 | `external_source: true` | Deliberately outside these repos. |
 | `columns_unresolved: true` | Column list couldn't be derived (e.g. `SELECT *`). |
 | `pbix_model_opaque: true` | `.pbix` model couldn't be extracted. |
-| `dax_refs_heuristic: true` | Present on **every** measure. Check `unmatched_dax_refs` for discriminating signal. |
+| `dax_refs_heuristic: true` | Present on **every** measure and calculated table. Check `unmatched_dax_refs` for discriminating signal. |
+| `partition_calculated: true` (pbi_table) | A DAX calculated table: upstream comes from heuristic `references` edges extracted from its expression (`calculated_dax`). |
 | `measure_table: true` (pbi_table) | A measure/calculation "home" table: hosts measures, has no visible data columns. |
 | `declared_model` (report) | The model a report's `definition.pbir` authoritatively binds it to; `declared_model_unresolved: true` when that model isn't in the repos. |
 

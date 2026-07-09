@@ -7,6 +7,7 @@ a miniature real model (tests/fixtures/repo_bim) per the repo's
 fixture-driven-test rule.
 """
 
+import json
 from pathlib import Path
 
 from coop_data_doc.config import Config, RepoConfig
@@ -139,6 +140,65 @@ def test_bim_relationships_merged_with_flags():
             "bidirectional": False,
         },
     ]
+
+
+def test_bim_calculated_partition_lineage():
+    # issue #30: a BIM "calculated" partition gets references edges to the
+    # tables/measures its DAX derives from, plus the trust markers — parity
+    # with the TMDL parser.
+    graph, warnings = parse_fixture()
+    assert warnings == []
+    summary = graph.nodes[f"pbi_table:{MODEL_KEY}.sales summary"]
+    assert summary.metadata["partition_calculated"] is True
+    assert summary.metadata["dax_refs_heuristic"] is True
+    keys = edge_keys(graph)
+    assert (summary.id, f"pbi_table:{MODEL_KEY}.fact_sales", "references") in keys
+    assert (summary.id, f"measure:{MODEL_KEY}.total sales", "references") in keys
+    assert "partition_source_unresolved" not in summary.metadata
+
+
+def test_bim_query_partition_native_sql():
+    # issue #30: a legacy "query" partition carries native SQL — same lineage
+    # extraction as Value.NativeQuery.
+    graph, _ = parse_fixture()
+    orders = graph.nodes[f"pbi_table:{MODEL_KEY}.legacy_orders"]
+    assert orders.metadata["native_query_tables"] == ["sales.dim_customer"]
+    assert orders.metadata["partition_source"] == {
+        "schema": "sales",
+        "object": "dim_customer",
+        "raw_kind": "native_query",
+    }
+
+
+def test_bim_unknown_partition_type_flagged(tmp_path: Path):
+    # issue #30: an unrecognized BIM partition source type must be marked
+    # unresolved and warned — never silent (hard rule 4).
+    path = tmp_path / "weird.bim"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "Weird",
+                "model": {
+                    "tables": [
+                        {
+                            "name": "mystery",
+                            "columns": [{"name": "id", "dataType": "int64"}],
+                            "partitions": [
+                                {"name": "mystery-p", "mode": "import", "source": {"type": "entity"}}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    graph = LineageGraph()
+    warnings = parse_bim([entry_for(path)], graph)
+    table = graph.nodes["pbi_table:weird.mystery"]
+    assert table.metadata.get("partition_source_unresolved") is True
+    assert [w.category for w in warnings] == ["unresolved_partition_source"]
+    assert "mystery" in warnings[0].message
 
 
 def test_bim_model_name_falls_back_to_file_stem(tmp_path: Path):

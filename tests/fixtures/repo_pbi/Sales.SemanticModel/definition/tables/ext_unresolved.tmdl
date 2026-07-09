@@ -13,3 +13,14 @@ table ext_unresolved
 				    Source = OData.Feed("https://example.com/odata/things")
 				in
 				    Source
+
+table ext_weird
+	lineageTag: cccccccc-2222-2222-2222-222222222222
+
+	column id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: id
+
+	partition ext_weird = policyRange
+		mode: import

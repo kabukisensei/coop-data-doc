@@ -1,0 +1,11 @@
+table sales_summary
+	lineageTag: bbbbbbbb-1111-1111-1111-111111111111
+
+	column customer_id
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: customer_id
+
+	partition sales_summary = calculated
+		mode: import
+		source = SUMMARIZE(fact_sales, fact_sales[customer_id], "Customer Total", [Total Sales])
