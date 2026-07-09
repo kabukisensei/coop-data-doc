@@ -53,7 +53,16 @@ from coop_data_doc.progress import Progress, should_enable
 from coop_data_doc.render.markdown import render_markdown, write_diagnostics
 from coop_data_doc.render.site import SiteBuildError, build_site, write_mkdocs_config
 
-STRICT_CATEGORIES = ("regex_fallback", "dynamic_sql")
+# Warning categories that fail `build --strict` and default `check` (tolerated by
+# `check --lenient`): risky parses plus the unresolved items the portal itself
+# lists — an untraceable partition source and a visual binding no context could
+# disambiguate (issue #32: the gate and the site must agree on "clean").
+STRICT_CATEGORIES = (
+    "regex_fallback",
+    "dynamic_sql",
+    "unresolved_partition_source",
+    "ambiguous_visual_binding",
+)
 DEFAULT_CONFIG = "coop-data-doc.yml"
 _log = logging.getLogger("coop_data_doc")
 
@@ -229,7 +238,7 @@ def _error_failures(warnings: list[ParseWarning]) -> list[str]:
 
 def _strict_failures(result: ResolutionResult, warnings: list[ParseWarning]) -> list[str]:
     failures = [f"unresolved reference: {key}" for key in result.unresolved]
-    # risky-parse warnings (regex_fallback/dynamic_sql) fail strict but are tolerated by
+    # risky/unresolved warnings (STRICT_CATEGORIES) fail strict but are tolerated by
     # --lenient; error-severity diagnostics fail BOTH (missing data is never acceptable).
     failures += [f"{w.category}: {w.file}" for w in warnings if w.category in STRICT_CATEGORIES]
     failures += _error_failures(warnings)
@@ -1254,7 +1263,8 @@ def upgrade(ctx: click.Context) -> None:
 @click.option(
     "--lenient",
     is_flag=True,
-    help="Tolerate risky-parse warnings (regex_fallback/dynamic_sql); still fail on "
+    help="Tolerate risky/unresolved warnings (regex_fallback/dynamic_sql/"
+    "unresolved_partition_source/ambiguous_visual_binding); still fail on "
     "unresolved references, error-severity diagnostics (corrupt/undecodable files), and "
     "stale docs.",
 )
@@ -1267,8 +1277,9 @@ def upgrade(ctx: click.Context) -> None:
 def check(ctx: click.Context, config_path: str | None, lenient: bool, no_parse_cache: bool) -> None:
     """CI gate: fail when committed docs are stale, references are unresolved,
     an error-severity diagnostic means data is missing (corrupt/undecodable file,
-    truncated proc), or (unless --lenient) risky-parse warnings exist
-    (regex_fallback / dynamic_sql). Exit 2 for pipeline problems, 1 for stale docs."""
+    truncated proc), or (unless --lenient) risky/unresolved warnings exist
+    (regex_fallback / dynamic_sql / unresolved_partition_source /
+    ambiguous_visual_binding). Exit 2 for pipeline problems, 1 for stale docs."""
     config = _load_config(config_path)
     graph, result, warnings = run_pipeline(config, interactive=False, no_parse_cache=no_parse_cache)
     if lenient:

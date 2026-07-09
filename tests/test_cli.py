@@ -76,6 +76,60 @@ def test_scan_strict_fails_on_fixture_warnings(tmp_path: Path):
     # fixtures deliberately contain dynamic SQL and an unresolved partition
     result = run(["scan", "--non-interactive", "--strict"], tmp_path)
     assert result.exit_code == 2
+    # issue #32: an untraceable partition source is an unresolved item the
+    # portal lists — it must reach the strict gate, not just the site
+    assert "unresolved_partition_source" in result.output
+
+
+def _two_model_ambiguous_workspace(tmp_path: Path) -> None:
+    """A workspace whose only problem is a fully ambiguous visual binding:
+    two models share the entity name and nothing disambiguates the report."""
+    pbi = tmp_path / "pbi-repo"
+    for model in ("Alpha", "Beta"):
+        tables = pbi / f"{model}.SemanticModel" / "definition" / "tables"
+        tables.mkdir(parents=True)
+        (tables / "date.tmdl").write_text(
+            "table date\n\tcolumn year\n\t\tdataType: int64\n", encoding="utf-8"
+        )
+    report = pbi / "LegacyDash"
+    report.mkdir()
+    (report / "report.json").write_text(
+        '{"sections": [{"name": "s1", "displayName": "Main", "visualContainers": [{'
+        '"config": "{\\"name\\":\\"v1\\",\\"singleVisual\\":{\\"visualType\\":\\"columnChart\\",'
+        '\\"projections\\":{\\"Y\\":[{\\"queryRef\\":\\"date.year\\"}]}}}"}]}]}',
+        encoding="utf-8",
+    )
+    (tmp_path / "coop-data-doc.yml").write_text(
+        """\
+project_name: Ambiguous Estate
+repos:
+  powerbi:
+    path: ./pbi-repo
+    include: ["**/*.tmdl", "**/report.json"]
+output:
+  dir: ./data-docs
+  site_dir: ./site
+""",
+        encoding="utf-8",
+    )
+
+
+def test_ambiguous_visual_binding_fails_strict_gate(tmp_path: Path):
+    # issue #32: a visual binding no context can disambiguate is pending on the
+    # report node and shown by the portal — strict/check must fail on it too,
+    # while --lenient keeps tolerating it as a known-and-accepted warning.
+    _two_model_ambiguous_workspace(tmp_path)
+    result = run(["build", "--non-interactive", "--strict", "--skip-html"], tmp_path)
+    assert result.exit_code == 2, result.output
+    assert "ambiguous_visual_binding" in result.output
+
+    # a non-strict build succeeds and writes docs; default check then fails on
+    # the same category, and --lenient tolerates it
+    assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
+    chk = run(["check"], tmp_path)
+    assert chk.exit_code == 2, chk.output
+    assert "ambiguous_visual_binding" in chk.output
+    assert run(["check", "--lenient"], tmp_path).exit_code == 0
 
 
 def test_build_skip_html(tmp_path: Path):

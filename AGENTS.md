@@ -54,7 +54,7 @@ All commands exit with these codes:
 |-----------|---------|
 | `0` | Success |
 | `1` | Stale docs / friendly error / config not found |
-| `2` | Unresolved references, risky parses, error-severity diagnostics (corrupt/undecodable files, truncated procs — data is missing), or invalid CLI args |
+| `2` | Unresolved references, risky/unresolved warnings (`regex_fallback`, `dynamic_sql`, `unresolved_partition_source`, `ambiguous_visual_binding`), error-severity diagnostics (corrupt/undecodable files, truncated procs — data is missing), or invalid CLI args |
 | `130` | Cancelled with Ctrl+C |
 
 ### Global flags (before subcommand)
