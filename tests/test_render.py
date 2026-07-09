@@ -23,6 +23,11 @@ def make_node(node_type, schema, name, **kwargs):
     )
 
 
+def _ref(target, prop, kind, role="shown", scope="visual"):
+    """A report field-ref (the role/kind/scope-aware summary the report page renders from)."""
+    return {"target": target, "entity": "", "property": prop, "kind": kind, "role": role, "scope": scope}
+
+
 def build_graph() -> LineageGraph:
     """silver -> proc -> gold -> view -> pbi_table -> model, + visual"""
     g = LineageGraph()
@@ -560,6 +565,70 @@ def test_report_page_multi_model_two_sections(tmp_path: Path):
     assert page.index("[Orders]") > sal
     assert page.index("[Margin]") > fin
     assert "[sales.Orders]" not in page and "[finance.Margin]" not in page  # unprefixed
+
+
+def test_measure_home_table_badge(tmp_path: Path):
+    # a table flagged measure_table carries a badge on its own page (issue #27)
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(
+        make_node(
+            NodeType.PBI_TABLE,
+            "sales",
+            "ad hoc measures",
+            display_name="Ad Hoc Measures",
+            metadata={"measure_table": True},
+        )
+    )
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "dim_customer", display_name="Dim Customer"))
+    render_markdown(g, tmp_path, "Test")
+    home = page_path(tmp_path, "pbi_table:sales.ad hoc measures").read_text(encoding="utf-8")
+    data = page_path(tmp_path, "pbi_table:sales.dim_customer").read_text(encoding="utf-8")
+    assert "**Measure home table**" in home
+    assert "Measure home table" not in data  # a normal data table is not badged
+
+
+def test_report_page_splits_data_and_measure_tables(tmp_path: Path):
+    # under a model heading, tables the report reached only via a measure binding
+    # (or structurally measure-only) list under "Measure home tables"; tables
+    # reached via a column (incl. those reached by BOTH) list under "Tables used".
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "dim_customer", display_name="Dim Customer"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "ad hoc measures", display_name="Ad Hoc Measures"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "fact_sales", display_name="Fact Sales"))
+    g.add_node(
+        make_node(
+            NodeType.REPORT,
+            "",
+            "dash",
+            display_name="Dash",
+            metadata={
+                "field_refs": [
+                    # data table: reached via a column
+                    _ref("pbi_table:sales.dim_customer", "customer_name", "column"),
+                    # measure home: reached ONLY via a measure binding
+                    _ref("pbi_table:sales.ad hoc measures", "KPI Total", "measure"),
+                    # reached by BOTH column and measure -> counts as a data table
+                    _ref("pbi_table:sales.fact_sales", "order_total", "column"),
+                    _ref("pbi_table:sales.fact_sales", "Total Sales", "measure"),
+                ]
+            },
+        )
+    )
+    g.add_edge(Edge(source_id="semantic_model:sales", target_id="report:dash", edge_type=EdgeType.FEEDS))
+    for tid in ("dim_customer", "ad hoc measures", "fact_sales"):
+        g.add_edge(
+            Edge(source_id="report:dash", target_id=f"pbi_table:sales.{tid}", edge_type=EdgeType.VISUALIZES)
+        )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "report:dash").read_text(encoding="utf-8")
+    data_block = page.split("**Tables used**", 1)[1].split("**Measure home tables**", 1)[0]
+    home_block = page.split("**Measure home tables**", 1)[1]
+    assert "[Dim Customer]" in data_block  # column-reached -> data
+    assert "[Fact Sales]" in data_block  # both column and measure -> data
+    assert "[Ad Hoc Measures]" in home_block  # measure-only -> measure home
+    assert "[Ad Hoc Measures]" not in data_block
 
 
 def test_report_page_filters_section(tmp_path: Path):

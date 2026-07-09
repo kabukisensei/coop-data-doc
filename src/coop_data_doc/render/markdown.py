@@ -437,18 +437,22 @@ def _dedup_filters(filters: list[tuple[Node, str, str]]) -> list[tuple[Node, str
 
 def _report_refs(
     graph: LineageGraph, node: Node
-) -> tuple[list[Node], dict[str, list[Node]], dict[str, list[Node]], list[tuple[Node, str, str]]]:
-    """``(models, tables_by_model, measures_by_model, filters)`` for a report — the
-    shared read that both :func:`_report_page` and the index Reports overview use.
+) -> tuple[list[Node], dict[str, list[Node]], dict[str, list[Node]], list[tuple[Node, str, str]], set[str]]:
+    """``(models, tables_by_model, measures_by_model, filters, measure_home_ids)``
+    for a report — the shared read that both :func:`_report_page` and the index
+    Reports overview use.
 
     ``models`` are the SEMANTIC_MODEL nodes the report ``feeds`` from. The
     ``*_by_model`` dicts hold the SHOWN (displayed) tables/measures grouped by
     model key (a child's ``schema_name`` IS its model key; a child whose model
     isn't among the feeding models falls into a ``""`` bucket — never dropped).
     ``filters`` is the distinct (target, property, scope) fields referenced ONLY
-    through a filter (issue #26).
+    through a filter (issue #26). ``measure_home_ids`` are the shown tables the
+    report reached ONLY through a measure binding, or that are structurally
+    measure-only — i.e. tables that appear just because a bound measure lives
+    there, not because their data is displayed (issue #27).
 
-    The role split comes from ``metadata["field_refs"]`` (built by the pbir
+    The role/kind split comes from ``metadata["field_refs"]`` (built by the pbir
     pipeline). A report without that summary (e.g. an inline test graph) has no
     filter data, so every visualized target is treated as shown.
     """
@@ -464,6 +468,7 @@ def _report_refs(
     tables: list[Node] = []
     measures: list[Node] = []
     filters: list[tuple[Node, str, str]] = []
+    shown_table_kinds: dict[str, set[str]] = {}  # table id -> reach kinds (issue #27)
     field_refs = node.metadata.get("field_refs")
     if field_refs is not None:
         for ref in field_refs:
@@ -476,6 +481,7 @@ def _report_refs(
                 measures.append(target)
             elif target.node_type is NodeType.PBI_TABLE:
                 tables.append(target)
+                shown_table_kinds.setdefault(target.id, set()).add(ref.get("kind", "unknown"))
     else:
         # no role summary: every visualized target is a shown field
         for edge in graph.edges:
@@ -488,6 +494,16 @@ def _report_refs(
                 elif tgt.node_type is NodeType.PBI_TABLE:
                     tables.append(tgt)
 
+    # A shown table is a "measure home table" for this report when it carries the
+    # structural marker, OR the report reached it ONLY through measure bindings
+    # (a table reached by any column/filter binding is a real data table).
+    measure_home_ids = {
+        table.id
+        for table in {t.id: t for t in tables}.values()
+        if table.metadata.get("measure_table")
+        or (table.id in shown_table_kinds and shown_table_kinds[table.id] <= {"measure"})
+    }
+
     def group(children: list[Node]) -> dict[str, list[Node]]:
         by_model: dict[str, list[Node]] = {}
         for child in _dedup_sorted(children):
@@ -495,7 +511,7 @@ def _report_refs(
             by_model.setdefault(key, []).append(child)
         return by_model
 
-    return models, group(tables), group(measures), _dedup_filters(filters)
+    return models, group(tables), group(measures), _dedup_filters(filters), measure_home_ids
 
 
 def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
@@ -505,7 +521,7 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     and which tables/measures from it?". Power BI report internals (pages,
     visuals) are folded away by ``collapse_visuals``.
     """
-    models, tables_by_model, measures_by_model, filters = _report_refs(graph, node)
+    models, tables_by_model, measures_by_model, filters, measure_home_ids = _report_refs(graph, node)
 
     def model_link(m: Node) -> str:
         return f"[{_link_text(m.display)}]({doc_relpath(m)})"
@@ -521,13 +537,22 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
             "",
         ]
 
+    def table_lines(tbls: list[Node], *, prefixed: bool) -> list[str]:
+        # split data tables (data the report shows/filters) from measure home
+        # tables (present only because a bound measure lives there) — issue #27
+        data = [t for t in tbls if t.id not in measure_home_ids]
+        home = [t for t in tbls if t.id in measure_home_ids]
+        return child_lines(data, "Tables used", prefixed=prefixed) + child_lines(
+            home, "Measure home tables", prefixed=prefixed
+        )
+
     parts = [_front_matter(graph, node), "", f"# {_text(node.qualified_display)}", ""]
 
     for model in models:
         tbls = tables_by_model.get(model.name, [])
         meas = measures_by_model.get(model.name, [])
         parts += [f"## {model_link(model)}", ""]
-        parts += child_lines(tbls, "Tables used", prefixed=False)
+        parts += table_lines(tbls, prefixed=False)
         parts += child_lines(meas, "Measures used", prefixed=False)
         if not tbls and not meas:
             parts += ["_No tables or measures statically resolvable from this model._", ""]
@@ -539,7 +564,7 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     other_measures = measures_by_model.get("", [])
     if other_tables or other_measures:
         parts += ["## Other referenced objects", ""]
-        parts += child_lines(other_tables, "Tables used", prefixed=True)
+        parts += table_lines(other_tables, prefixed=True)
         parts += child_lines(other_measures, "Measures used", prefixed=True)
 
     if not models and not other_tables and not other_measures and not filters:
@@ -669,6 +694,12 @@ def render_node_page(
             if node.node_type is NodeType.PBI_TABLE and (mode := node.metadata.get("storage_mode"))
             else []
         ),
+        # a dedicated measure/calculation "home" table (no data columns) — issue #27
+        *(
+            ["**Measure home table** — hosts measures, holds no data columns.", ""]
+            if node.node_type is NodeType.PBI_TABLE and node.metadata.get("measure_table")
+            else []
+        ),
         # defining code right under the description: SQL for tables/views/procs,
         # DAX for measures — the first thing a reader wants on the page.
         *([_source_section(node), ""] if node.source_code else []),
@@ -741,7 +772,7 @@ def _index_page(graph: LineageGraph, project_name: str) -> str:
         lines.append("| Report | Draws from | Tables | Measures |")
         lines.append("| --- | --- | --- | --- |")
         for report in reports:
-            models, tables_by_model, measures_by_model, _filters = _report_refs(graph, report)
+            models, tables_by_model, measures_by_model, _filters, _mh = _report_refs(graph, report)
             model_links = (
                 ", ".join(f"[{_link_text(m.display)}](semantic_model/{slug(m.id)}.md)" for m in models)
                 or "_none_"

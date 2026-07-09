@@ -76,6 +76,22 @@
             }
           }
         ]
+      },
+      {
+        "name": "Calculations",
+        "columns": [
+          {
+            "name": "RowNumber",
+            "dataType": "int64",
+            "isHidden": true
+          }
+        ],
+        "measures": [
+          {
+            "name": "KPI Total",
+            "expression": "[Total Sales] + [Order Count]"
+          }
+        ]
       }
     ],
     "relationships": [

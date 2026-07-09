@@ -407,6 +407,15 @@ def test_reports_carry_display_name():
     assert graph.nodes["report:legacything"].display_name == "LegacyThing"
 
 
+def test_tmdl_measure_home_table_marker():
+    # a table with measures and no visible data columns (only a hidden
+    # RowNumber) is tagged measure_table; real data tables are not (issue #27).
+    graph, _ = parse_all()
+    assert graph.nodes["pbi_table:sales.ad hoc measures"].metadata.get("measure_table") is True
+    assert "measure_table" not in graph.nodes["pbi_table:sales.fact_sales"].metadata  # has data columns
+    assert "measure_table" not in graph.nodes["pbi_table:sales.dim_customer"].metadata  # no measures
+
+
 def test_visual_filter_field_carries_filter_role():
     # a visual-level filterConfig field is tagged role="filter" and never
     # masquerades as a displayed (shown) field (issue #26).

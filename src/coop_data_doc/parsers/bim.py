@@ -104,6 +104,12 @@ def parse_bim(
                 expression = _expression_text(source.get("expression"))
                 if source.get("type") in (None, "m") and expression:
                     _attach_partition_source(table_node, expression, entry.path, warnings)
+            # a table hosting measures but with no visible data columns is a
+            # "measure home table" (issue #27) — parity with the TMDL parser.
+            has_measure = any(m.get("name") for m in table.get("measures") or [])
+            has_data_column = any(c.get("name") and not c.get("isHidden") for c in table.get("columns") or [])
+            if has_measure and not has_data_column:
+                table_node.metadata["measure_table"] = True
             for measure in table.get("measures") or []:
                 measure_name = measure.get("name") or ""
                 if not measure_name:

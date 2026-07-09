@@ -37,6 +37,7 @@ _FENCE_RE = re.compile(r"^`{3,}$")
 # (`column Name = <expression>`, analogous to a measure); plain columns leave it None.
 _COLUMN_RE = re.compile(r"^column\s+('[^']*'|\"[^\"]*\"|\S+)\s*(?:=\s*(.*))?$")
 _DATATYPE_RE = re.compile(r"^dataType\s*:\s*(\S+)")
+_IS_HIDDEN_RE = re.compile(r"^isHidden\s*:\s*(\S+)")
 _PARTITION_RE = re.compile(r"^partition\s+(.+?)\s*=\s*(\w+)\s*$")
 _SOURCE_RE = re.compile(r"^source\s*=\s*(.*)$")
 _MODE_RE = re.compile(r"^mode\s*:\s*(\w+)")
@@ -188,6 +189,19 @@ def _attach_partition_source(
     )
 
 
+def _mark_measure_table(table_node: Node | None, measure_count: int, hidden_cols: set[str]) -> None:
+    """Tag a table that hosts measures but has no visible data columns as a
+    "measure home table" (issue #27) — the ``Ad Hoc Measures`` convention: a
+    table that exists only to hold measures. A column-less table with measures,
+    or one whose only columns are hidden, qualifies."""
+    if (
+        table_node is not None
+        and measure_count >= 1
+        and not any(col.name not in hidden_cols for col in table_node.columns)
+    ):
+        table_node.metadata["measure_table"] = True
+
+
 def parse_table_file(
     text: str, model_name: str, model_id: str, entry: FileEntry, graph: LineageGraph
 ) -> list[ParseWarning]:
@@ -200,6 +214,8 @@ def parse_table_file(
     table_node: Node | None = None
     current_column: Column | None = None
     pending_doc: list[str] = []  # accumulates `///` doc-comment lines
+    measure_count = 0  # measures under the current table (issue #27)
+    hidden_cols: set[str] = set()  # names of hidden columns under the current table
 
     def take_doc() -> str:
         """Cleaned description from the doc-comment lines above an object,
@@ -225,6 +241,11 @@ def parse_table_file(
         if indent == 0:
             table_match = _TABLE_RE.match(stripped)
             if table_match:
+                # finalize the measure-table marker for the PREVIOUS table before
+                # switching (files are usually one table, but be robust)
+                _mark_measure_table(table_node, measure_count, hidden_cols)
+                measure_count = 0
+                hidden_cols = set()
                 name = _unquote(table_match.group(1))
                 table_desc = take_doc()
                 table_node = graph.add_node(
@@ -283,6 +304,7 @@ def parse_table_file(
             current_column = None
             measure_name = _unquote(measure_match.group(1))
             measure_desc = take_doc()
+            measure_count += 1  # this table hosts a measure (issue #27)
             i += 1
             # Consume the (possibly multi-line, possibly fenced) DAX body. The ``` fence
             # is a delimiter, never part of the DAX (capturing it splits the rendered code
@@ -331,6 +353,13 @@ def parse_table_file(
         datatype_match = _DATATYPE_RE.match(stripped)
         if datatype_match and current_column is not None:
             current_column.data_type = datatype_match.group(1)
+            i += 1
+            continue
+
+        hidden_match = _IS_HIDDEN_RE.match(stripped)
+        if hidden_match and current_column is not None:
+            if hidden_match.group(1).strip().lower() == "true":
+                hidden_cols.add(current_column.name)  # a hidden data column (issue #27)
             i += 1
             continue
 
@@ -395,6 +424,7 @@ def parse_table_file(
         # the adjacency between a `///` block and the object it documents
         pending_doc.clear()
         i += 1
+    _mark_measure_table(table_node, measure_count, hidden_cols)  # finalize the last table
     return warnings
 
 

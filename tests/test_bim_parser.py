@@ -111,6 +111,15 @@ def test_bim_measures():
     assert (total.id, f"pbi_table:{MODEL_KEY}.fact_sales", "references") in keys
 
 
+def test_bim_measure_home_table_marker():
+    # a BIM table with measures and only a hidden column is a measure home table
+    # (parity with the TMDL parser) — issue #27.
+    graph, _ = parse_fixture()
+    assert graph.nodes[f"pbi_table:{MODEL_KEY}.calculations"].metadata.get("measure_table") is True
+    assert "measure_table" not in graph.nodes[f"pbi_table:{MODEL_KEY}.fact_sales"].metadata
+    assert "measure_table" not in graph.nodes[f"pbi_table:{MODEL_KEY}.dim_customer"].metadata
+
+
 def test_bim_relationships_merged_with_flags():
     graph, _ = parse_fixture()
     relationships = graph.nodes[f"semantic_model:{MODEL_KEY}"].metadata["relationships"]
