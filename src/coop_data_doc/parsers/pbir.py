@@ -73,6 +73,9 @@ def _ensure_report(graph: LineageGraph, report_name: str, source_file: str) -> N
             id=Node.make_id(NodeType.REPORT, "", report_name),
             node_type=NodeType.REPORT,
             name=normalize_identifier(report_name),
+            # keep the original-case name for rendering (titles/link labels);
+            # id/name stay normalized for matching (issue #20).
+            display_name=report_name,
             source_file=source_file,
         )
     )
@@ -277,8 +280,12 @@ def parse_legacy_reports(
         except (OSError, json.JSONDecodeError) as exc:
             warnings.append(ParseWarning(file=entry.path, message=str(exc), category="report_json_parse"))
             continue
-        parent = PurePosixPath(entry.path).parent.name or PurePosixPath(entry.path).stem
-        warnings += parse_layout_json(data, parent, entry.path, graph)
+        # report_root strips a `.Report` folder suffix (and handles the
+        # definition/ fallback), so a legacy `<Name>.Report/report.json` yields
+        # `report:<name>` — the SAME id scheme as PBIR-parsed reports, instead of
+        # the old literal-suffixed `report:<name>.report` (issue #20).
+        _, report_name = report_root(entry.path)
+        warnings += parse_layout_json(data, report_name, entry.path, graph)
     return warnings
 
 

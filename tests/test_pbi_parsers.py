@@ -371,6 +371,30 @@ def test_legacy_report_structure():
     assert (visual, "measure:sales.customer count", "visualizes") in keys
 
 
+def test_legacy_report_strips_dot_report_suffix_and_sets_display_name():
+    # a legacy `<Name>.Report/report.json` gets `report:<name>` (no `.report`
+    # suffix) with the original-case display_name, matching the PBIR scheme (#20).
+    graph, _ = parse_all()
+    keys = edge_keys(graph)
+    assert "report:revenue report" in graph.nodes  # suffix stripped
+    assert "report:revenue report.report" not in graph.nodes  # not the old literal-suffix id
+    report = graph.nodes["report:revenue report"]
+    assert report.display_name == "Revenue Report"  # original case preserved for rendering
+    assert (report.id, "pbi_table:sales.dim_customer", "visualizes") in keys or (
+        "visual:revenue report.rv1",
+        "pbi_table:sales.dim_customer",
+        "visualizes",
+    ) in keys
+
+
+def test_reports_carry_display_name():
+    # both PBIR- and legacy-parsed reports keep an original-case display_name so
+    # titles/link labels render cased, not lowercased (issue #20).
+    graph, _ = parse_all()
+    assert graph.nodes["report:sales"].display_name == "Sales"
+    assert graph.nodes["report:legacything"].display_name == "LegacyThing"
+
+
 def test_pbir_definition_declares_model():
     # definition.pbir (byPath: ../Sales.SemanticModel) authoritatively binds the
     # report to its model: report node carries declared_model and a direct

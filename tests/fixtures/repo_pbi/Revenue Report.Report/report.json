@@ -1,0 +1,13 @@
+{
+  "sections": [
+    {
+      "name": "ReportSection1",
+      "displayName": "Revenue",
+      "visualContainers": [
+        {
+          "config": "{\"name\":\"rv1\",\"singleVisual\":{\"visualType\":\"card\",\"projections\":{\"Values\":[{\"queryRef\":\"dim_customer.Customer Count\"}]}}}"
+        }
+      ]
+    }
+  ]
+}
