@@ -7,6 +7,8 @@
 
 > **Install:** `pipx install coop-data-doc` — see [Install](#install) for the one-time pipx setup.
 
+> **Part of the Cooptimize coop suite** — alongside [coop-sql-review](https://github.com/kabukisensei/coop-sql-review) and [coop-dax-review](https://github.com/kabukisensei/coop-dax-review). If your team uses [coop-agent](https://github.com/kabukisensei/coop-agent), `coop install` installs all three tools at once and `coop update` keeps them current.
+
 **Automatic documentation for your data estate.** Point this tool at two git repos — your
 SQL repo (stored procedures, tables, views) and your Power BI repo (semantic models and
 reports) — and it maps how data flows through everything:

@@ -1194,7 +1194,18 @@ def update(
     no_parse_cache: bool,
     jobs: int | None,
 ) -> None:
-    """Re-scan the repos and refresh all documentation (same as build)."""
+    """Alias of build — re-scan the repos and refresh all documentation.
+
+    Prefer `build` in scripts/CI. To upgrade the TOOL itself, run
+    `coop-data-doc upgrade` (in the sibling review tools `update` means a
+    self-update check, so a notice keeps the verbs unambiguous here).
+    """
+    if not ctx.obj["quiet"]:
+        print(
+            "note: 'update' rebuilds the docs (alias of build) — to upgrade the tool "
+            "itself, run: coop-data-doc upgrade",
+            file=sys.stderr,
+        )
     _run_build(ctx, config_path, non_interactive, strict, skip_html, serve, no_parse_cache, jobs)
 
 

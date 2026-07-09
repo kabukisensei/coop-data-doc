@@ -231,6 +231,19 @@ def test_update_is_build_alias(tmp_path: Path):
     assert result.exit_code == 0
     assert (tmp_path / "data-docs" / "index.md").is_file()
     assert (tmp_path / "data-docs" / "manifest.json").is_file()
+    # the verb-disambiguation notice (update means self-update in the sibling
+    # review tools) prints on every non-quiet update run
+    assert "alias of build" in result.output
+
+
+def test_update_notice_suppressed_by_quiet_and_absent_from_build(tmp_path: Path):
+    setup_workspace(tmp_path)
+    quiet = run(["-q", "update", "--non-interactive", "--skip-html"], tmp_path)
+    assert quiet.exit_code == 0
+    assert "alias of build" not in quiet.output
+    build = run(["build", "--non-interactive", "--skip-html"], tmp_path)
+    assert build.exit_code == 0
+    assert "alias of build" not in build.output
 
 
 def test_interactive_menu_no_config_offers_init(tmp_path: Path, monkeypatch):

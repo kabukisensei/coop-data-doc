@@ -77,7 +77,7 @@ All commands exit with these codes:
 | `coop-data-doc init [PATH]` | Scaffold a starter config | `--force` |
 | `coop-data-doc setup [PATH]` | Interactive wizard (human) | — |
 | `coop-data-doc build` | Full pipeline + render | `--non-interactive`, `--strict`, `--skip-html`, `--no-parse-cache`, `--jobs N`, `--config` |
-| `coop-data-doc update` | Alias for `build` | Same as `build` |
+| `coop-data-doc update` | Alias for `build` — prefer `build` in scripts/CI (prints a notice: in the sibling review tools `update` means self-update; the self-update command here is `upgrade`) | Same as `build` |
 | `coop-data-doc scan` | Crawl + parse + link only; writes `graph.json` | `--non-interactive`, `--strict`, `--no-parse-cache`, `--jobs N`, `--config` |
 | `coop-data-doc check` | CI gate — exits 1 if stale, 2 if problems | `--lenient`, `--no-parse-cache`, `--config` |
 | `coop-data-doc folders` | List each repo's top-level folders + documented state (JSON) | `--config` |
