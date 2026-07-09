@@ -172,7 +172,12 @@ def crawl(config: Config) -> tuple[FileInventory, list[ParseWarning]]:
                             )
                         )
                         continue
-                    if not _matches(rel, repo.include) or _matches(rel, repo.exclude):
+                    # definition.pbir is pure report→model metadata (never a
+                    # documented object), and configs written before it was in
+                    # DEFAULT_PBI_INCLUDE would silently never crawl it — so it
+                    # is always included, subject only to excludes.
+                    always = name == "definition.pbir"
+                    if (not always and not _matches(rel, repo.include)) or _matches(rel, repo.exclude):
                         continue
                     kind = _classify(rel)
                     if kind is None:

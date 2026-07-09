@@ -55,6 +55,30 @@ def test_exclude_glob_wins():
     assert not any("archive" in entry.path for entry in inventory.entries)
 
 
+def test_definition_pbir_crawled_even_when_includes_omit_it():
+    """Configs written before definition.pbir was in DEFAULT_PBI_INCLUDE never
+    name it in their include globs — the report→model declaration must still be
+    crawled (it's pure metadata), healing stale configs without user action."""
+    config = fixture_config()
+    config.repos["powerbi"].include = [
+        "**/*.tmdl",
+        "**/*.bim",
+        "**/report.json",
+        "**/visual.json",
+        "**/page.json",
+    ]
+    inventory, _ = crawl(config)
+    kinds = {entry.path: entry.kind for entry in inventory.entries}
+    assert kinds["Sales.Report/definition.pbir"] == FileKind.PBIR_DEFINITION
+
+
+def test_definition_pbir_still_respects_excludes():
+    config = fixture_config()
+    config.repos["powerbi"].exclude = ["**/Sales.Report/**"]
+    inventory, _ = crawl(config)
+    assert not any(entry.path == "Sales.Report/definition.pbir" for entry in inventory.entries)
+
+
 def test_inventory_sorted_and_posix():
     inventory, _ = crawl(fixture_config())
     keys = [(entry.repo_key, entry.path) for entry in inventory.entries]
