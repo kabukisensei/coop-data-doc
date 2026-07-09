@@ -174,15 +174,18 @@ def _discover_semantic_models(pbi_abs: Path) -> list[str]:
 
 def _semantic_model_includes(model_folders: list[str]) -> list[str]:
     """Include globs scoped to the chosen ``.SemanticModel`` folders, plus all
-    reports (which nest under whichever model they draw from). ``.pbix`` /
-    ``.pbip`` / loose files are deliberately left out. fnmatch's ``*`` crosses
-    ``/``, so ``**/<name>.SemanticModel/**/*.tmdl`` matches however deep the
-    folder sits."""
+    reports (which nest under whichever model they draw from) AND ``.pbix``
+    files — the latter matching the shipped ``DEFAULT_PBI_INCLUDE`` so a
+    wizard-scoped config documents the same pbix-only reports a default ``init``
+    config would (the pbix parser is best-effort/warning-driven, so an
+    unreadable one degrades to a diagnostic, not noise). Only ``.pbip`` and
+    other loose files are left out. fnmatch's ``*`` crosses ``/``, so
+    ``**/<name>.SemanticModel/**/*.tmdl`` matches however deep the folder sits."""
     globs: list[str] = []
     for folder in model_folders:
         globs.append(f"**/{folder}/**/*.tmdl")
         globs.append(f"**/{folder}/**/*.bim")
-    globs += ["**/report.json", "**/visual.json", "**/page.json"]
+    globs += ["**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
     return globs
 
 
@@ -207,8 +210,8 @@ def _ask_semantic_models(pbi_abs: Path, existing_includes: list[str] | None) -> 
         return None
     print(
         f"\nFound {len(found)} semantic model folder(s) in the Power BI repo. Pick which to\n"
-        "document — only the selected *.SemanticModel folders are crawled (reports are\n"
-        "still included; .pbix / .pbip and other loose files are left out).",
+        "document — only the selected *.SemanticModel folders are crawled (reports and\n"
+        ".pbix files are still included; .pbip / other loose files are left out).",
         file=sys.stderr,
     )
     prev = _previously_selected_models(existing_includes)

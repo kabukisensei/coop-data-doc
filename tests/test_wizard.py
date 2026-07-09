@@ -181,7 +181,98 @@ def test_wizard_scopes_to_selected_semantic_models(tmp_path: Path, monkeypatch):
     assert "**/Sales.SemanticModel/**/*.tmdl" in inc
     assert not any("Finance.SemanticModel" in g for g in inc)  # the deselected model is gone
     assert "**/report.json" in inc and "**/visual.json" in inc  # reports still included
-    assert not any(".pbix" in g for g in inc)  # .pbix / loose files excluded
+    assert "**/*.pbix" in inc  # .pbix reports still documented, matching DEFAULT_PBI_INCLUDE (#28)
+
+
+def test_wizard_scoped_config_documents_pbix_only_report(tmp_path: Path, monkeypatch):
+    # a report that exists ONLY as a .pbix must still be documented by a
+    # wizard-scoped config, matching a default init config (issue #28) — the
+    # wizard's own prompt promises "reports are still included".
+    from test_pbi_parsers import make_pbix
+
+    from coop_data_doc.cli import run_pipeline
+
+    (tmp_path / "sql-repo").mkdir()
+    pbi = tmp_path / "pbi-repo"
+    (pbi / "Sales.SemanticModel" / "definition").mkdir(parents=True)
+    (pbi / "Sales.SemanticModel" / "definition" / "model.tmdl").write_text(
+        "model Sales\n\tculture: en-US\n", encoding="utf-8"
+    )
+    make_pbix(pbi / "LoneReport.pbix")  # the only home of this report
+    answers = {
+        "Project name": "Pbix",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "Semantic models to include": ["Sales.SemanticModel"],
+    }
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
+    assert config is not None
+    assert "**/*.pbix" in config.repos["powerbi"].include  # wizard scoped the pbix in
+    graph, _, _ = run_pipeline(config, interactive=False)
+    assert "report:lonereport" in graph.nodes  # the pbix-only report got documented
+
+
+def test_wizard_rerun_preserves_pbix_glob_and_prechecks_models(tmp_path: Path, monkeypatch):
+    # re-running setup over a wizard-scoped config keeps the **/*.pbix glob and
+    # pre-checks exactly the .SemanticModel folders the prior include scoped to
+    # (the .pbix glob must not confuse _previously_selected_models) — issue #28.
+    (tmp_path / "sql-repo").mkdir()
+    pbi = tmp_path / "pbi-repo"
+    (pbi / "Sales.SemanticModel" / "definition").mkdir(parents=True)
+    (pbi / "Finance.SemanticModel" / "definition").mkdir(parents=True)
+    config_path = tmp_path / "coop-data-doc.yml"
+    config_path.write_text(
+        render_config_yaml(
+            project_name="Estate",
+            sql_path="./sql-repo",
+            pbi_path="./pbi-repo",
+            mappings=[],
+            pbi_include=[
+                "**/Sales.SemanticModel/**/*.tmdl",
+                "**/Sales.SemanticModel/**/*.bim",
+                "**/report.json",
+                "**/visual.json",
+                "**/page.json",
+                "**/*.pbix",
+            ],
+            output_dir="./docs",
+            site_dir="./site",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    captured: dict = {}
+
+    def router(kind, message, kwargs):
+        if kind == "checkbox" and "Semantic models to include" in message:
+            captured["model_choices"] = kwargs["choices"]
+            return [c.value for c in kwargs["choices"] if c.checked]  # honor prefill
+        if "Project name" in message:
+            return "Estate"
+        if "SQL repo path" in message:
+            return "./sql-repo"
+        if "Power BI repo path" in message:
+            return "./pbi-repo"
+        if "Markdown output" in message:
+            return "./docs"
+        if "HTML site" in message:
+            return "./site"
+        if kind == "checkbox":  # any folder-skip checkbox: keep everything
+            return [c.value for c in kwargs.get("choices", [])]
+        if kind == "confirm":
+            return False
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    config = wizard.run_setup(config_path)
+    assert config is not None
+    assert "**/*.pbix" in config.repos["powerbi"].include  # glob round-tripped unchanged
+    checked = {c.value: c.checked for c in captured["model_choices"]}
+    assert checked["Sales.SemanticModel"] is True  # scoped in the prior include -> pre-checked
+    assert checked["Finance.SemanticModel"] is False  # not in prior include -> unchecked
 
 
 def test_wizard_autosuggests_schema_mapping_from_dry_run(tmp_path: Path, monkeypatch):
