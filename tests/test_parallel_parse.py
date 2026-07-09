@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import pickle
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -62,6 +65,86 @@ def test_worker_is_module_level_and_spawn_safe():
     # It takes exactly one positional arg (the (entry_dump, text, dialect) tuple).
     params = list(inspect.signature(parse_worker_both_passes).parameters.values())
     assert len(params) == 1
+
+
+def test_init_worker_logging_is_module_level_and_spawn_safe():
+    """The pool's logging initializer (issue #23) MUST be a top-level function
+    for the same Windows-spawn reason as the worker itself — no closures. A
+    qualified name without '<locals>' and a pickle round-trip prove it can cross
+    a process boundary as a ProcessPoolExecutor ``initializer``."""
+    assert parallel._init_worker_logging.__module__ == "coop_data_doc.parsers.parallel"
+    assert "<locals>" not in parallel._init_worker_logging.__qualname__
+    assert parallel._init_worker_logging.__qualname__ == "_init_worker_logging"
+    restored = pickle.loads(pickle.dumps(parallel._init_worker_logging))
+    assert restored is parallel._init_worker_logging
+    # it takes exactly one positional arg (the sqlglot level int)
+    params = list(inspect.signature(parallel._init_worker_logging).parameters.values())
+    assert len(params) == 1
+
+
+_SQLGLOT_FALLBACK = "Falling back to parsing as a 'Command'"
+
+
+def _repo_with_unsupported_syntax(tmp_path: Path) -> Path:
+    """A workspace whose SQL repo has >= _MIN_FILES_FOR_POOL files (so the pool
+    activates) and one file with syntax sqlglot can't parse — the WARNING those
+    worker-side fallbacks emit is exactly the stderr flood issue #23 fixes."""
+    repo = tmp_path / "sql"
+    repo.mkdir()
+    # CREATE SCHEMA ... AUTHORIZATION is a reliable sqlglot 'Command' fallback.
+    (repo / "schema.sql").write_text("CREATE SCHEMA [rpt] AUTHORIZATION [dbo];\n", encoding="utf-8")
+    for i in range(4):
+        (repo / f"t{i}.sql").write_text(f"CREATE TABLE dbo.t{i} (a INT);\n", encoding="utf-8")
+    (tmp_path / "coop-data-doc.yml").write_text(
+        "project_name: Noise\nrepos:\n  sql:\n    path: ./sql\n    include: ['**/*.sql']\n"
+        "output:\n  dir: ./data-docs\n  site_dir: ./site\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def _build_subprocess(cwd: Path, extra: list[str]) -> subprocess.CompletedProcess:
+    """Run a real ``python -m coop_data_doc`` build so worker-process stderr
+    (which CliRunner's in-process capture never sees) is captured for real."""
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "coop_data_doc",
+            *extra,
+            "build",
+            "--non-interactive",
+            "--skip-html",
+            "--no-parse-cache",
+            "--jobs",
+            "2",
+        ],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "COOP_DATA_DOC_JOBS": "2"},
+    )
+
+
+def test_no_sqlglot_fallback_lines_on_stderr_under_pool(tmp_path: Path):
+    """A parallel build over unsupported-syntax SQL emits NO sqlglot fallback
+    lines on stderr — the workers inherit the parent's ERROR level via the pool
+    initializer (issue #23). The fallback is still surfaced as a regex_fallback
+    diagnostic, so no lineage is lost."""
+    ws = _repo_with_unsupported_syntax(tmp_path)
+    result = _build_subprocess(ws, [])
+    assert result.returncode == 0, result.stderr
+    assert _SQLGLOT_FALLBACK not in result.stderr, f"sqlglot flooded stderr:\n{result.stderr}"
+
+
+def test_verbose_still_surfaces_sqlglot_fallback(tmp_path: Path):
+    """--verbose (which raises sqlglot to DEBUG in the parent) must still reach
+    the workers, so the fallback notes reappear on stderr — the initializer
+    mirrors the parent's effective level, it doesn't hard-silence."""
+    ws = _repo_with_unsupported_syntax(tmp_path)
+    result = _build_subprocess(ws, ["-v"])
+    assert result.returncode == 0, result.stderr
+    assert _SQLGLOT_FALLBACK in result.stderr
 
 
 def test_worker_returns_cache_entry_shaped_dumps():

@@ -58,6 +58,21 @@ _MIN_FILES_FOR_POOL = 4
 _MAX_WORKERS = 8
 
 
+def _init_worker_logging(sqlglot_level: int) -> None:
+    """ProcessPoolExecutor initializer: silence (or, under --verbose, surface)
+    sqlglot in each spawned worker.
+
+    Worker processes start with fresh, unconfigured logging — the parent's
+    ``logging.getLogger("sqlglot").setLevel(...)`` (cli.py / wizard.py) does NOT
+    propagate to children, so every unsupported-syntax fallback would print a
+    raw WARNING to stderr from inside a worker (issue #23). The parent's
+    effective sqlglot level is passed in via ``initargs`` so a plain build stays
+    quiet (ERROR) and ``--verbose`` / ``--log-file`` (which raise sqlglot to
+    DEBUG) still surface the notes. Must stay a module-level function (no
+    closure/lambda) so it pickles for the Windows ``spawn`` start method."""
+    logging.getLogger("sqlglot").setLevel(sqlglot_level)
+
+
 def default_jobs() -> int:
     """The default SQL-parse worker count when ``--jobs`` is omitted.
 
@@ -276,8 +291,16 @@ def _run_pool(
 
     workers = min(jobs, _MAX_WORKERS, len(misses))
     payloads = [(entry.model_dump(), texts[entry.path], dialect) for entry in misses]
+    # Capture the parent's effective sqlglot level HERE (in the parent process)
+    # so the workers inherit it — a fresh worker's logging is unconfigured and
+    # would otherwise flood stderr with sqlglot fallback WARNINGs (issue #23).
+    sqlglot_level = logging.getLogger("sqlglot").getEffectiveLevel()
     try:
-        executor = ProcessPoolExecutor(max_workers=workers)
+        executor = ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_worker_logging,
+            initargs=(sqlglot_level,),
+        )
     except Exception as exc:  # noqa: BLE001 — any bootstrap failure => serial
         _log.debug("parallel SQL parse: pool bootstrap failed, falling back to sequential: %s", exc)
         return None
