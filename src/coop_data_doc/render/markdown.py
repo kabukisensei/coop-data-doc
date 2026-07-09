@@ -422,15 +422,27 @@ def _unused_measures_section(graph: LineageGraph, node: Node, used: set[str]) ->
     return "\n".join(lines)
 
 
-def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
-    """Deliberately minimal report page: the model(s) it draws from and the
-    measures / tables it references — nothing else. Power BI report internals
-    (pages, visuals) are folded away by ``collapse_visuals`` because that detail
-    gets messy fast and adds little lineage value.
+def _dedup_sorted(nodes: list[Node]) -> list[Node]:
+    """Distinct nodes (by id), sorted by display name then id (stable/deterministic)."""
+    return sorted({n.id: n for n in nodes}.values(), key=lambda n: (n.display.lower(), n.id))
+
+
+def _report_refs(
+    graph: LineageGraph, node: Node
+) -> tuple[list[Node], dict[str, list[Node]], dict[str, list[Node]]]:
+    """``(models, tables_by_model, measures_by_model)`` for a report node —
+    the shared read that both :func:`_report_page` and the index Reports overview
+    use, so the page and the overview can never disagree.
+
+    ``models`` are the SEMANTIC_MODEL nodes the report ``feeds`` from (dedup+sorted).
+    The ``*_by_model`` dicts key each child by the model it belongs to (a PBI
+    table/measure's ``schema_name`` IS its model key); a child whose model isn't
+    among the report's feeding models is grouped under ``""`` (a fallback bucket —
+    shouldn't happen, but data is never dropped).
     """
     models: list[Node] = []
-    measures: list[Node] = []
     tables: list[Node] = []
+    measures: list[Node] = []
     for edge in graph.edges:
         if edge.edge_type is EdgeType.FEEDS and edge.target_id == node.id:
             src = graph.nodes.get(edge.source_id)
@@ -444,25 +456,75 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
                 measures.append(tgt)
             elif tgt.node_type is NodeType.PBI_TABLE:
                 tables.append(tgt)
+    models = _dedup_sorted(models)
+    model_keys = {m.name for m in models}
 
-    def link(n: Node) -> str:
-        return f"[{_link_text(n.qualified_display)}]({doc_relpath(n)})"
+    def group(children: list[Node]) -> dict[str, list[Node]]:
+        by_model: dict[str, list[Node]] = {}
+        for child in _dedup_sorted(children):
+            key = child.schema_name if child.schema_name in model_keys else ""
+            by_model.setdefault(key, []).append(child)
+        return by_model
 
-    def dedup_sorted(ns: list[Node]) -> list[Node]:
-        return sorted({n.id: n for n in ns}.values(), key=lambda n: n.qualified_display.lower())
+    return models, group(tables), group(measures)
+
+
+def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
+    """Report page grouped by source model: one ``##`` section per model the
+    report draws from, its referenced tables and measures listed beneath with
+    unprefixed names — the shape that answers "which model does this report use,
+    and which tables/measures from it?". Power BI report internals (pages,
+    visuals) are folded away by ``collapse_visuals``.
+    """
+    models, tables_by_model, measures_by_model = _report_refs(graph, node)
+
+    def model_link(m: Node) -> str:
+        return f"[{_link_text(m.display)}]({doc_relpath(m)})"
+
+    def child_lines(children: list[Node], heading: str, *, prefixed: bool) -> list[str]:
+        if not children:
+            return []
+        label = (lambda n: n.qualified_display) if prefixed else (lambda n: n.display)
+        return [
+            f"**{heading}**",
+            "",
+            *[f"- [{_link_text(label(c))}]({doc_relpath(c)})" for c in children],
+            "",
+        ]
 
     parts = [_front_matter(graph, node), "", f"# {_text(node.qualified_display)}", ""]
-    if models:
-        parts += ["_Draws from: " + ", ".join(link(m) for m in dedup_sorted(models)) + "_", ""]
-    parts += ["## Measures referenced", ""]
-    if measures:
-        parts += [f"- {link(m)}" for m in dedup_sorted(measures)]
-    else:
-        parts.append("_No measures statically resolvable from this report._")
-    if tables:
-        parts += ["", "## Tables referenced", ""]
-        parts += [f"- {link(t)}" for t in dedup_sorted(tables)]
-    parts += ["", "## Business Intent", "", INTENT_BEGIN, _existing_intent(out_path), INTENT_END, ""]
+
+    for model in models:
+        tbls = tables_by_model.get(model.name, [])
+        meas = measures_by_model.get(model.name, [])
+        parts += [f"## {model_link(model)}", ""]
+        parts += child_lines(tbls, "Tables used", prefixed=False)
+        parts += child_lines(meas, "Measures used", prefixed=False)
+        if not tbls and not meas:
+            parts += ["_No tables or measures statically resolvable from this model._", ""]
+
+    # Fallback: children whose model isn't among the report's feeding models —
+    # keep their schema prefix (there's no model heading to establish it) and
+    # never drop them (hard rule 4).
+    other_tables = tables_by_model.get("", [])
+    other_measures = measures_by_model.get("", [])
+    if other_tables or other_measures:
+        parts += ["## Other referenced objects", ""]
+        parts += child_lines(other_tables, "Tables used", prefixed=True)
+        parts += child_lines(other_measures, "Measures used", prefixed=True)
+
+    if not models and not other_tables and not other_measures:
+        parts += ["_No model, tables, or measures statically resolvable from this report._", ""]
+
+    # Surface any bindings that stayed ambiguous (never silently dropped, hard rule 4).
+    unresolved = node.metadata.get("unresolved_bindings")
+    if unresolved:
+        parts += ["## Unresolved bindings", ""]
+        parts += ["_These fields couldn't be matched to a model — verify manually:_", ""]
+        parts += [f"- `{_cell(b.get('entity', ''))}.{_cell(b.get('property', ''))}`" for b in unresolved]
+        parts += [""]
+
+    parts += ["## Business Intent", "", INTENT_BEGIN, _existing_intent(out_path), INTENT_END, ""]
     return "\n".join(parts)
 
 
@@ -625,6 +687,29 @@ def _index_page(graph: LineageGraph, project_name: str) -> str:
     for node_type in NodeType:
         if node_type in counts:
             lines.append(f"| {_TYPE_TITLES[node_type]} | {counts[node_type]} |")
+    # Reports overview: which reports use which model(s), answerable at a glance
+    # without opening every report page. Links are root-relative (this is
+    # index.md at the docs root, not a node-type subdir).
+    reports = sorted(
+        (n for n in graph.nodes.values() if n.node_type is NodeType.REPORT),
+        key=lambda n: (n.display.lower(), n.id),
+    )
+    if reports:
+        lines.append("")
+        lines.append("## Reports overview")
+        lines.append("")
+        lines.append("| Report | Draws from | Tables | Measures |")
+        lines.append("| --- | --- | --- | --- |")
+        for report in reports:
+            models, tables_by_model, measures_by_model = _report_refs(graph, report)
+            model_links = (
+                ", ".join(f"[{_link_text(m.display)}](semantic_model/{slug(m.id)}.md)" for m in models)
+                or "_none_"
+            )
+            n_tables = sum(len(v) for v in tables_by_model.values())
+            n_measures = sum(len(v) for v in measures_by_model.values())
+            report_link = f"[{_link_text(report.display)}](report/{slug(report.id)}.md)"
+            lines.append(f"| {report_link} | {model_links} | {n_tables} | {n_measures} |")
     unresolved = sorted(
         node_id
         for node_id, node in graph.nodes.items()

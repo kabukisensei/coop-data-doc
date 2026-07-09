@@ -433,14 +433,15 @@ def test_site_nav_report_under_multiple_models():
 
 
 def test_report_page_no_measures_fallback(tmp_path: Path):
-    # a bare report with no edges hits all three "" branches of _report_page
+    # a bare report with no edges renders the empty-report placeholder, no model
+    # sections, and must not crash
     g = LineageGraph()
     g.add_node(make_node(NodeType.REPORT, "", "bare", display_name="Bare Report"))
     render_markdown(g, tmp_path, "Test")
     page = page_path(tmp_path, "report:bare").read_text(encoding="utf-8")
-    assert "_No measures statically resolvable from this report._" in page
-    assert "## Tables referenced" not in page
-    assert "_Draws from:" not in page
+    assert "# Bare Report" in page
+    assert "_No model, tables, or measures statically resolvable from this report._" in page
+    assert "**Tables used**" not in page and "**Measures used**" not in page
 
 
 def test_no_upstream_tree_when_gold_not_feeding_a_model(tmp_path: Path):
@@ -506,9 +507,9 @@ def test_measure_dependency_tree(tmp_path: Path):
     assert "[sales.fact_sales](../pbi_table/" in page
 
 
-def test_report_page_is_minimal_measures_referenced(tmp_path: Path):
-    # a report page lists only the model(s) it draws from and the measures /
-    # tables it references — no per-page/visual detail, no lineage tables/flow
+def test_report_page_groups_by_model(tmp_path: Path):
+    # a report page groups its referenced tables/measures under one heading per
+    # source model, with UNPREFIXED child names (issue #21)
     g = LineageGraph()
     g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
     g.add_node(make_node(NodeType.MEASURE, "sales", "total sales", display_name="Total Sales"))
@@ -525,13 +526,64 @@ def test_report_page_is_minimal_measures_referenced(tmp_path: Path):
     render_markdown(g, tmp_path, "Test")
     page = page_path(tmp_path, "report:dash").read_text(encoding="utf-8")
     assert "# Sales Dashboard" in page
-    assert "_Draws from:" in page and "sales-total-sales" not in page.split("Draws from")[0]
-    assert "## Measures referenced" in page
-    assert "[sales.Total Sales](" in page  # measure linked by qualified display
-    assert "## Tables referenced" in page
-    assert "[sales.Dim Customer](" in page
+    # one model heading, linked; the tables/measures nest under it, unprefixed
+    assert "## [Sales](../semantic_model/" in page
+    assert "**Tables used**" in page and "**Measures used**" in page
+    assert "[Total Sales](" in page and "[sales.Total Sales](" not in page  # no lowercase prefix
+    assert "[Dim Customer](" in page and "[sales.Dim Customer](" not in page
     # the messy report internals are gone: no generic lineage tables
     assert "## Lineage" not in page
+
+
+def test_report_page_multi_model_two_sections(tmp_path: Path):
+    # a report drawing from two models gets a section per model, each with its
+    # own tables/measures — no interleaved, prefix-laden single list (issue #21)
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "finance", display_name="Finance"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "orders", display_name="Orders"))
+    g.add_node(make_node(NodeType.MEASURE, "finance", "margin", display_name="Margin"))
+    g.add_node(make_node(NodeType.REPORT, "", "exec", display_name="Exec"))
+    for mid in ("semantic_model:sales", "semantic_model:finance"):
+        g.add_edge(Edge(source_id=mid, target_id="report:exec", edge_type=EdgeType.FEEDS))
+    g.add_edge(
+        Edge(source_id="report:exec", target_id="pbi_table:sales.orders", edge_type=EdgeType.VISUALIZES)
+    )
+    g.add_edge(
+        Edge(source_id="report:exec", target_id="measure:finance.margin", edge_type=EdgeType.VISUALIZES)
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "report:exec").read_text(encoding="utf-8")
+    fin = page.index("## [Finance]")
+    sal = page.index("## [Sales]")
+    # Orders sits under Sales, Margin under Finance (each in the right block)
+    assert page.index("[Orders]") > sal
+    assert page.index("[Margin]") > fin
+    assert "[sales.Orders]" not in page and "[finance.Margin]" not in page  # unprefixed
+
+
+def test_index_reports_overview(tmp_path: Path):
+    # index.md carries a reports->models overview table with counts (issue #21)
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.MEASURE, "sales", "total sales", display_name="Total Sales"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "dim_customer", display_name="Dim Customer"))
+    g.add_node(make_node(NodeType.REPORT, "", "dash", display_name="Sales Dashboard"))
+    g.add_edge(Edge(source_id="semantic_model:sales", target_id="report:dash", edge_type=EdgeType.FEEDS))
+    g.add_edge(
+        Edge(source_id="report:dash", target_id="measure:sales.total sales", edge_type=EdgeType.VISUALIZES)
+    )
+    g.add_edge(
+        Edge(source_id="report:dash", target_id="pbi_table:sales.dim_customer", edge_type=EdgeType.VISUALIZES)
+    )
+    render_markdown(g, tmp_path, "Test")
+    index = (tmp_path / "index.md").read_text(encoding="utf-8")
+    assert "## Reports overview" in index
+    assert "| Report | Draws from | Tables | Measures |" in index
+    # one row: Sales Dashboard drawing from Sales, 1 table, 1 measure (root-relative links)
+    row = next(ln for ln in index.splitlines() if "Sales Dashboard" in ln)
+    assert "(report/" in row and "(semantic_model/" in row
+    assert row.rstrip().endswith("| 1 | 1 |")
 
 
 def test_site_nav_has_no_separate_reports_section():
