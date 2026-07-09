@@ -427,37 +427,66 @@ def _dedup_sorted(nodes: list[Node]) -> list[Node]:
     return sorted({n.id: n for n in nodes}.values(), key=lambda n: (n.display.lower(), n.id))
 
 
+def _dedup_filters(filters: list[tuple[Node, str, str]]) -> list[tuple[Node, str, str]]:
+    """Distinct (target, property, scope) filter fields, sorted for display."""
+    seen: dict[tuple[str, str, str], tuple[Node, str, str]] = {}
+    for target, prop, scope in filters:
+        seen.setdefault((target.id, prop, scope), (target, prop, scope))
+    return [seen[key] for key in sorted(seen, key=lambda k: (seen[k][0].display.lower(), k[1], k[2], k[0]))]
+
+
 def _report_refs(
     graph: LineageGraph, node: Node
-) -> tuple[list[Node], dict[str, list[Node]], dict[str, list[Node]]]:
-    """``(models, tables_by_model, measures_by_model)`` for a report node —
-    the shared read that both :func:`_report_page` and the index Reports overview
-    use, so the page and the overview can never disagree.
+) -> tuple[list[Node], dict[str, list[Node]], dict[str, list[Node]], list[tuple[Node, str, str]]]:
+    """``(models, tables_by_model, measures_by_model, filters)`` for a report — the
+    shared read that both :func:`_report_page` and the index Reports overview use.
 
-    ``models`` are the SEMANTIC_MODEL nodes the report ``feeds`` from (dedup+sorted).
-    The ``*_by_model`` dicts key each child by the model it belongs to (a PBI
-    table/measure's ``schema_name`` IS its model key); a child whose model isn't
-    among the report's feeding models is grouped under ``""`` (a fallback bucket —
-    shouldn't happen, but data is never dropped).
+    ``models`` are the SEMANTIC_MODEL nodes the report ``feeds`` from. The
+    ``*_by_model`` dicts hold the SHOWN (displayed) tables/measures grouped by
+    model key (a child's ``schema_name`` IS its model key; a child whose model
+    isn't among the feeding models falls into a ``""`` bucket — never dropped).
+    ``filters`` is the distinct (target, property, scope) fields referenced ONLY
+    through a filter (issue #26).
+
+    The role split comes from ``metadata["field_refs"]`` (built by the pbir
+    pipeline). A report without that summary (e.g. an inline test graph) has no
+    filter data, so every visualized target is treated as shown.
     """
     models: list[Node] = []
-    tables: list[Node] = []
-    measures: list[Node] = []
     for edge in graph.edges:
         if edge.edge_type is EdgeType.FEEDS and edge.target_id == node.id:
             src = graph.nodes.get(edge.source_id)
             if src is not None and src.node_type is NodeType.SEMANTIC_MODEL:
                 models.append(src)
-        elif edge.edge_type is EdgeType.VISUALIZES and edge.source_id == node.id:
-            tgt = graph.nodes.get(edge.target_id)
-            if tgt is None:
-                continue
-            if tgt.node_type is NodeType.MEASURE:
-                measures.append(tgt)
-            elif tgt.node_type is NodeType.PBI_TABLE:
-                tables.append(tgt)
     models = _dedup_sorted(models)
     model_keys = {m.name for m in models}
+
+    tables: list[Node] = []
+    measures: list[Node] = []
+    filters: list[tuple[Node, str, str]] = []
+    field_refs = node.metadata.get("field_refs")
+    if field_refs is not None:
+        for ref in field_refs:
+            target = graph.nodes.get(ref.get("target", ""))
+            if target is None:
+                continue
+            if ref.get("role") == "filter":
+                filters.append((target, ref.get("property", ""), ref.get("scope", "")))
+            elif target.node_type is NodeType.MEASURE:
+                measures.append(target)
+            elif target.node_type is NodeType.PBI_TABLE:
+                tables.append(target)
+    else:
+        # no role summary: every visualized target is a shown field
+        for edge in graph.edges:
+            if edge.edge_type is EdgeType.VISUALIZES and edge.source_id == node.id:
+                tgt = graph.nodes.get(edge.target_id)
+                if tgt is None:
+                    continue
+                if tgt.node_type is NodeType.MEASURE:
+                    measures.append(tgt)
+                elif tgt.node_type is NodeType.PBI_TABLE:
+                    tables.append(tgt)
 
     def group(children: list[Node]) -> dict[str, list[Node]]:
         by_model: dict[str, list[Node]] = {}
@@ -466,7 +495,7 @@ def _report_refs(
             by_model.setdefault(key, []).append(child)
         return by_model
 
-    return models, group(tables), group(measures)
+    return models, group(tables), group(measures), _dedup_filters(filters)
 
 
 def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
@@ -476,7 +505,7 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     and which tables/measures from it?". Power BI report internals (pages,
     visuals) are folded away by ``collapse_visuals``.
     """
-    models, tables_by_model, measures_by_model = _report_refs(graph, node)
+    models, tables_by_model, measures_by_model, filters = _report_refs(graph, node)
 
     def model_link(m: Node) -> str:
         return f"[{_link_text(m.display)}]({doc_relpath(m)})"
@@ -513,8 +542,19 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
         parts += child_lines(other_tables, "Tables used", prefixed=True)
         parts += child_lines(other_measures, "Measures used", prefixed=True)
 
-    if not models and not other_tables and not other_measures:
+    if not models and not other_tables and not other_measures and not filters:
         parts += ["_No model, tables, or measures statically resolvable from this report._", ""]
+
+    # Fields referenced only through a report/page/visual filter — a real
+    # dependency the displayed lists deliberately omit (issue #26). One line per
+    # distinct filtered field: linked table/measure, the field, and its scope.
+    if filters:
+        parts += ["## Filters", ""]
+        for target, prop, scope in filters:
+            field = f" · `{_cell(prop)}`" if prop else ""
+            scope_note = f" · _{_cell(scope)} filter_" if scope else ""
+            parts += [f"- [{_link_text(target.display)}]({doc_relpath(target)}){field}{scope_note}"]
+        parts += [""]
 
     # Surface any bindings that stayed ambiguous (never silently dropped, hard rule 4).
     unresolved = node.metadata.get("unresolved_bindings")
@@ -701,7 +741,7 @@ def _index_page(graph: LineageGraph, project_name: str) -> str:
         lines.append("| Report | Draws from | Tables | Measures |")
         lines.append("| --- | --- | --- | --- |")
         for report in reports:
-            models, tables_by_model, measures_by_model = _report_refs(graph, report)
+            models, tables_by_model, measures_by_model, _filters = _report_refs(graph, report)
             model_links = (
                 ", ".join(f"[{_link_text(m.display)}](semantic_model/{slug(m.id)}.md)" for m in models)
                 or "_none_"

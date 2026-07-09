@@ -52,19 +52,41 @@ def _find_entity(obj) -> str | None:
     return None
 
 
-def _collect_bindings(obj, out: set[tuple[str, str, str]], parent_key: str = "") -> None:
+def _collect_bindings(
+    obj, out: set[tuple[str, str, str, str]], role: str = "shown", parent_key: str = ""
+) -> None:
+    """Collect ``(entity, property, kind, role)`` field references. ``role`` is
+    ``"shown"`` for displayed fields (visual query projections) and ``"filter"``
+    for fields referenced only by a filter — the caller walks the visual's query
+    and its filterConfig separately so filter fields no longer masquerade as
+    displayed ones (issue #26)."""
     if isinstance(obj, dict):
         prop = obj.get("Property") or obj.get("property")
         if isinstance(prop, str):
             entity = _find_entity(obj)
             if entity:
                 kind = _KIND_KEYS.get(parent_key.lower(), "unknown")
-                out.add((normalize_identifier(entity), prop, kind))
+                out.add((normalize_identifier(entity), prop, kind, role))
         for key, value in obj.items():
-            _collect_bindings(value, out, key)
+            _collect_bindings(value, out, role, key)
     elif isinstance(obj, list):
         for value in obj:
-            _collect_bindings(value, out, parent_key)
+            _collect_bindings(value, out, role, parent_key)
+
+
+def _filter_fields(obj) -> set[tuple[str, str, str, str]]:
+    """``(entity, property, kind, "filter")`` for every field a filterConfig
+    references. ``obj`` may be a PBIR ``filterConfig`` dict or a legacy
+    JSON-embedded ``filters`` string; a non-parseable string yields nothing."""
+    if isinstance(obj, str):
+        try:
+            obj = json.loads(obj)
+        except (json.JSONDecodeError, TypeError):
+            return set()
+    out: set[tuple[str, str, str, str]] = set()
+    if obj:
+        _collect_bindings(obj, out, role="filter")
+    return out
 
 
 def _ensure_report(graph: LineageGraph, report_name: str, source_file: str) -> Node:
@@ -108,7 +130,7 @@ def _add_visual(
     page: Node,
     visual_id: str,
     visual_type: str,
-    bindings: set[tuple[str, str, str]],
+    bindings: set[tuple[str, str, str, str]],
     source_file: str,
 ) -> Node:
     visual = graph.add_node(
@@ -120,7 +142,9 @@ def _add_visual(
             source_file=source_file,
             metadata={
                 "visual_type": visual_type,
-                "bindings": [{"entity": e, "property": p, "kind": k} for e, p, k in sorted(bindings)],
+                "bindings": [
+                    {"entity": e, "property": p, "kind": k, "role": r} for e, p, k, r in sorted(bindings)
+                ],
             },
         )
     )
@@ -148,19 +172,53 @@ def report_root(path: str) -> tuple[str, str]:
     return parts[0] if len(parts) > 1 else "", parts[0]
 
 
+def _append_report_filters(
+    graph: LineageGraph,
+    report_name: str,
+    source_file: str,
+    fields: set[tuple[str, str, str, str]],
+    scope: str,
+) -> None:
+    """Attach report/page-scoped filter fields to the report node as raw pending
+    filters (resolved later by :func:`link_visual_bindings` against the report's
+    models). Deterministic: fields are appended in sorted order."""
+    if not fields:
+        return
+    report = _ensure_report(graph, report_name, source_file)
+    pending = report.metadata.setdefault("pending_filters", [])
+    for entity, prop, kind, _role in sorted(fields):
+        pending.append({"entity": entity, "property": prop, "kind": kind, "scope": scope})
+
+
 def parse_pbir(
     visual_entries: list[FileEntry],
     page_entries: list[FileEntry],
+    report_entries: list[FileEntry],
     graph: LineageGraph,
     *,
     on_file: Callable[..., None] | None = None,
 ) -> list[ParseWarning]:
     """Extract report/page/visual nodes and field bindings from PBIR
-    visual.json + page.json files.
+    visual.json + page.json + definition/report.json files.
 
-    ``on_file`` (optional) is called once per visual entry for progress.
+    Shown fields (visual query projections) and filter fields (report/page/visual
+    ``filterConfig``) are tracked with distinct roles (issue #26): filter fields
+    still create dependency edges but no longer inflate the report's displayed
+    tables/measures. ``on_file`` (optional) is called once per visual entry.
     """
     warnings: list[ParseWarning] = []
+
+    # Report-scoped filters: definition/report.json filterConfig.
+    for entry in report_entries:
+        try:
+            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
+        except (OSError, json.JSONDecodeError) as exc:
+            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
+            continue
+        _, report_name = report_root(entry.path)
+        _append_report_filters(
+            graph, report_name, entry.path, _filter_fields(data.get("filterConfig")), "report"
+        )
 
     page_display: dict[tuple[str, str], str] = {}
     for entry in page_entries:
@@ -172,8 +230,12 @@ def parse_pbir(
         parts = PurePosixPath(entry.path).parts
         # .../definition/pages/<page_folder>/page.json
         if len(parts) >= 2:
-            root, _ = report_root(entry.path)
+            root, report_name = report_root(entry.path)
             page_display[(root, parts[-2])] = data.get("displayName") or parts[-2]
+            # Page-scoped filters: page.json filterConfig.
+            _append_report_filters(
+                graph, report_name, entry.path, _filter_fields(data.get("filterConfig")), "page"
+            )
 
     for entry in sorted(visual_entries, key=lambda e: e.path):
         if on_file:
@@ -195,8 +257,11 @@ def parse_pbir(
 
         visual_obj = data.get("visual") or {}
         visual_type = visual_obj.get("visualType") or data.get("visualType") or "unknown"
-        bindings: set[tuple[str, str, str]] = set()
-        _collect_bindings(data, bindings)
+        # Walk the displayed query and the visual-level filterConfig SEPARATELY so
+        # filter fields carry role="filter" instead of leaking into shown fields.
+        bindings: set[tuple[str, str, str, str]] = set()
+        _collect_bindings(visual_obj, bindings, role="shown")
+        _collect_bindings(data.get("filterConfig") or {}, bindings, role="filter")
         _add_visual(graph, report, page, visual_id, visual_type, bindings, entry.path)
     return warnings
 
@@ -208,9 +273,15 @@ def parse_layout_json(
     string embedded in JSON)."""
     warnings: list[ParseWarning] = []
     report = _ensure_report(graph, report_name, source_file)
+    # Legacy report-level filters (a JSON-embedded string) → report-scope filters.
+    _append_report_filters(graph, report_name, source_file, _filter_fields(data.get("filters")), "report")
     for section_index, section in enumerate(data.get("sections") or []):
         page_name = section.get("displayName") or section.get("name") or f"page{section_index}"
         page = _ensure_page(graph, report, page_name, source_file)
+        # Legacy section-level filters (a JSON-embedded string) → page-scope filters.
+        _append_report_filters(
+            graph, report_name, source_file, _filter_fields(section.get("filters")), "page"
+        )
         for container_index, container in enumerate(section.get("visualContainers") or []):
             config_raw = container.get("config")
             if not isinstance(config_raw, str):
@@ -229,14 +300,16 @@ def parse_layout_json(
             single = config.get("singleVisual") or {}
             visual_type = single.get("visualType") or "unknown"
             visual_id = config.get("name") or f"{page_name}_{container_index}"
-            bindings: set[tuple[str, str, str]] = set()
+            bindings: set[tuple[str, str, str, str]] = set()
 
             for refs in (single.get("projections") or {}).values():
                 for ref in refs or []:
                     query_ref = ref.get("queryRef") if isinstance(ref, dict) else None
                     if isinstance(query_ref, str) and "." in query_ref:
                         entity, prop = query_ref.split(".", 1)
-                        bindings.add((normalize_identifier(entity), prop, "unknown"))
+                        bindings.add((normalize_identifier(entity), prop, "unknown", "shown"))
+            # visual-level legacy filters live on the container itself
+            bindings |= _filter_fields(container.get("filters"))
 
             prototype = single.get("prototypeQuery") or {}
             alias_map = {
@@ -255,7 +328,7 @@ def parse_layout_json(
                     entity = alias_map.get(source_alias)
                     if isinstance(prop, str) and isinstance(entity, str):
                         kind = _KIND_KEYS.get(kind_key.lower(), "unknown")
-                        bindings.add((normalize_identifier(entity), prop, kind))
+                        bindings.add((normalize_identifier(entity), prop, kind, "shown"))
 
             _add_visual(graph, report, page, visual_id, visual_type, bindings, source_file)
     return warnings
@@ -426,6 +499,8 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
     }
 
     def _resolve(visual: Node, binding: dict[str, str], table: Node) -> None:
+        role = binding.get("role", "shown")
+        refs = visual.metadata.setdefault("resolved", [])
         graph.add_edge(
             Edge(
                 source_id=visual.id,
@@ -433,6 +508,16 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
                 edge_type=EdgeType.VISUALIZES,
                 evidence=f"{visual.source_file}: {binding['entity']}.{binding['property']}",
             )
+        )
+        refs.append(
+            {
+                "target": table.id,
+                "entity": binding["entity"],
+                "property": binding["property"],
+                "kind": binding["kind"],
+                "role": role,
+                "scope": "visual",
+            }
         )
         measure = measures.get((table.schema_name, normalize_identifier(binding["property"])))
         if measure is not None and binding["kind"] in ("measure", "unknown"):
@@ -443,6 +528,16 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
                     edge_type=EdgeType.VISUALIZES,
                     evidence=f"{visual.source_file}: [{binding['property']}]",
                 )
+            )
+            refs.append(
+                {
+                    "target": measure.id,
+                    "entity": binding["entity"],
+                    "property": binding["property"],
+                    "kind": "measure",
+                    "role": role,
+                    "scope": "visual",
+                }
             )
 
     # Pass 1: resolve the unambiguous bindings and record each report's models.
@@ -499,6 +594,91 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
                 )
         if still_pending:
             visual.metadata["pending_model_resolution"] = still_pending
+
+    # Report/page-scoped filters (definition/report.json, page.json, legacy
+    # top-level/section filters): resolve against the report's models so a field
+    # used ONLY in a page/report filter still becomes a dependency edge and lands
+    # in the report's Filters section — never guessed (issue #26, hard rule 4).
+    model_ids = {n.name for n in graph.nodes.values() if n.node_type is NodeType.SEMANTIC_MODEL}
+    for report_id in sorted(graph.nodes):
+        report = graph.nodes.get(report_id)
+        if report is None or report.node_type is not NodeType.REPORT:
+            continue
+        pending_filters = report.metadata.pop("pending_filters", None)
+        if not pending_filters:
+            continue
+        models = set(report_models.get(report_id, set()))
+        declared = declared_by_report.get(report_id)
+        if declared:
+            models.add(declared)
+        field_refs = report.metadata.setdefault("field_refs", [])
+        for flt in pending_filters:
+            entity, prop, kind, scope = flt["entity"], flt["property"], flt["kind"], flt["scope"]
+            candidates = tables_by_name.get(entity, [])
+            scoped = [t for t in candidates if t.schema_name in models] if models else candidates
+            if len(scoped) != 1:
+                if len(candidates) > 1:
+                    warnings.append(
+                        ParseWarning(
+                            file=report.source_file,
+                            message=(
+                                f"{scope} filter {entity}.{prop} is ambiguous across "
+                                f"{len(candidates)} models — not linked"
+                            ),
+                            category="ambiguous_visual_binding",
+                        )
+                    )
+                continue
+            table = scoped[0]
+            graph.add_edge(
+                Edge(
+                    source_id=report.id,
+                    target_id=table.id,
+                    edge_type=EdgeType.VISUALIZES,
+                    evidence=f"{report.source_file}: {scope} filter {entity}.{prop}",
+                )
+            )
+            if table.schema_name in model_ids:
+                # the report depends on the model it filters on, even with nothing
+                # shown from it — link_reports_to_models won't (it keys off visuals).
+                graph.add_edge(
+                    Edge(
+                        source_id=Node.make_id(NodeType.SEMANTIC_MODEL, "", table.schema_name),
+                        target_id=report.id,
+                        edge_type=EdgeType.FEEDS,
+                        evidence=f"{report.source_file}: report filters on this model",
+                    )
+                )
+            field_refs.append(
+                {
+                    "target": table.id,
+                    "entity": entity,
+                    "property": prop,
+                    "kind": kind,
+                    "role": "filter",
+                    "scope": scope,
+                }
+            )
+            measure = measures.get((table.schema_name, normalize_identifier(prop)))
+            if measure is not None and kind in ("measure", "unknown"):
+                graph.add_edge(
+                    Edge(
+                        source_id=report.id,
+                        target_id=measure.id,
+                        edge_type=EdgeType.VISUALIZES,
+                        evidence=f"{report.source_file}: {scope} filter [{prop}]",
+                    )
+                )
+                field_refs.append(
+                    {
+                        "target": measure.id,
+                        "entity": entity,
+                        "property": prop,
+                        "kind": "measure",
+                        "role": "filter",
+                        "scope": scope,
+                    }
+                )
     return warnings
 
 
@@ -563,6 +743,19 @@ def link_reports_to_models(graph: LineageGraph) -> list[ParseWarning]:
     return []
 
 
+_FIELD_REF_KEY = ("role", "target", "entity", "property", "kind", "scope")
+
+
+def _dedupe_field_refs(refs: list[dict]) -> list[dict]:
+    """Distinct field-refs, deterministically sorted by (role, target, entity,
+    property, kind, scope) — so a report's field_refs are byte-identical
+    regardless of visual/merge order."""
+    seen: dict[tuple, dict] = {}
+    for ref in refs:
+        seen.setdefault(tuple(ref.get(key, "") for key in _FIELD_REF_KEY), ref)
+    return [seen[key] for key in sorted(seen)]
+
+
 def collapse_visuals(graph: LineageGraph) -> list[ParseWarning]:
     """Fold a report's visuals *and* pages into the report, leaving one node
     per report.
@@ -593,24 +786,37 @@ def collapse_visuals(graph: LineageGraph) -> list[ParseWarning]:
             if report is not None and report != edge.target_id:
                 rewired.add((report, edge.target_id, edge.evidence))
 
-    # Preserve any still-ambiguous bindings onto the owning report BEFORE the visuals
-    # (which hold the metadata) are deleted, so agents reading manifest.json can see the
-    # report's lineage is knowingly incomplete (hard rule 4). Deterministic: sorted.
+    # BEFORE the visuals (which hold the metadata) are deleted, roll two things up
+    # onto the owning report so they survive the fold (hard rule 4 for the first):
+    #   * still-ambiguous bindings -> report.metadata["unresolved_bindings"]
+    #   * per-visual resolved field-refs (target/role/kind/scope) -> report.metadata
+    #     ["field_refs"], the role-aware summary the report page renders from (issue
+    #     #26/#27). Report/page-scoped filter refs are already on the report from
+    #     link_visual_bindings; the visual (shown + visual-filter) refs join them here.
     unresolved_by_report: dict[str, list[dict[str, str]]] = {}
     for vid in sorted(drop_ids):
         node = graph.nodes.get(vid)
         if node is None or node.node_type is not NodeType.VISUAL:
             continue
+        page = page_of_visual.get(vid)
+        report = report_of_page.get(page) if page is not None else None
+        if report is None:
+            continue
         pend = node.metadata.get("pending_model_resolution")
         if pend:
-            page = page_of_visual.get(vid)
-            report = report_of_page.get(page) if page is not None else None
-            if report is not None:
-                unresolved_by_report.setdefault(report, []).extend(pend)
+            unresolved_by_report.setdefault(report, []).extend(pend)
+        resolved = node.metadata.get("resolved")
+        if resolved:
+            graph.nodes[report].metadata.setdefault("field_refs", []).extend(resolved)
     for report_id, pend in unresolved_by_report.items():
         graph.nodes[report_id].metadata["unresolved_bindings"] = sorted(
             pend, key=lambda b: (b.get("entity", ""), b.get("property", ""), b.get("kind", ""))
         )
+    # Dedupe + deterministically sort every report's field-refs (order-independent
+    # of visual/merge order so warm == cold and --jobs N is byte-identical).
+    for node in graph.nodes.values():
+        if node.node_type is NodeType.REPORT and node.metadata.get("field_refs"):
+            node.metadata["field_refs"] = _dedupe_field_refs(node.metadata["field_refs"])
 
     # drop every edge that touches a folded node (replace_edges keeps the dedup index in
     # sync so the add_edge calls below don't see stale/dropped keys), then add report edges

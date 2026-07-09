@@ -29,6 +29,7 @@ class FileKind(str, Enum):
     BIM = "bim"
     PBIR_VISUAL = "pbir_visual"
     PBIR_PAGE = "pbir_page"
+    PBIR_REPORT = "pbir_report"
     PBIR_DEFINITION = "pbir_definition"
     REPORT_JSON_LEGACY = "report_json_legacy"
     PBIX = "pbix"
@@ -56,6 +57,9 @@ class FileInventory(BaseModel):
 
 _PBIR_VISUAL_RE = re.compile(r"definition/pages/[^/]+/visuals/[^/]+/visual\.json$")
 _PBIR_PAGE_RE = re.compile(r"definition/pages/[^/]+/page\.json$")
+# The report's own definition/report.json (report-level filterConfig lives here),
+# NOT a page's — so it's report.json directly under definition/, not deeper.
+_PBIR_REPORT_RE = re.compile(r"(^|/)definition/report\.json$")
 
 
 def _matches(rel_posix: str, patterns: list[str]) -> bool:
@@ -115,6 +119,10 @@ def _classify(rel_posix: str) -> FileKind | None:
         # report->model declaration (datasetReference). Unique filename, sits
         # beside the definition/ folder, so no path guard is needed.
         return FileKind.PBIR_DEFINITION
+    if name == "report.json" and _PBIR_REPORT_RE.search(rel_posix):
+        # `<Name>.Report/definition/report.json` — the PBIR report file carrying
+        # report-level filterConfig (distinct from a legacy top-level report.json).
+        return FileKind.PBIR_REPORT
     if name == "report.json" and "/definition/" not in f"/{rel_posix}":
         return FileKind.REPORT_JSON_LEGACY
     return None

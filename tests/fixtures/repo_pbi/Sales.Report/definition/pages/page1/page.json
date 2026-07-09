@@ -2,5 +2,14 @@
   "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/1.0.0/schema.json",
   "name": "page1",
   "displayName": "Customer Overview",
-  "displayOption": "FitToPage"
+  "displayOption": "FitToPage",
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "pageFilter",
+        "field": { "Column": { "Expression": { "SourceRef": { "Entity": "fact_sales" } }, "Property": "customer_id" } },
+        "type": "Categorical"
+      }
+    ]
+  }
 }

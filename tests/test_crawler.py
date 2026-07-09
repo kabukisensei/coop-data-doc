@@ -45,6 +45,7 @@ def test_crawl_fixture_repos_classifies_everything():
     assert kinds["Sales.Report/definition/pages/page1/visuals/abc123/visual.json"] == FileKind.PBIR_VISUAL
     assert kinds["Sales.Report/definition/pages/page1/page.json"] == FileKind.PBIR_PAGE
     assert kinds["Sales.Report/definition.pbir"] == FileKind.PBIR_DEFINITION
+    assert kinds["Sales.Report/definition/report.json"] == FileKind.PBIR_REPORT
     assert kinds["LegacyThing/report.json"] == FileKind.REPORT_JSON_LEGACY
     assert warnings == []
 

@@ -48,6 +48,7 @@ def parse_all() -> tuple[LineageGraph, list]:
     warnings += parse_pbir(
         inventory.by_kind(FileKind.PBIR_VISUAL),
         inventory.by_kind(FileKind.PBIR_PAGE),
+        inventory.by_kind(FileKind.PBIR_REPORT),
         graph,
     )
     warnings += parse_legacy_reports(inventory.by_kind(FileKind.REPORT_JSON_LEGACY), graph)
@@ -58,6 +59,17 @@ def parse_all() -> tuple[LineageGraph, list]:
 
 def edge_keys(graph: LineageGraph) -> set[tuple[str, str, str]]:
     return {edge.key() for edge in graph.edges}
+
+
+def parse_all_collapsed() -> tuple[LineageGraph, list]:
+    """parse_all() plus the report->model wiring and visual fold, i.e. the final
+    report-node shape the renderer sees."""
+    from coop_data_doc.parsers.pbir import collapse_visuals, link_reports_to_models
+
+    graph, warnings = parse_all()
+    link_reports_to_models(graph)
+    collapse_visuals(graph)
+    return graph, warnings
 
 
 # ---- mcode unit tests ------------------------------------------------------
@@ -393,6 +405,47 @@ def test_reports_carry_display_name():
     graph, _ = parse_all()
     assert graph.nodes["report:sales"].display_name == "Sales"
     assert graph.nodes["report:legacything"].display_name == "LegacyThing"
+
+
+def test_visual_filter_field_carries_filter_role():
+    # a visual-level filterConfig field is tagged role="filter" and never
+    # masquerades as a displayed (shown) field (issue #26).
+    graph, _ = parse_all()
+    bindings = graph.nodes["visual:sales.abc123"].metadata["bindings"]
+    roles = {(b["entity"], b["role"]) for b in bindings}
+    assert ("fact_sales", "filter") in roles  # the visual filter field
+    assert ("dim_customer", "shown") in roles  # the displayed measure
+    assert ("fact_sales", "shown") not in roles  # never shown
+
+
+def test_pbir_filters_all_scopes_resolved():
+    # report/page/visual-scoped filters on fact_sales (a table nothing displays)
+    # each resolve to a dependency edge and a filter-role field ref; fact_sales is
+    # never a SHOWN target (issue #26).
+    graph, _ = parse_all_collapsed()
+    keys = edge_keys(graph)
+    refs = graph.nodes["report:sales"].metadata["field_refs"]
+    filters = {(r["property"], r["scope"]) for r in refs if r["role"] == "filter"}
+    assert ("order_total", "report") in filters
+    assert ("customer_id", "page") in filters
+    assert ("order_id", "visual") in filters
+    # filter-only table is a dependency edge...
+    assert ("report:sales", "pbi_table:sales.fact_sales", "visualizes") in keys
+    # ...but NOT a shown target, and dim_customer stays shown
+    assert not any(r["target"] == "pbi_table:sales.fact_sales" and r["role"] == "shown" for r in refs)
+    assert any(r["target"] == "pbi_table:sales.dim_customer" and r["role"] == "shown" for r in refs)
+
+
+def test_legacy_section_filter_becomes_page_filter():
+    # a legacy sections[].filters (embedded JSON string) resolves to a page-scope
+    # filter dependency, same as a PBIR page filter (issue #26).
+    graph, _ = parse_all_collapsed()
+    refs = graph.nodes["report:legacything"].metadata.get("field_refs", [])
+    assert any(
+        r["target"] == "pbi_table:sales.fact_sales" and r["role"] == "filter" and r["scope"] == "page"
+        for r in refs
+    )
+    assert ("report:legacything", "pbi_table:sales.fact_sales", "visualizes") in edge_keys(graph)
 
 
 def test_pbir_definition_declares_model():

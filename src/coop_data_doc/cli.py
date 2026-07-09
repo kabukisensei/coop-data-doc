@@ -124,6 +124,7 @@ def build_graph(
     tmdl = inventory.by_kind(FileKind.TMDL)
     bim = inventory.by_kind(FileKind.BIM)
     visuals = inventory.by_kind(FileKind.PBIR_VISUAL)
+    pbir_reports = inventory.by_kind(FileKind.PBIR_REPORT)
     definitions = inventory.by_kind(FileKind.PBIR_DEFINITION)
     legacy = inventory.by_kind(FileKind.REPORT_JSON_LEGACY)
     pbix = inventory.by_kind(FileKind.PBIX)
@@ -131,7 +132,9 @@ def build_graph(
     with progress.bar("Parsing Power BI", total=pbi_total) as tick:
         warnings += parse_tmdl(tmdl, graph, on_file=tick)
         warnings += parse_bim(bim, graph, on_file=tick)
-        warnings += parse_pbir(visuals, inventory.by_kind(FileKind.PBIR_PAGE), graph, on_file=tick)
+        warnings += parse_pbir(
+            visuals, inventory.by_kind(FileKind.PBIR_PAGE), pbir_reports, graph, on_file=tick
+        )
         warnings += parse_legacy_reports(legacy, graph, on_file=tick)
         warnings += parse_pbix(pbix, graph, on_file=tick)
         # definition.pbir carries the report's authoritative report->model

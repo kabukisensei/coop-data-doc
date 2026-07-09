@@ -9,17 +9,21 @@
         "Values": {
           "projections": [
             {
-              "field": {
-                "Measure": {
-                  "Expression": { "SourceRef": { "Entity": "dim_customer" } },
-                  "Property": "Customer Count"
-                }
-              },
+              "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "dim_customer" } }, "Property": "Customer Count" } },
               "queryRef": "dim_customer.Customer Count"
             }
           ]
         }
       }
     }
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "visualFilter",
+        "field": { "Column": { "Expression": { "SourceRef": { "Entity": "fact_sales" } }, "Property": "order_id" } },
+        "type": "Categorical"
+      }
+    ]
   }
 }

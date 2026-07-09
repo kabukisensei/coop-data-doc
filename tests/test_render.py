@@ -562,6 +562,61 @@ def test_report_page_multi_model_two_sections(tmp_path: Path):
     assert "[sales.Orders]" not in page and "[finance.Margin]" not in page  # unprefixed
 
 
+def test_report_page_filters_section(tmp_path: Path):
+    # a table reached ONLY through a filter lands in a ## Filters section (with
+    # its field + scope), NOT the shown "Tables used" list; a shown table stays
+    # under its model heading (issue #26)
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "dim_customer", display_name="Dim Customer"))
+    g.add_node(make_node(NodeType.PBI_TABLE, "sales", "fact_sales", display_name="Fact Sales"))
+    g.add_node(
+        make_node(
+            NodeType.REPORT,
+            "",
+            "dash",
+            display_name="Dash",
+            metadata={
+                "field_refs": [
+                    {
+                        "target": "pbi_table:sales.dim_customer",
+                        "entity": "dim_customer",
+                        "property": "name",
+                        "kind": "column",
+                        "role": "shown",
+                        "scope": "visual",
+                    },
+                    {
+                        "target": "pbi_table:sales.fact_sales",
+                        "entity": "fact_sales",
+                        "property": "order_date",
+                        "kind": "column",
+                        "role": "filter",
+                        "scope": "page",
+                    },
+                ]
+            },
+        )
+    )
+    g.add_edge(Edge(source_id="semantic_model:sales", target_id="report:dash", edge_type=EdgeType.FEEDS))
+    g.add_edge(
+        Edge(source_id="report:dash", target_id="pbi_table:sales.dim_customer", edge_type=EdgeType.VISUALIZES)
+    )
+    g.add_edge(
+        Edge(source_id="report:dash", target_id="pbi_table:sales.fact_sales", edge_type=EdgeType.VISUALIZES)
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "report:dash").read_text(encoding="utf-8")
+    assert "## Filters" in page
+    shown_block, filters_block = page.split("## Filters", 1)
+    # shown table sits above Filters under its model heading; the filter-only
+    # table is in the Filters section with its field + scope — and NOT shown
+    assert "[Dim Customer](" in shown_block
+    assert "[Fact Sales]" not in shown_block  # a filter is not a displayed table
+    assert "[Fact Sales](" in filters_block
+    assert "`order_date`" in filters_block and "_page filter_" in filters_block
+
+
 def test_index_reports_overview(tmp_path: Path):
     # index.md carries a reports->models overview table with counts (issue #21)
     g = LineageGraph()
