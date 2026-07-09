@@ -433,8 +433,15 @@ def test_site_nav_report_under_multiple_models():
     g.add_edge(Edge(source_id="semantic_model:sales", target_id="report:exec", edge_type=EdgeType.FEEDS))
     g.add_edge(Edge(source_id="semantic_model:finance", target_id="report:exec", edge_type=EdgeType.FEEDS))
     nav = _nav_section(g)
-    assert nav.count(slug("report:exec")) == 2  # nested under both models
-    assert "  - Reports:" not in nav.splitlines()  # no top-level orphan Reports header
+    # nested under both models in Semantic Models AND under both in the
+    # top-level Reports section (grouped by model) = 4 mentions
+    assert nav.count(slug("report:exec")) == 4
+    lines = nav.splitlines()
+    assert "  - Reports:" in lines  # the top-level by-model Reports section
+    reports_idx = lines.index("  - Reports:")
+    tail = lines[reports_idx:]
+    assert '      - "Finance":' in tail and '      - "Sales":' in tail
+    assert "(no linked model)" not in nav  # every report here has a model
 
 
 def test_report_page_no_measures_fallback(tmp_path: Path):
@@ -750,16 +757,18 @@ def test_index_reports_overview(tmp_path: Path):
     assert row.rstrip().endswith("| 1 | 1 |")
 
 
-def test_site_nav_has_no_separate_reports_section():
-    # there's no top-level Reports section: a report linked to no model simply
-    # doesn't appear in the nav (it still has a page, reachable via search)
+def test_site_nav_unlinked_report_lands_in_no_linked_model_group():
+    # a report linked to no model is never nav-invisible: it lands in the
+    # top-level Reports section under "(no linked model)"
     from coop_data_doc.render.site import _nav_section
 
     g = LineageGraph()
     g.add_node(make_node(NodeType.REPORT, "", "ghost", display_name="Ghost"))
     nav = _nav_section(g)
-    assert "- Reports:" not in nav  # no top-level (or any) Reports section for an orphan
-    assert "ghost" not in nav
+    lines = nav.splitlines()
+    assert "  - Reports:" in lines
+    assert '      - "(no linked model)":' in lines
+    assert slug("report:ghost") in nav
 
 
 def test_source_section_embeds_sql(tmp_path: Path):

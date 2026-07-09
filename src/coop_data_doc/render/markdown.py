@@ -438,6 +438,32 @@ def _unused_measures_section(graph: LineageGraph, node: Node, used: set[str]) ->
     return "\n".join(lines)
 
 
+def _model_reports_section(graph: LineageGraph, node: Node) -> str:
+    """ "Which reports use this model?" answered on the model page itself: the
+    reports downstream via the ``model --feeds--> report`` edges from
+    link_reports_to_models / the declared definition.pbir binding. Returns ""
+    (no section) when nothing draws from the model.
+    """
+    reports = sorted(
+        {
+            edge.target_id: tgt
+            for edge in graph.edges
+            if edge.edge_type is EdgeType.FEEDS
+            and edge.source_id == node.id
+            and (tgt := graph.nodes.get(edge.target_id)) is not None
+            and tgt.node_type is NodeType.REPORT
+        }.values(),
+        key=lambda r: r.display.lower(),
+    )
+    if not reports:
+        return ""
+    lines = ["## Reports", ""]
+    lines.append("_Reports that draw from this model — each links to its own page._")
+    lines.append("")
+    lines.extend(f"- [{_link_text(r.display)}]({doc_relpath(r)})" for r in reports)
+    return "\n".join(lines)
+
+
 def _dedup_sorted(nodes: list[Node]) -> list[Node]:
     """Distinct nodes (by id), sorted by display name then id (stable/deterministic)."""
     return sorted({n.id: n for n in nodes}.values(), key=lambda n: (n.display.lower(), n.id))
@@ -731,6 +757,13 @@ def render_node_page(
         *([_contract_section(node), ""] if node.node_type in _CONTRACT_TYPES else []),
         # fact × dimension relationship matrix, semantic models only
         *([_relationship_grid(graph, node), ""] if node.node_type is NodeType.SEMANTIC_MODEL else []),
+        # the reports drawing from this model, right where a reader asks ("" when none)
+        *(
+            [reports_section, ""]
+            if node.node_type is NodeType.SEMANTIC_MODEL
+            and (reports_section := _model_reports_section(graph, node))
+            else []
+        ),
         # dead-measure roll-up for cleanup, semantic models only ("" when none)
         *(
             [unused_section, ""]

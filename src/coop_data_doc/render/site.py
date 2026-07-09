@@ -196,8 +196,8 @@ def _reports_by_model(graph: LineageGraph) -> dict[str, list[str]]:
     """Map each semantic-model key -> the report ids that draw from it (via the
     ``model --feeds--> report`` edges from link_reports_to_models). A report
     drawing from several models is listed under each. Reports with no model link
-    don't appear in the nav (there's no separate top-level Reports section) —
-    they still have a page, reachable via search and the model's lineage."""
+    appear in the top-level Reports section's "(no linked model)" group instead
+    (:func:`_reports_nav_section`) — no report is ever nav-invisible."""
     nodes = graph.nodes
     by_model: dict[str, list[str]] = {}
     for edge in graph.edges:
@@ -209,6 +209,35 @@ def _reports_by_model(graph: LineageGraph) -> dict[str, list[str]]:
         if src.node_type is NodeType.SEMANTIC_MODEL and tgt.node_type is NodeType.REPORT:
             by_model.setdefault(normalize_identifier(src.name), []).append(tgt.id)
     return {key: sorted(set(ids)) for key, ids in by_model.items()}
+
+
+def _reports_nav_section(graph: LineageGraph) -> list[str]:
+    """A top-level Reports section grouped by the model each report draws from
+    ("which reports use which model?" answered straight from the sidebar). A
+    multi-model report is listed under each of its models; reports with no
+    model link land in a final "(no linked model)" group so every report page
+    is always reachable from the nav. Each entry links to the report's own
+    page (also nested under its model in the Semantic Models section)."""
+    nodes = graph.nodes
+    by_model = _reports_by_model(graph)
+    if not by_model and not any(n.node_type is NodeType.REPORT for n in nodes.values()):
+        return []
+    # model key -> display title (fall back to the key for a vanished model node)
+    model_display = {
+        normalize_identifier(n.name): n.display
+        for n in nodes.values()
+        if n.node_type is NodeType.SEMANTIC_MODEL
+    }
+    lines = ["  - Reports:"]
+    for key in sorted(by_model, key=lambda k: model_display.get(k, k).lower()):
+        lines.append(f"      - {_navkey(model_display.get(key, key))}:")
+        lines.extend(f"          - {_page(nodes[rid], rid)}" for rid in by_model[key] if rid in nodes)
+    linked = {rid for ids in by_model.values() for rid in ids}
+    unlinked = sorted(nid for nid, n in nodes.items() if n.node_type is NodeType.REPORT and nid not in linked)
+    if unlinked:
+        lines.append(f"      - {_navkey('(no linked model)')}:")
+        lines.extend(f"          - {_page(nodes[nid], nid)}" for nid in unlinked)
+    return lines
 
 
 def _nav_section(graph: LineageGraph) -> str:
@@ -237,8 +266,7 @@ def _nav_section(graph: LineageGraph) -> str:
 
     # Power BI: nest each semantic model's tables + measures under the model,
     # and each report under every model it draws from (a flat list of hundreds
-    # of measures is unusable, and reports belong with their model). There's no
-    # separate top-level Reports section.
+    # of measures is unusable, and reports belong with their model).
     lines.extend(
         _grouped_section(
             nodes,
@@ -248,6 +276,11 @@ def _nav_section(graph: LineageGraph) -> str:
             extra_groups=[("Reports", _reports_by_model(graph))],
         )
     )
+
+    # ...and a top-level Reports section grouped by model, so "which reports
+    # use which model" reads straight off the sidebar (unlinked reports get a
+    # "(no linked model)" group — every report page stays reachable).
+    lines.extend(_reports_nav_section(graph))
 
     # anything unlayered (views/procs no rule covered) — don't lose them
     other = sorted(
