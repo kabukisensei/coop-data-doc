@@ -149,11 +149,27 @@ def test_render_determinism(tmp_path: Path):
 def test_slug_is_filesystem_safe():
     import re
 
-    # readable prefix + 8-hex id hash; no filesystem-illegal characters
+    # readable prefix + 8-hex id hash; only [a-z0-9_-] in the readable portion
     s = slug("pbi_table:sales analytics.dim_customer")
     assert s.startswith("sales-analytics-dim_customer-")
     assert re.search(r"-[0-9a-f]{8}$", s)
     assert not re.search(r'[<>:"/\\|?*]', s)
+    assert re.fullmatch(r"[a-z0-9_-]+", s)  # nothing outside the URL-safe class
+
+
+def test_slug_strips_url_hostile_chars():
+    import re
+
+    # %, +, parens, &, # are filesystem-legal but URL-hostile: a raw % is an
+    # invalid percent-escape, an unbalanced ) breaks a Markdown link target,
+    # + flips to a space in query-string contexts (issue #25).
+    s = slug("measure:finance.total margin % (aip) + adj & more #1")
+    assert re.fullmatch(r"[a-z0-9_-]+", s)  # only URL-safe chars survive
+    for ch in "%+()&#":
+        assert ch not in s
+    assert "--" not in s.rstrip("-")  # runs collapsed, hash suffix intact
+    # distinct ids with different hostile chars still never collide
+    assert slug("measure:m.a%b") != slug("measure:m.a+b")
 
 
 def test_slug_handles_windows_illegal_chars_and_is_unique():
@@ -185,6 +201,35 @@ def test_render_does_not_crash_on_illegal_measure_name(tmp_path: Path):
     written = render_markdown(g, tmp_path, "Finance")  # must not raise OSError
     assert any(p.suffix == ".md" for p in written)
     assert page_path(tmp_path, measure.id).is_file()
+
+
+def test_url_hostile_measure_name_round_trips(tmp_path: Path):
+    # a measure named with %, +, and parens must produce a page whose every
+    # inbound Markdown link resolves to a real file (issue #25): the model page
+    # links to the measure, and that target must exist on disk.
+    import re
+
+    g = LineageGraph()
+    model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "finance", display_name="Finance"))
+    measure = g.add_node(
+        make_node(
+            NodeType.MEASURE,
+            "finance",
+            "total margin % (aip) + adj",
+            display_name="Total Margin % (AIP) + Adj",
+            metadata={"dax": "1"},
+        )
+    )
+    g.add_edge(Edge(source_id=measure.id, target_id=model.id, edge_type=EdgeType.FEEDS))
+    render_markdown(g, tmp_path, "Finance")
+    measure_page = page_path(tmp_path, measure.id)
+    assert measure_page.is_file()  # page written despite the hostile name
+    model_page_text = page_path(tmp_path, model.id).read_text(encoding="utf-8")
+    # every measure/table link on the model page must point at a file that exists
+    for target in re.findall(r"\]\(\.\./([a-z0-9_]+/[a-z0-9_-]+\.md)\)", model_page_text):
+        assert (tmp_path / target).is_file(), f"dangling link: {target}"
+    # and the link specifically to our hostile-named measure resolves
+    assert f"measure/{slug(measure.id)}.md" in model_page_text
 
 
 def test_orphaned_pages_pruned_on_rerender(tmp_path: Path):
