@@ -194,7 +194,7 @@ def test_wrong_shape_cache_degrades_not_crashes(tmp_path: Path, payload: str):
 
 def test_invalid_entry_dropped_others_kept(tmp_path: Path):
     path = tmp_path / PARSE_CACHE
-    good_key = cache_key("tsql", "CREATE TABLE dbo.x (a INT);\n", "objects")
+    good_key = cache_key("tsql", "CREATE TABLE dbo.x (a INT);\n", "objects", "x.sql")
     path.write_text(
         json.dumps(
             {
@@ -232,10 +232,47 @@ def test_write_roundtrip_stable(tmp_path: Path):
 
 def test_key_hashes_content_not_mtime():
     same = "CREATE TABLE dbo.x (a INT);\n"
-    assert cache_key("tsql", same, "objects") == cache_key("tsql", same, "objects")
-    assert cache_key("tsql", same, "objects") != cache_key("tsql", same, "procs")
-    assert cache_key("tsql", same, "objects") != cache_key("mysql", same, "objects")
+    assert cache_key("tsql", same, "objects", "x.sql") == cache_key("tsql", same, "objects", "x.sql")
+    assert cache_key("tsql", same, "objects", "x.sql") != cache_key("tsql", same, "procs", "x.sql")
+    assert cache_key("tsql", same, "objects", "x.sql") != cache_key("mysql", same, "objects", "x.sql")
+    # identical content at DIFFERENT paths must not share an entry: contributions
+    # embed their file path (source_file/evidence/warning.file), so a shared key
+    # would replay the first file's attribution for both
+    assert cache_key("tsql", same, "objects", "a/x.sql") != cache_key("tsql", same, "objects", "b/x.sql")
     assert file_sha256("a") != file_sha256("b")
+
+
+def test_identical_content_files_attribute_warnings_per_path(tmp_path: Path):
+    """Two byte-identical files at different paths each get their OWN cache
+    entry: cold and warm runs attribute the dynamic-SQL warning to BOTH paths
+    (a shared entry used to attribute both files' warnings to the first path,
+    making warm builds differ from cold and --jobs N differ from --jobs 1)."""
+    repo = tmp_path / "sql"
+    (repo / "a").mkdir(parents=True)
+    (repo / "b").mkdir()
+    body = "CREATE PROCEDURE dbo.usp_dyn AS\nDECLARE @s NVARCHAR(100) = N'SELECT 1';\nEXEC (@s);\n"
+    (repo / "a" / "dup.sql").write_text(body, encoding="utf-8")
+    (repo / "b" / "dup.sql").write_text(body, encoding="utf-8")
+    entries = _sql_entries(repo)
+
+    def run_passes(cache: ParseCache | None, no_cache: bool):
+        graph = LineageGraph()
+        warnings = parse_sql_objects(entries, graph, parse_cache=cache, no_parse_cache=no_cache)
+        warnings += parse_sql_procs(entries, graph, parse_cache=cache, no_parse_cache=no_cache)
+        resolve_stub_references(graph)
+        return to_json_str(graph), warnings
+
+    cache = ParseCache(tmp_path / PARSE_CACHE)
+    cold_json, cold_warnings = run_passes(cache, no_cache=True)  # populates the cache
+    warm_json, warm_warnings = run_passes(cache, no_cache=False)  # replays it
+
+    expected_paths = {"a/dup.sql", "b/dup.sql"}
+    assert {w.file for w in cold_warnings if w.category == "dynamic_sql"} == expected_paths
+    assert {w.file for w in warm_warnings if w.category == "dynamic_sql"} == expected_paths
+    assert warm_json == cold_json
+    assert [w.model_dump() for w in warm_warnings] == [w.model_dump() for w in cold_warnings]
+    # and the two paths really do occupy two distinct entries
+    assert cache.hits == len(entries) == 2
 
 
 # -- end-to-end via the CLI ------------------------------------------------------

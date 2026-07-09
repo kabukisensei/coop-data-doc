@@ -229,6 +229,40 @@ def test_warm_cold_parallel_all_byte_identical(tmp_path: Path):
         assert cold_parallel[rel] == cold[rel], f"cold jobs4 != cold jobs1: {rel}"
 
 
+def test_duplicate_content_files_jobs_parity_and_attribution(tmp_path: Path):
+    """Two byte-identical dynamic-SQL procs at different paths: --jobs 4 must
+    equal --jobs 1, a warm rebuild must equal cold, and diagnostics must
+    attribute the dynamic_sql warning to BOTH paths (the cache key includes the
+    file path, so identical content can't share one mis-attributed entry)."""
+    body = "CREATE PROCEDURE dbo.usp_dyn AS\nDECLARE @s NVARCHAR(100) = N'SELECT 1';\nEXEC (@s);\nGO\n"
+
+    def workspace(root: Path) -> Path:
+        root.mkdir()
+        setup_workspace(root)
+        dup_dir = root / "sql-repo" / "procs"
+        (dup_dir / "dup_one.sql").write_text(body, encoding="utf-8")
+        (dup_dir / "dup_two.sql").write_text(body, encoding="utf-8")
+        return root
+
+    a = workspace(tmp_path / "a")
+    b = workspace(tmp_path / "b")
+    assert run(["build", "--non-interactive", "--skip-html", "--jobs", "1"], a).exit_code == 0
+    assert run(["build", "--non-interactive", "--skip-html", "--jobs", "4"], b).exit_code == 0
+    one = _tree_bytes(a / "data-docs")
+    four = _tree_bytes(b / "data-docs")
+    assert one.keys() == four.keys()
+    for rel in one:
+        assert one[rel] == four[rel], f"--jobs 4 != --jobs 1: {rel}"
+    # warm parallel rebuild (cache populated) must not change a byte
+    assert run(["build", "--non-interactive", "--skip-html", "--jobs", "4"], b).exit_code == 0
+    warm = _tree_bytes(b / "data-docs")
+    assert warm == four
+    # both duplicate paths carry their own dynamic_sql diagnostic
+    diagnostics = json.loads((b / "data-docs" / "diagnostics.json").read_text(encoding="utf-8"))
+    dyn_files = {i["file"] for i in diagnostics["issues"] if i["category"] == "dynamic_sql"}
+    assert {"procs/dup_one.sql", "procs/dup_two.sql"} <= dyn_files
+
+
 def test_source_code_preserved_in_parallel_build(tmp_path: Path):
     """source_code is exclude=True; the parallel path must still carry it into
     the rendered Source section (HAZARD B), matching the serial build."""

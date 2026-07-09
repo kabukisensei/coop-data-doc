@@ -160,8 +160,8 @@ def parse_sql_parallel(
     proc_keys: dict[str, str] = {}
     for entry in entries:
         text = texts[entry.path]
-        obj_keys[entry.path] = cache_key(dialect, text, "objects")
-        proc_keys[entry.path] = cache_key(dialect, text, "procs")
+        obj_keys[entry.path] = cache_key(dialect, text, "objects", entry.path)
+        proc_keys[entry.path] = cache_key(dialect, text, "procs", entry.path)
         obj_hit = None if no_parse_cache else parse_cache.get(obj_keys[entry.path])
         proc_hit = None if no_parse_cache else parse_cache.get(proc_keys[entry.path])
         # A file is a miss unless BOTH passes are cached (both are stored

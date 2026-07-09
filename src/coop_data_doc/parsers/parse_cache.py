@@ -11,12 +11,17 @@ skipped.
 
 Cache key
 ---------
-``(coop_data_doc.__version__, sql_dialect, parser-pass, sha256(file_text))`` —
-the content hash (never mtime) means an edit changes the key and forces a
-re-parse, while a tool upgrade or a dialect change invalidates the whole cache.
-The parser-pass tag ("objects"/"procs") keeps each file's two parses distinct.
-The key is serialized as a single ``version\x1fdialect\x1fpass\x1fsha256``
-string so it can be a JSON object key.
+``(coop_data_doc.__version__, sql_dialect, parser-pass, file-path,
+sha256(file_text))`` — the content hash (never mtime) means an edit changes the
+key and forces a re-parse, while a tool upgrade or a dialect change invalidates
+the whole cache. The parser-pass tag ("objects"/"procs") keeps each file's two
+parses distinct. The repo-relative POSIX path keeps two *identical-content*
+files at different paths distinct: a contribution embeds its file path (node
+``source_file``, edge evidence, warning ``file``), so sharing one entry across
+paths would mis-attribute all of those to whichever file was parsed first
+(cost: a renamed file re-parses once). The key is serialized as a single
+``version\x1fdialect\x1fpass\x1fpath\x1fsha256`` string so it can be a JSON
+object key.
 
 Cache value
 -----------
@@ -52,7 +57,10 @@ from coop_data_doc.config import ParseWarning
 # Bump when the cached shape or the merge semantics change so old caches are
 # ignored rather than mis-replayed. Independent of the tool version (which is
 # ALSO part of every per-file key), but a coarser guard on the whole file.
-CACHE_VERSION = 1
+# v2: cache keys gained the file path (identical-content files at different
+# paths previously shared one entry, mis-attributing warnings/evidence) — the
+# bump drops pathless v1 entries instead of carrying them as dead weight.
+CACHE_VERSION = 2
 
 
 class ParseCacheEntry(BaseModel):
@@ -83,15 +91,19 @@ def file_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def cache_key(dialect: str, text: str, pass_tag: str = "") -> str:
-    """The per-file cache key string: version, dialect, pass, and content hash.
+def cache_key(dialect: str, text: str, pass_tag: str, path: str) -> str:
+    """The per-file cache key string: version, dialect, pass, path, content hash.
 
     ``pass_tag`` namespaces the two SQL parser passes ("objects" vs "procs")
     over the SAME file so their contributions don't collide on one key (the file
-    is parsed once by each). Same file + same tag + same content => same key =>
-    a hit that replays exactly that pass's contribution.
+    is parsed once by each). ``path`` (the entry's repo-relative POSIX path)
+    keeps identical-content files at different paths on separate entries — a
+    contribution embeds its own path in source_file/evidence/warnings, so a
+    shared entry would replay the FIRST file's attribution for both. Same file
+    + same tag + same content => same key => a hit that replays exactly that
+    pass's contribution.
     """
-    return f"{__version__}\x1f{dialect}\x1f{pass_tag}\x1f{file_sha256(text)}"
+    return f"{__version__}\x1f{dialect}\x1f{pass_tag}\x1f{path}\x1f{file_sha256(text)}"
 
 
 class ParseCache:
