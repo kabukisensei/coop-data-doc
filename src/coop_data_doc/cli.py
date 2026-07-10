@@ -121,6 +121,10 @@ def build_graph(
             read_cache=sql_read_cache,
             parse_cache=parse_cache,
             no_parse_cache=no_parse_cache,
+            # issue #33: a cold parallel build spends its time in the worker
+            # pool, during which the merge bar above would sit at 0% — show a
+            # dedicated bar ticking as each worker result arrives instead.
+            pool_progress=lambda total: progress.bar("Parsing SQL (workers)", total=total),
         )
     parse_cache.write()
     # cache warnings (load: corrupt/version-mismatch; write: could-not-write) surface as
@@ -480,37 +484,43 @@ def status(ctx: click.Context, config_path: str | None) -> None:
     click.echo(f"cache:     {cache_path} {'(exists)' if cache_path.is_file() else '(missing)'}")
 
     # Run the pipeline ONCE (it is the expensive part) and reuse it for both
-    # the freshness check and the unresolved summary.
+    # the freshness check and the unresolved summary. Progress goes to stderr
+    # only when a human is watching (TTY, not --quiet) — issue #33: on a large
+    # estate a silent status looks hung for the whole pipeline run.
+    progress = Progress(should_enable(ctx.obj["quiet"]))
     try:
-        graph, result, warnings = run_pipeline(config, interactive=False)
+        graph, result, warnings = run_pipeline(config, interactive=False, progress=progress)
     except Exception as exc:
         click.echo(f"status:    could not analyze repos ({exc})")
         return
 
     if out_dir.is_dir():
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                fresh = Path(tmp) / "docs"
-                # copy the committed tree first so human-authored Business
-                # Intent blocks survive, then regenerate the SAME artifacts
-                # `check` compares (markdown, graph.json, diagnostics.json/.md)
-                # so the two commands can never disagree about staleness.
-                shutil.copytree(out_dir, fresh)
-                render_markdown(graph, fresh, config.project_name)
-                diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
-                write_diagnostics(fresh, diagnostics, config.project_name)
-                (fresh / "diagnostics.json").write_text(
-                    json.dumps(diagnostics.to_json(), indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                    newline="\n",
-                )
-                to_json_file(graph, fresh / "graph.json")
-                stale = _tree_diff(out_dir, fresh)
-                if stale:
-                    click.echo(f"freshness: stale ({len(stale)} files differ)")
-                    click.echo("  Run `coop-data-doc build` to update.")
-                else:
-                    click.echo("freshness: up to date")
+            # the spinner wraps only the silent work; the result line prints
+            # after it so the spinner's \r rewrites never garble real output
+            with progress.spinner("Checking docs freshness"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    fresh = Path(tmp) / "docs"
+                    # copy the committed tree first so human-authored Business
+                    # Intent blocks survive, then regenerate the SAME artifacts
+                    # `check` compares (markdown, graph.json, diagnostics.json/.md)
+                    # so the two commands can never disagree about staleness.
+                    shutil.copytree(out_dir, fresh)
+                    render_markdown(graph, fresh, config.project_name)
+                    diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
+                    write_diagnostics(fresh, diagnostics, config.project_name)
+                    (fresh / "diagnostics.json").write_text(
+                        json.dumps(diagnostics.to_json(), indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    to_json_file(graph, fresh / "graph.json")
+                    stale = _tree_diff(out_dir, fresh)
+            if stale:
+                click.echo(f"freshness: stale ({len(stale)} files differ)")
+                click.echo("  Run `coop-data-doc build` to update.")
+            else:
+                click.echo("freshness: up to date")
         except Exception as exc:
             click.echo(f"freshness: could not check ({exc})")
     else:

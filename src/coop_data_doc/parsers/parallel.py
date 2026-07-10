@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 
 from coop_data_doc.config import ParseWarning
 from coop_data_doc.crawler import FileEntry
@@ -116,6 +117,7 @@ def parse_sql_parallel(
     read_cache: dict[str, str] | None = None,
     parse_cache: ParseCache | None = None,
     no_parse_cache: bool = False,
+    pool_progress: Callable[[int], AbstractContextManager[Callable[..., None]]] | None = None,
 ) -> list[ParseWarning]:
     """Run both SQL parser passes over ``entries``, parallelizing cache misses.
 
@@ -128,6 +130,14 @@ def parse_sql_parallel(
     ``jobs`` is the requested worker count (already validated/capped by the
     caller). ``jobs <= 1``, an empty/tiny estate, or a pool that fails to boot
     all fall back to the serial path.
+
+    ``pool_progress`` (optional, issue #33) is a context-manager factory —
+    ``pool_progress(total)`` yields a tick — driven once per POOL result while
+    the workers run (the long part of a cold parallel build, during which the
+    merge bar would otherwise sit at 0%). It is display-only and never touches
+    graph/warnings/cache state; ``on_file`` still ticks exactly 2·N times in
+    sorted merge order afterwards. Ticks arrive in ``executor.map`` submission
+    (= sorted miss) order.
     """
     # --jobs 1 (or no cache to compose with) => today's exact serial path.
     # Also fall back for a tiny estate: the pool's spawn cost would dominate.
@@ -174,15 +184,18 @@ def parse_sql_parallel(
     # pickling error) degrades to a serial re-parse of the misses.
     results: dict[str, tuple[dict | None, dict | None, str | None]] = {}
     if misses:
-        pool_results = _run_pool(misses, texts, dialect, jobs)
-        if pool_results is None:
-            # Pool never started: re-parse misses serially into throwaway
-            # graphs so we still populate the cache + get the entries. Keeps the
-            # deterministic sorted merge below unchanged.
-            for entry in misses:
-                results[entry.path] = _parse_one_serial(entry, texts[entry.path], dialect)
-        else:
-            results = pool_results
+        with pool_progress(len(misses)) if pool_progress is not None else nullcontext() as pool_tick:
+            tick = pool_tick if pool_tick is not None else _noop_tick
+            pool_results = _run_pool(misses, texts, dialect, jobs, on_result=tick)
+            if pool_results is None:
+                # Pool never started: re-parse misses serially into throwaway
+                # graphs so we still populate the cache + get the entries. Keeps the
+                # deterministic sorted merge below unchanged.
+                for entry in misses:
+                    results[entry.path] = _parse_one_serial(entry, texts[entry.path], dialect)
+                    tick(entry.path)
+            else:
+                results = pool_results
 
     # DETERMINISTIC MERGE, faithful to the serial path in EVERY observable way:
     #   * graph state — replay each file's contribution in sorted entry.path
@@ -271,15 +284,23 @@ def _merge_pass(
         on_file(entry.path)
 
 
+def _noop_tick(*_args: object, **_kwargs: object) -> None:
+    """Default pool-progress tick when no ``pool_progress`` factory is given."""
+
+
 def _run_pool(
     misses: list[FileEntry],
     texts: dict[str, str],
     dialect: str,
     jobs: int,
+    on_result: Callable[..., None] = _noop_tick,
 ) -> dict[str, tuple[dict | None, dict | None, str | None]] | None:
     """Fan the miss files out to a ProcessPoolExecutor, returning
     ``{path: (objects_dump, procs_dump, error)}`` or ``None`` if the pool could
     not even be created (caller then falls back to serial).
+
+    ``on_result`` (display-only) is ticked once per file as each
+    ``executor.map`` result arrives — submission (= sorted miss) order.
 
     ``executor.map`` blocks until every worker finishes (no per-worker timeout —
     a timeout firing mid-parse would abort the whole build; a worker either
@@ -309,6 +330,7 @@ def _run_pool(
             results: dict[str, tuple[dict | None, dict | None, str | None]] = {}
             for path, obj_dump, proc_dump, error in executor.map(parse_worker_both_passes, payloads):
                 results[path] = (obj_dump, proc_dump, error)
+                on_result(path)
         return results
     except Exception as exc:  # noqa: BLE001 — a pool that dies mid-run => serial
         _log.debug("parallel SQL parse: pool failed during map, falling back to sequential: %s", exc)

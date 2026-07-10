@@ -392,8 +392,8 @@ def test_worker_parse_error_becomes_parse_worker_error_warning(tmp_path: Path, m
 
     real_pool = parallel_mod._run_pool
 
-    def _one_file_errors(misses, texts, dialect, jobs):
-        results = real_pool(misses, texts, dialect, jobs)
+    def _one_file_errors(misses, texts, dialect, jobs, on_result=parallel_mod._noop_tick):
+        results = real_pool(misses, texts, dialect, jobs, on_result=on_result)
         if results is None:
             return None
         # force the first miss (sorted) to look like a worker crash
@@ -421,7 +421,7 @@ def test_worker_error_never_aborts_build_unit(tmp_path: Path, monkeypatch):
         (repo / f"t{i}.sql").write_text(f"CREATE TABLE dbo.t{i} (a INT);\n", encoding="utf-8")
     entries = _sql_entries(repo)
 
-    def _all_error(misses, texts_, dialect, jobs):
+    def _all_error(misses, texts_, dialect, jobs, on_result=parallel._noop_tick):
         return {e.path: (None, None, "boom") for e in misses}
 
     monkeypatch.setattr(parallel, "_run_pool", _all_error)
@@ -463,9 +463,9 @@ def test_cache_misses_only_go_to_pool(tmp_path: Path, monkeypatch):
     dispatched: list[str] = []
     real_pool = parallel._run_pool
 
-    def _spy_pool(misses, texts, dialect, jobs):
+    def _spy_pool(misses, texts, dialect, jobs, on_result=parallel._noop_tick):
         dispatched.extend(e.path for e in misses)
-        return real_pool(misses, texts, dialect, jobs)
+        return real_pool(misses, texts, dialect, jobs, on_result=on_result)
 
     monkeypatch.setattr(parallel, "_run_pool", _spy_pool)
     assert run(["build", "--non-interactive", "--skip-html", "--jobs", "4"], tmp_path).exit_code == 0
@@ -488,9 +488,9 @@ def test_cache_hit_replay_no_pool(tmp_path: Path, monkeypatch):
     dispatched: list[str] = []
     real_pool = parallel._run_pool
 
-    def _spy_pool(misses, texts, dialect, jobs):
+    def _spy_pool(misses, texts, dialect, jobs, on_result=parallel._noop_tick):
         dispatched.extend(e.path for e in misses)
-        return real_pool(misses, texts, dialect, jobs)
+        return real_pool(misses, texts, dialect, jobs, on_result=on_result)
 
     monkeypatch.setattr(parallel, "_run_pool", _spy_pool)
     assert run(["build", "--non-interactive", "--skip-html", "--jobs", "4"], tmp_path).exit_code == 0
@@ -512,7 +512,7 @@ def test_on_file_tick_per_merge(tmp_path: Path, monkeypatch):
     entries = _sql_entries(repo)
 
     # mock the pool: return results in REVERSE order to prove the merge re-sorts
-    def _reversed_results(misses, texts_, dialect, jobs):
+    def _reversed_results(misses, texts_, dialect, jobs, on_result=parallel._noop_tick):
         out: dict = {}
         for e in reversed(misses):
             out[e.path] = parallel._parse_one_serial(e, texts_[e.path], dialect)
@@ -527,6 +527,79 @@ def test_on_file_tick_per_merge(tmp_path: Path, monkeypatch):
     # objects pass (all files sorted) THEN procs pass (all files sorted)
     assert ticks == sorted_paths + sorted_paths
     assert len(ticks) == 2 * len(entries)
+
+
+def test_pool_progress_ticks_during_pool_phase(tmp_path: Path, monkeypatch):
+    """issue #33: the pool phase (the long part of a cold parallel build) drives
+    its own progress — pool_progress(total) is entered with the miss count and
+    ticked once per pool result — while on_file keeps its exact 2*N sorted-merge
+    contract (the bar no longer sits at 0% then jumps to 100%)."""
+    from contextlib import contextmanager
+
+    repo = tmp_path / "sql"
+    repo.mkdir()
+    for name in ("c", "a", "b", "d"):
+        (repo / f"{name}.sql").write_text(f"CREATE TABLE dbo.{name} (x INT);\n", encoding="utf-8")
+    entries = _sql_entries(repo)
+
+    def _fake_pool(misses, texts_, dialect, jobs, on_result=parallel._noop_tick):
+        out: dict = {}
+        for e in misses:  # tick per result, like the real executor.map loop
+            out[e.path] = parallel._parse_one_serial(e, texts_[e.path], dialect)
+            on_result(e.path)
+        return out
+
+    monkeypatch.setattr(parallel, "_run_pool", _fake_pool)
+    totals: list[int] = []
+    pool_ticks: list[str] = []
+
+    @contextmanager
+    def pool_progress(total):
+        totals.append(total)
+        yield pool_ticks.append
+
+    graph = LineageGraph()
+    cache = ParseCache(tmp_path / PARSE_CACHE)
+    merge_ticks: list[str] = []
+    parallel.parse_sql_parallel(
+        entries,
+        graph,
+        "tsql",
+        jobs=4,
+        on_file=merge_ticks.append,
+        parse_cache=cache,
+        pool_progress=pool_progress,
+    )
+    sorted_paths = [e.path for e in entries]
+    assert totals == [len(entries)]  # cold: every file is a miss
+    assert pool_ticks == sorted_paths  # submission (= sorted miss) order
+    assert merge_ticks == sorted_paths + sorted_paths  # 2*N contract unchanged
+
+
+def test_pool_progress_ticks_on_serial_fallback(tmp_path: Path, monkeypatch):
+    """A pool that never starts still ticks the pool progress once per miss
+    during the in-parent re-parse, so the display never freezes."""
+    from contextlib import contextmanager
+
+    repo = tmp_path / "sql"
+    repo.mkdir()
+    for i in range(4):
+        (repo / f"t{i}.sql").write_text(f"CREATE TABLE dbo.t{i} (x INT);\n", encoding="utf-8")
+    entries = _sql_entries(repo)
+    monkeypatch.setattr(parallel, "_run_pool", lambda *a, **k: None)  # bootstrap failure
+    pool_ticks: list[str] = []
+
+    @contextmanager
+    def pool_progress(total):
+        yield pool_ticks.append
+
+    graph = LineageGraph()
+    cache = ParseCache(tmp_path / PARSE_CACHE)
+    parallel.parse_sql_parallel(
+        entries, graph, "tsql", jobs=4, parse_cache=cache, pool_progress=pool_progress
+    )
+    assert pool_ticks == [e.path for e in entries]
+    assert graph.nodes  # the fallback really parsed
 
 
 # -- --jobs flag validation -----------------------------------------------------
