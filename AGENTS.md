@@ -211,9 +211,8 @@ pass the SAME `--reviews` arguments the build used — the config `reviews:`
 list is picked up automatically; only extra flag-passed files need repeating.
 Otherwise the trees legitimately differ (`findings.md`, chips, index) and
 `check` reports stale. `status` honors the config list only (no flag).
-Caveat: re-running the `setup` wizard rewrites the config from its prompts and
-does not carry a `reviews:` list forward — re-add it (or use `config-set`,
-which preserves it).
+Re-running the `setup` wizard carries an existing `reviews:` list through
+unchanged (like `config-set` and `set-folders`); it never prompts for one.
 
 ## Page Front-Matter Contract
 
@@ -345,7 +344,7 @@ graph, result, warnings = run_pipeline(config, interactive=False)
 
 ## Version
 
-This contract matches `coop-data-doc` version `0.30.0`.
+This contract matches `coop-data-doc` version `0.33.0`.
 
 ## Working the backlog (agents)
 

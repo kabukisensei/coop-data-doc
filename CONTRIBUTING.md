@@ -118,6 +118,10 @@ release and names the version. Never infer a release from a clean tree, a
 merged PR, or a finished task — pushing a `v*` tag publishes to PyPI and
 cannot be undone (versions are never reused).
 
+A feature PR must update this repo's own user-facing docs (`README.md`,
+`AGENTS.md`) in the same change — docs move with the feature, never in a
+later "sync" pass.
+
 Bump the version in `src/coop_data_doc/__init__.py` on every release — that is the
 single source of truth. `pyproject.toml` uses dynamic versioning
 (`[tool.hatch.version]`) and derives its version from `__version__`, so there is no

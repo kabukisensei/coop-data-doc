@@ -908,6 +908,8 @@ def run_setup(config_path: Path) -> Config | None:
         output_dir=output_dir,
         site_dir=site_dir,
         sql_dialect=sql_dialect,
+        # carry an existing reviews: list through unchanged (not prompted separately)
+        reviews=existing.reviews if existing is not None else None,
     )
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)

@@ -532,6 +532,57 @@ def test_rerun_prefills_layers(tmp_path: Path, monkeypatch):
     assert bronze_default == "erp_orders"
 
 
+def test_rerun_preserves_reviews(tmp_path: Path, monkeypatch):
+    # issue #40: re-running setup over a config with a reviews: list must
+    # carry it through verbatim (setup never prompts for it)
+    make_repos(tmp_path)
+    config_path = tmp_path / "coop-data-doc.yml"
+    config_path.write_text(
+        render_config_yaml(
+            project_name="Estate",
+            sql_path="./sql-repo",
+            pbi_path="./pbi-repo",
+            mappings=[],
+            reviews=["reviews/sql.json", "reviews/dax.json"],
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    answers = {
+        "Project name": "Estate",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "Gold layer — schemas": "mart",
+    }
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    config = wizard.run_setup(config_path)
+    assert config is not None
+    assert config.reviews == ["reviews/sql.json", "reviews/dax.json"]
+    text = config_path.read_text(encoding="utf-8")
+    assert '  - "reviews/sql.json"\n  - "reviews/dax.json"' in text
+
+
+def test_fresh_setup_emits_no_reviews_key(tmp_path: Path, monkeypatch):
+    # a fresh setup (no existing config) must not write a reviews: block
+    make_repos(tmp_path)
+    answers = {
+        "Project name": "Estate",
+        "SQL repo path": "./sql-repo",
+        "Power BI repo path": "./pbi-repo",
+        "Markdown output": "./docs",
+        "HTML site": "./site",
+        "Gold layer — schemas": "mart",
+    }
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    config_path = tmp_path / "coop-data-doc.yml"
+    config = wizard.run_setup(config_path)
+    assert config is not None
+    assert config.reviews == []
+    assert "reviews:" not in config_path.read_text(encoding="utf-8")
+
+
 def make_repos_with_folders(tmp_path: Path, sql_folders, pbi_folders):
     for name in sql_folders:
         (tmp_path / "sql-repo" / name).mkdir(parents=True)
