@@ -611,6 +611,55 @@ def test_pbir_non_object_json_degrades_to_warning(tmp_path: Path):
     assert any(w.category == "pbir_parse" for w in warnings)
 
 
+def test_visual_json_with_control_chars_parses(tmp_path: Path):
+    # Power BI writes raw control characters (literal newlines/tabs) inside
+    # JSON strings; strict parsers reject them. The tool must parse leniently —
+    # a real-estate visual.json failed exactly this way.
+    from coop_data_doc.crawler import FileEntry
+    from coop_data_doc.graph.model import NodeType
+
+    v = tmp_path / "visual.json"
+    # a literal tab and newline INSIDE the JSON string values (chr-built so the
+    # control characters are unambiguous in this test source)
+    raw = '{"name": "v1", "visual": {"visualType": "card", "title": "a' + chr(9) + "b" + chr(10) + 'c"}}'
+    v.write_text(raw, encoding="utf-8")
+    entry = FileEntry(
+        path="X.Report/definition/pages/p1/visuals/v1/visual.json",
+        abs_path=str(v),
+        repo_key="powerbi",
+        kind=FileKind.PBIR_VISUAL,
+        size=v.stat().st_size,
+    )
+    graph = LineageGraph()
+    warnings = parse_pbir([entry], [], [], graph)
+    assert not any(w.category == "pbir_parse" for w in warnings)
+    assert any(n.node_type == NodeType.VISUAL for n in graph.nodes.values())
+
+
+def test_stray_definition_pbir_outside_report_folder_skipped(tmp_path: Path):
+    # a definition.pbir at the repo root (download debris) must not mint a junk
+    # report node — warn and skip
+    from coop_data_doc.crawler import FileEntry
+    from coop_data_doc.graph.model import NodeType
+    import json as _json
+
+    f = tmp_path / "definition.pbir"
+    f.write_text(
+        _json.dumps({"datasetReference": {"byConnection": {"connectionString": 'initial catalog="M"'}}})
+    )
+    entry = FileEntry(
+        path="definition.pbir",
+        abs_path=str(f),
+        repo_key="powerbi",
+        kind=FileKind.PBIR_DEFINITION,
+        size=f.stat().st_size,
+    )
+    graph = LineageGraph()
+    warnings = parse_pbir_definitions([entry], graph)
+    assert any(w.category == "pbir_stray_file" and "outside a *.Report folder" in w.message for w in warnings)
+    assert not any(n.node_type == NodeType.REPORT for n in graph.nodes.values())
+
+
 def test_declared_model_byconnection_local_match(tmp_path: Path):
     # a byConnection definition.pbir whose `initial catalog` matches a LOADED model
     # wires the direct feeds edge, no external warning (issue #19).
@@ -1209,6 +1258,49 @@ def _two_model_report_graph(bindings):
     g.add_edge(Edge(source_id="visual:v1", target_id="report_page:p1", edge_type=EdgeType.FEEDS))
     g.add_edge(Edge(source_id="report_page:p1", target_id="report:r1", edge_type=EdgeType.FEEDS))
     return g
+
+
+def test_auto_datetime_internals_skipped():
+    # bindings to Power BI's hidden LocalDateTable_<guid> / DateTableTemplate_
+    # machinery are dropped silently: no warning, no pending metadata
+    g = _two_model_report_graph([_binding("localdatetable_274d1f6e-83c3-44ca-9148-9f454b4cbe12", "Year")])
+    warnings = link_visual_bindings(g)
+    assert warnings == []
+    assert "pending_model_resolution" not in g.nodes["visual:v1"].metadata
+
+
+def test_unmatched_entity_collapses_to_one_warning_per_report():
+    # an entity matching NO documented table is not "ambiguous" — it gets the
+    # unmatched_visual_entity category, once per (report, entity) even when
+    # several visuals bind it
+    from coop_data_doc.graph.model import Edge, EdgeType, Node, NodeType
+
+    g = _two_model_report_graph([_binding("ghost_table", "X")])
+    g.add_node(
+        Node(
+            id="visual:v2",
+            node_type=NodeType.VISUAL,
+            name="v2",
+            source_file="Report.pbip",
+            metadata={"bindings": [_binding("ghost_table", "Y")]},
+        )
+    )
+    g.add_edge(Edge(source_id="visual:v2", target_id="report_page:p1", edge_type=EdgeType.FEEDS))
+    warnings = link_visual_bindings(g)
+    unmatched = [w for w in warnings if w.category == "unmatched_visual_entity"]
+    assert len(unmatched) == 1
+    assert "ghost_table" in unmatched[0].message and "2 binding(s)" in unmatched[0].message
+    assert not any(w.category == "ambiguous_visual_binding" for w in warnings)
+
+
+def test_ambiguous_binding_warning_names_owning_models():
+    # a genuinely ambiguous entity (exists in a AND b, report has no context)
+    # warns once per (report, entity) and names the owning models
+    g = _two_model_report_graph([_binding("date", "Year")])
+    warnings = link_visual_bindings(g)
+    amb = [w for w in warnings if w.category == "ambiguous_visual_binding"]
+    assert len(amb) == 1
+    assert "a, b" in amb[0].message
 
 
 def test_ambiguous_binding_resolved_by_report_context():

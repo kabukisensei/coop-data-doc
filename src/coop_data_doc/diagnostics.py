@@ -34,6 +34,9 @@ _SEVERITY: dict[str, str] = {
     # fails even `check --lenient`. It is also self-degrading: the file simply contributes
     # nothing and the build completes; a re-run without --jobs re-parses it in-process.
     "parse_worker_error": "error",
+    # repo debris (a definition.pbir outside any *.Report folder): skipped and
+    # noted; nothing the estate documents is missing, so never an error
+    "pbir_stray_file": "warning",
     # degraded / heuristic lineage
     "dynamic_sql": "warning",
     "regex_fallback": "warning",

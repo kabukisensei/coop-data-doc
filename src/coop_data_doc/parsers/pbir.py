@@ -27,6 +27,13 @@ from coop_data_doc.graph.model import (
     normalize_identifier,
 )
 
+# Power BI auto date/time machinery: every date column gets a hidden
+# LocalDateTable_<guid> (plus one DateTableTemplate_<guid>) and visuals bind
+# date hierarchies through them. They are internal, hidden, and never part of
+# the documented model - matching them against real tables only produces
+# unmatchable-binding noise, so they are skipped up front.
+_AUTO_DATETIME_RE = re.compile(r"^(localdatetable_|datetabletemplate_)[0-9a-f\-]{8,}$")
+
 _KIND_KEYS = {
     "measure": "measure",
     "column": "column",
@@ -80,7 +87,7 @@ def _filter_fields(obj) -> set[tuple[str, str, str, str]]:
     JSON-embedded ``filters`` string; a non-parseable string yields nothing."""
     if isinstance(obj, str):
         try:
-            obj = json.loads(obj)
+            obj = json.loads(obj, strict=False)
         except (json.JSONDecodeError, TypeError):
             return set()
     out: set[tuple[str, str, str, str]] = set()
@@ -196,7 +203,9 @@ def _load_pbir_json(entry: FileEntry, warnings: list[ParseWarning]) -> dict | No
     string, or number) degrades to a warning too — the parser never raises on
     malformed input (hard rule 3)."""
     try:
-        data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
+        data = json.loads(
+            Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"), strict=False
+        )
     except (OSError, json.JSONDecodeError) as exc:
         warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
         return None
@@ -303,7 +312,7 @@ def parse_layout_json(
             if not isinstance(config_raw, str):
                 continue
             try:
-                config = json.loads(config_raw)
+                config = json.loads(config_raw, strict=False)
             except json.JSONDecodeError:
                 warnings.append(
                     ParseWarning(
@@ -365,7 +374,9 @@ def parse_legacy_reports(
         if on_file:
             on_file(entry.path)
         try:
-            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
+            data = json.loads(
+                Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"), strict=False
+            )
         except (OSError, json.JSONDecodeError) as exc:
             warnings.append(ParseWarning(file=entry.path, message=str(exc), category="report_json_parse"))
             continue
@@ -434,8 +445,19 @@ def parse_pbir_definitions(
     for entry in sorted(entries, key=lambda e: e.path):
         if on_file:
             on_file(entry.path)
+        if not any(part.lower().endswith(".report") for part in PurePosixPath(entry.path).parts):
+            warnings.append(
+                ParseWarning(
+                    file=entry.path,
+                    message="definition.pbir outside a *.Report folder — skipped (repo debris?)",
+                    category="pbir_stray_file",
+                )
+            )
+            continue
         try:
-            data = json.loads(Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"))
+            data = json.loads(
+                Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"), strict=False
+            )
         except (OSError, json.JSONDecodeError) as exc:
             warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
             continue
@@ -569,6 +591,8 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
         declared = declared_by_report.get(report) if report is not None else None
         pending: list[dict[str, str]] = []
         for binding in visual.metadata.get("bindings", []):
+            if _AUTO_DATETIME_RE.match(binding["entity"]):
+                continue  # auto date/time internals — never documented tables
             candidates = tables_by_name.get(binding["entity"], [])
             if declared:
                 # Restrict to the declared model when it actually has the table;
@@ -587,30 +611,60 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
             visual_pending[node_id] = pending
 
     # Pass 2: disambiguate each pending binding within the report's resolved models.
+    # Unresolved bindings are collected per (report, entity) and emitted as ONE
+    # warning each after the loop — a report with 40 visuals binding the same
+    # missing table used to produce 40 identical lines. Zero-candidate entities
+    # get their own category (they aren't "ambiguous" — nothing matched at all).
+    unmatched: dict[tuple[str, str], tuple[str, int]] = {}
+    ambiguous: dict[tuple[str, str], tuple[str, set[str], int]] = {}
     for node_id in sorted(visual_pending):
         visual = graph.nodes[node_id]
-        report = report_of_visual.get(visual.id)
-        models = report_models.get(report, set()) if report is not None else set()
+        report = report_of_visual.get(visual.id) or ""
+        models = report_models.get(report, set()) if report else set()
         still_pending: list[dict[str, str]] = []
         for binding in visual_pending[node_id]:
             candidates = tables_by_name.get(binding["entity"], [])
             scoped = [t for t in candidates if t.schema_name in models] if models else candidates
             if len(scoped) == 1:
                 _resolve(visual, binding, scoped[0])
+                continue
+            still_pending.append(binding)
+            key = (report, binding["entity"])
+            if not candidates:
+                file, count = unmatched.get(key, (visual.source_file, 0))
+                unmatched[key] = (file, count + 1)
             else:
-                still_pending.append(binding)
-                warnings.append(
-                    ParseWarning(
-                        file=visual.source_file,
-                        message=(
-                            f"visual binding {binding['entity']}.{binding['property']} is ambiguous "
-                            f"across {len(candidates)} models — not linked"
-                        ),
-                        category="ambiguous_visual_binding",
-                    )
-                )
+                file, owners, count = ambiguous.get(key, (visual.source_file, set(), 0))
+                owners.update(t.schema_name for t in candidates)
+                ambiguous[key] = (file, owners, count + 1)
         if still_pending:
             visual.metadata["pending_model_resolution"] = still_pending
+
+    for (report, entity), (file, count) in sorted(unmatched.items()):
+        warnings.append(
+            ParseWarning(
+                file=file,
+                message=(
+                    f"visual binding entity '{entity}' matches no documented table in any "
+                    f"model ({count} binding(s)) — the visuals may reference a table the "
+                    "model no longer has, or a model that isn't documented"
+                ),
+                category="unmatched_visual_entity",
+            )
+        )
+    for (report, entity), (file, owners, count) in sorted(ambiguous.items()):
+        owner_list = ", ".join(sorted(owners))
+        warnings.append(
+            ParseWarning(
+                file=file,
+                message=(
+                    f"visual binding entity '{entity}' is ambiguous — it exists in "
+                    f"{owner_list} but none is uniquely attributable to this report "
+                    f"({count} binding(s)) — not linked"
+                ),
+                category="ambiguous_visual_binding",
+            )
+        )
 
     # Report/page-scoped filters (definition/report.json, page.json, legacy
     # top-level/section filters): resolve against the report's models so a field
