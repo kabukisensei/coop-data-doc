@@ -444,6 +444,20 @@ def test_site_nav_report_under_multiple_models():
     assert "(no linked model)" not in nav  # every report here has a model
 
 
+def test_report_page_surfaces_unresolved_declared_model(tmp_path: Path):
+    # a report whose definition.pbir names a model that isn't documented must
+    # say so on its page (the #1 "why isn't my report linked?" question)
+    g = LineageGraph()
+    node = make_node(NodeType.REPORT, "", "orphan", display_name="Orphan")
+    node.metadata["declared_model"] = "service only model"
+    node.metadata["declared_model_unresolved"] = True
+    g.add_node(node)
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "report:orphan").read_text(encoding="utf-8")
+    assert "Not linked to a documented model" in page
+    assert "service only model" in page
+
+
 def test_report_page_no_measures_fallback(tmp_path: Path):
     # a bare report with no edges renders the empty-report placeholder, no model
     # sections, and must not crash

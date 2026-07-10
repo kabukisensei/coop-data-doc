@@ -658,6 +658,15 @@ def test_declared_model_byconnection_local_match(tmp_path: Path):
     assert not any(w.category == "pbir_external_model" for w in warnings)
 
 
+def test_declared_model_bypath_tolerates_backslashes():
+    # Windows-authored definition.pbir paths use backslashes; the declared
+    # model must still resolve (messy-estate hardening).
+    from coop_data_doc.parsers.pbir import _declared_model_name
+
+    data = {"datasetReference": {"byPath": {"path": "..\\Sales.SemanticModel"}}}
+    assert _declared_model_name(data) == "Sales"
+
+
 def test_pbir_definition_declares_model():
     # definition.pbir (byPath: ../Sales.SemanticModel) authoritatively binds the
     # report to its model: report node carries declared_model and a direct
