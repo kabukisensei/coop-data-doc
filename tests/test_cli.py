@@ -342,7 +342,7 @@ def test_interactive_menu_exit(tmp_path: Path, monkeypatch):
         def select(message, choices):
             assert "Found coop-data-doc.yml" in message
             values = [c.value for c in choices]
-            assert values == ["update", "scan", "setup", "check", "upgrade", "exit"]
+            assert values == ["update", "status", "scan", "map", "setup", "check", "upgrade", "exit"]
 
             class _Result:
                 @staticmethod
@@ -700,6 +700,55 @@ def test_interactive_menu_setup_from_subdir_edits_discovered_config(tmp_path: Pa
     assert result.exit_code == 0, result.output
     assert captured["path"] == tmp_path / "coop-data-doc.yml"  # the discovered parent config
     assert not (nested / "coop-data-doc.yml").exists()  # no shadowing nested config
+
+
+def test_interactive_menu_status_uses_discovered_config(tmp_path: Path, monkeypatch):
+    # issue #34: the menu's "Show project status" entry runs status against the
+    # DISCOVERED config (possibly in a parent dir), like the other entries.
+    from coop_data_doc import cli as cli_module
+
+    setup_workspace(tmp_path)
+    nested = tmp_path / "sub"
+    nested.mkdir()
+
+    class FakeQuestionary:
+        class Choice:
+            def __init__(self, title, value):
+                self.title = title
+                self.value = value
+
+        @staticmethod
+        def select(message, choices):
+            assert "Found coop-data-doc.yml" in message
+            assert "status" in [c.value for c in choices]
+
+            class _Result:
+                @staticmethod
+                def unsafe_ask():
+                    return "status"
+
+            return _Result()
+
+    monkeypatch.setattr(cli_module, "questionary", FakeQuestionary)
+    monkeypatch.setattr(cli_module, "_stdio_is_interactive", lambda: True)
+    result = run([], nested)
+    assert result.exit_code == 0, result.output
+    assert f"config:    {tmp_path / 'coop-data-doc.yml'}" in result.output
+
+
+def test_portal_url_is_valid_file_uri(tmp_path: Path, monkeypatch):
+    # issue #34: the portal line must be a real file URL — produced via
+    # Path.as_uri() (file:///C:/... on Windows, file:///... on POSIX), never
+    # string concatenation that keeps backslashes and drops the third slash.
+    from coop_data_doc import cli as cli_module
+
+    setup_workspace(tmp_path)
+    monkeypatch.setattr(cli_module, "build_site", lambda *args, **kwargs: None)
+    result = run(["build", "--non-interactive"], tmp_path)
+    assert result.exit_code == 0, result.output
+    portal_line = next(line for line in result.output.splitlines() if "HTML portal:" in line)
+    assert "file:///" in portal_line
+    assert "\\" not in portal_line
 
 
 def test_status_detects_staleness(tmp_path: Path):

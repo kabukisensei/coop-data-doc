@@ -377,7 +377,9 @@ def _interactive_home(ctx: click.Context) -> None:
         message = f"Found {config_path.name} at {config_path.parent}. What would you like to do?"
         choices = [
             questionary.Choice("Update the docs (scan repos + rebuild everything)", "update"),
+            questionary.Choice("Show project status (config, docs, freshness)", "status"),
             questionary.Choice("Scan only (refresh graph.json, no rendering)", "scan"),
+            questionary.Choice("Map ambiguous links now (interactive build)", "map"),
             questionary.Choice("Change settings (re-run the setup wizard)", "setup"),
             questionary.Choice("Check docs freshness (the CI gate)", "check"),
             questionary.Choice("Check for updates & show the upgrade command", "upgrade"),
@@ -411,11 +413,16 @@ def _interactive_home(ctx: click.Context) -> None:
         ctx.invoke(init, path=DEFAULT_CONFIG, force=False)
     elif action == "scan":
         ctx.invoke(scan, config_path=discovered, non_interactive=False, strict=False)
+    elif action == "status":
+        ctx.invoke(status, config_path=discovered)
     elif action == "check":
         ctx.invoke(check, config_path=discovered)
     elif action == "upgrade":
         ctx.invoke(upgrade)
-    elif action == "update":
+    elif action in ("update", "map"):
+        # "map" is the same interactive build as "update" — surfaced separately
+        # because it is the one action that NEEDS a human at a terminal (the
+        # ambiguous-link prompts); both run against the discovered config.
         _run_build(
             ctx,
             config_path=discovered,
@@ -1158,7 +1165,9 @@ def _run_build(
     else:
         build_site(mkdocs_config, config.site_dir())
     index = config.site_dir() / "index.html"
-    click.echo(f"HTML portal:   file://{index}", err=True)
+    # as_uri() renders a valid file URL on every OS — file:///C:/... on Windows
+    # (an f"file://{path}" would keep backslashes and drop the third slash).
+    click.echo(f"HTML portal:   {index.resolve().as_uri()}", err=True)
 
 
 _BUILD_OPTIONS = [
