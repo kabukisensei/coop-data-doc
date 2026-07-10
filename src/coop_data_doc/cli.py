@@ -583,8 +583,33 @@ def setup(ctx: click.Context, path: str) -> None:
         build_now = None
     if build_now:
         _run_build(ctx, path, non_interactive=False, strict=False, skip_html=False, serve=False)
+        _first_run_tour(config, path)
     else:
         click.echo(f"Build them whenever you're ready with:  {build_cmd}")
+
+
+def _first_run_tour(config: Config, path: str) -> None:
+    """The closing tour after a setup-invoked build (issue #37): the four facts
+    that decide whether a team adopts the tool, surfaced at the moment of
+    success. Setup flow only — plain `build` runs (and CI logs) never grow a
+    tour. Plain echo, no prompt, TTY-agnostic."""
+    suffix = "" if path == DEFAULT_CONFIG else f" --config {path}"
+    index = config.site_dir() / "index.html"
+    portal = (
+        index.resolve().as_uri()
+        if index.is_file()
+        else "(HTML site not built — run `coop-data-doc build` without --skip-html)"
+    )
+    to_commit = [config.output.dir]
+    if (config.base_dir / ".lineage-cache.json").is_file():
+        # the mapping-answer cache makes future runs fully automatic — but only
+        # mention it when this run actually produced one
+        to_commit.insert(0, ".lineage-cache.json")
+    click.echo("\n✓ Docs built.")
+    click.echo(f"\n  Open the portal:      {portal}")
+    click.echo(f"  Commit these files:   {'  '.join(to_commit)}")
+    click.echo(f"  Gate CI with:         coop-data-doc check{suffix}")
+    click.echo(f"  Rebuild any time:     coop-data-doc build{suffix}")
 
 
 @cli.command()

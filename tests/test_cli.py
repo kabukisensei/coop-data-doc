@@ -736,6 +736,79 @@ def test_interactive_menu_status_uses_discovered_config(tmp_path: Path, monkeypa
     assert f"config:    {tmp_path / 'coop-data-doc.yml'}" in result.output
 
 
+def _fake_site_builder(cli_module, monkeypatch):
+    """Replace the real mkdocs build with a stub that still produces index.html,
+    so portal-link assertions work without paying for a full site build."""
+
+    def fake_build_site(mkdocs_config, site_dir, on_page=None):
+        Path(site_dir).mkdir(parents=True, exist_ok=True)
+        (Path(site_dir) / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    monkeypatch.setattr(cli_module, "build_site", fake_build_site)
+
+
+def _fake_confirm_questionary(answer):
+    class FakeQuestionary:
+        @staticmethod
+        def confirm(message, **kwargs):
+            class _Result:
+                @staticmethod
+                def ask():
+                    return answer
+
+            return _Result()
+
+    return FakeQuestionary
+
+
+def test_setup_build_now_prints_first_run_tour(tmp_path: Path, monkeypatch):
+    # issue #37: the happy first run (setup -> build now) closes with the four
+    # adoption facts: portal link, what to commit, the CI gate, how to rebuild.
+    from coop_data_doc import cli as cli_module
+    from coop_data_doc import wizard as wizard_module
+    from coop_data_doc.config import Config
+
+    setup_workspace(tmp_path)
+    monkeypatch.setattr(wizard_module, "run_setup", lambda p: Config.load(Path(p)))
+    monkeypatch.setattr(cli_module, "questionary", _fake_confirm_questionary(True))
+    _fake_site_builder(cli_module, monkeypatch)
+    result = run(["setup"], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert "✓ Docs built." in result.output
+    assert "Open the portal:" in result.output and "file:///" in result.output
+    assert "Commit these files:" in result.output and "data-docs" in result.output
+    assert "Gate CI with:         coop-data-doc check" in result.output
+    assert "Rebuild any time:     coop-data-doc build" in result.output
+
+
+def test_setup_build_later_prints_no_tour(tmp_path: Path, monkeypatch):
+    # answering "no" keeps today's single follow-up line — no tour
+    from coop_data_doc import cli as cli_module
+    from coop_data_doc import wizard as wizard_module
+    from coop_data_doc.config import Config
+
+    setup_workspace(tmp_path)
+    monkeypatch.setattr(wizard_module, "run_setup", lambda p: Config.load(Path(p)))
+    monkeypatch.setattr(cli_module, "questionary", _fake_confirm_questionary(False))
+    result = run(["setup"], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert "Build them whenever you're ready" in result.output
+    assert "Open the portal:" not in result.output
+    assert "Commit these files:" not in result.output
+
+
+def test_plain_build_prints_no_tour(tmp_path: Path, monkeypatch):
+    # a plain `build` (the CI path) must not grow a tour
+    from coop_data_doc import cli as cli_module
+
+    setup_workspace(tmp_path)
+    _fake_site_builder(cli_module, monkeypatch)
+    result = run(["build", "--non-interactive"], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert "Commit these files:" not in result.output
+    assert "Gate CI with:" not in result.output
+
+
 def test_portal_url_is_valid_file_uri(tmp_path: Path, monkeypatch):
     # issue #34: the portal line must be a real file URL — produced via
     # Path.as_uri() (file:///C:/... on Windows, file:///... on POSIX), never
