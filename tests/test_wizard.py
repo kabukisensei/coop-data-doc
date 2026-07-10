@@ -817,6 +817,153 @@ def test_folder_checkbox_rechecking_drops_its_exclude(tmp_path: Path, monkeypatc
     assert config.repos["sql"].exclude == []  # archive re-checked → exclude dropped
 
 
+def make_sql_estate(tmp_path: Path):
+    """Repos with real SQL in three schemas, so the wizard's scan discovers
+    schemas to offer as layer checkboxes (issue #35)."""
+    sql = tmp_path / "sql-repo"
+    sql.mkdir()
+    (sql / "marts.sql").write_text(
+        "CREATE VIEW mart.v_sales AS SELECT a FROM stg.raw_orders;\nGO\n", encoding="utf-8"
+    )
+    (sql / "erp.sql").write_text("CREATE TABLE erp.customers (id INT);\nGO\n", encoding="utf-8")
+    (tmp_path / "pbi-repo").mkdir()
+
+
+def test_layer_checkboxes_from_scanned_schemas(tmp_path: Path, monkeypatch):
+    # issue #35: with repos on disk the layer prompts are checkboxes over the
+    # scanned schemas — confirm, don't type — and each schema is offered once
+    # (a bronze pick disappears from the silver/gold choices).
+    make_sql_estate(tmp_path)
+    captured: dict = {}
+
+    def router(kind, message, kwargs):
+        if kind == "checkbox" and "Bronze layer" in message:
+            captured["bronze"] = kwargs["choices"]
+            return ["erp"]
+        if kind == "checkbox" and "Silver layer" in message:
+            return []  # skip silver
+        if kind == "checkbox" and "Gold layer" in message:
+            captured["gold"] = kwargs["choices"]
+            return ["mart"]
+        if "Project name" in message:
+            return "Estate"
+        if "SQL repo path" in message:
+            return "./sql-repo"
+        if "Power BI repo path" in message:
+            return "./pbi-repo"
+        if "Markdown output" in message:
+            return "./docs"
+        if "HTML site" in message:
+            return "./site"
+        if kind == "checkbox":
+            return [c.value for c in kwargs.get("choices", [])]
+        if kind == "confirm":
+            return False
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
+    assert config is not None
+    # checkbox picks land in the config exactly like typed answers did
+    assert config.layers["bronze"].schemas == ["erp"]
+    assert config.layers["gold"].schemas == ["mart"]
+    assert "silver" not in config.layers
+    # bronze offered every discovered schema (+ the typed escape hatch)
+    bronze_values = [c.value for c in captured["bronze"]]
+    assert bronze_values == ["erp", "mart", "stg", "__manual__"]
+    # gold no longer offers the schema bronze took
+    gold_values = [c.value for c in captured["gold"]]
+    assert "erp" not in gold_values
+    assert "mart" in gold_values and "stg" in gold_values
+
+
+def test_layer_checkbox_manual_escape_hatch(tmp_path: Path, monkeypatch):
+    # picking the "(add schemas by typing them next)" entry appends typed
+    # schemas — for schemas not in the repo yet — without duplicates.
+    make_sql_estate(tmp_path)
+
+    def router(kind, message, kwargs):
+        if kind == "checkbox" and "Gold layer" in message:
+            return ["mart", "__manual__"]
+        if "Gold layer — additional schemas" in message:
+            return "future_gold, mart"  # mart already picked -> deduped
+        if kind == "checkbox" and "layer" in message:
+            return []  # skip bronze/silver
+        if "Project name" in message:
+            return "Estate"
+        if "SQL repo path" in message:
+            return "./sql-repo"
+        if "Power BI repo path" in message:
+            return "./pbi-repo"
+        if "Markdown output" in message:
+            return "./docs"
+        if "HTML site" in message:
+            return "./site"
+        if kind == "checkbox":
+            return [c.value for c in kwargs.get("choices", [])]
+        if kind == "confirm":
+            return False
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
+    assert config is not None
+    assert config.layers["gold"].schemas == ["mart", "future_gold"]
+
+
+def test_layer_checkbox_rerun_prechecks_saved_schemas(tmp_path: Path, monkeypatch):
+    # re-running setup pre-checks the schemas already in each layer rule
+    # (checkbox parity with test_rerun_prefills_layers), and keeps schemas
+    # saved in a rule but no longer discovered (offered checked).
+    make_sql_estate(tmp_path)
+    config_path = tmp_path / "coop-data-doc.yml"
+    config_path.write_text(
+        render_config_yaml(
+            project_name="Estate",
+            sql_path="./sql-repo",
+            pbi_path="./pbi-repo",
+            mappings=[],
+            layers={"gold": {"schemas": ["mart", "not_scanned_yet"], "paths": []}},
+            output_dir="./docs",
+            site_dir="./site",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    captured: dict = {}
+
+    def router(kind, message, kwargs):
+        if kind == "checkbox" and "Gold layer" in message:
+            captured["gold"] = kwargs["choices"]
+            return [c.value for c in kwargs["choices"] if getattr(c, "checked", False)]  # honor prefill
+        if kind == "checkbox" and "layer" in message:
+            return []
+        if "Project name" in message:
+            return "Estate"
+        if "SQL repo path" in message:
+            return "./sql-repo"
+        if "Power BI repo path" in message:
+            return "./pbi-repo"
+        if "Markdown output" in message:
+            return "./docs"
+        if "HTML site" in message:
+            return "./site"
+        if kind == "checkbox":
+            return [c.value for c in kwargs.get("choices", [])]
+        if kind == "confirm":
+            return False
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    config = wizard.run_setup(config_path)
+    assert config is not None
+    checked = {c.value: c.checked for c in captured["gold"] if c.value != "__manual__"}
+    assert checked["mart"] is True  # saved in the rule -> pre-checked
+    assert checked["not_scanned_yet"] is True  # saved but undiscovered -> still offered, checked
+    assert checked["erp"] is False and checked["stg"] is False
+    assert config.layers["gold"].schemas == ["mart", "not_scanned_yet"]  # round-trips untouched
+
+
 def test_ctrl_c_writes_nothing(tmp_path: Path, monkeypatch):
     make_repos(tmp_path)
 

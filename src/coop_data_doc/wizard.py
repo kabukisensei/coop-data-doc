@@ -236,6 +236,117 @@ def _ask_manual_schema(default: str) -> str | None:
     return raw or None
 
 
+def _candidate_config(
+    *,
+    base_dir: Path,
+    project_name: str,
+    sql_path: str,
+    pbi_path: str,
+    sql_include: list[str],
+    sql_exclude: list[str],
+    pbi_include: list[str],
+    pbi_exclude: list[str],
+    sql_dialect: str,
+    mappings: list[tuple[str, str]],
+    layers: dict[str, dict[str, list[str]]],
+    ignore_schemas: list[str],
+) -> Config:
+    """A throwaway Config built from the wizard's in-flight answers (never
+    written to disk), for dry-run scanning/linking."""
+    rendered = render_config_yaml(
+        project_name=project_name,
+        sql_path=sql_path,
+        pbi_path=pbi_path,
+        mappings=mappings,
+        layers=layers,
+        ignore_schemas=ignore_schemas,
+        branding={},
+        sql_include=sql_include,
+        sql_exclude=sql_exclude,
+        pbi_include=pbi_include,
+        pbi_exclude=pbi_exclude,
+        sql_dialect=sql_dialect,
+    )
+    config = Config.model_validate(yaml.safe_load(rendered))
+    config._base_dir = base_dir
+    return config
+
+
+def _scan_estate(
+    *,
+    base_dir: Path,
+    project_name: str,
+    sql_path: str,
+    pbi_path: str,
+    sql_include: list[str],
+    sql_exclude: list[str],
+    pbi_include: list[str],
+    pbi_exclude: list[str],
+    sql_dialect: str,
+) -> LineageGraph | None:
+    """Parse the estate ONCE, before the layer and mapping questions, so both
+    steps confirm discovered facts instead of asking for typed names (issue
+    #35). The scan runs with no layer/ignore rules — those are exactly what it
+    feeds — and ``_autosuggest_mappings`` applies them to a copy once answered.
+    Returns ``None`` when the repos aren't on disk yet (or the scan fails), so
+    callers fall back to the typed prompts."""
+    import logging
+
+    sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
+    pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
+    if not (sql_abs.is_dir() and pbi_abs.is_dir()):
+        return None  # nothing to scan; callers use manual entry
+
+    from coop_data_doc.cli import build_graph  # lazy: avoid the wizard<->cli cycle
+    from coop_data_doc.progress import Progress, should_enable
+
+    logging.getLogger("sqlglot").setLevel(logging.ERROR)  # the dry-run shouldn't spam parse notes
+    print("\nScanning your repos (read-only, a few seconds)…", file=sys.stderr)
+    config = _candidate_config(
+        base_dir=base_dir,
+        project_name=project_name,
+        sql_path=sql_path,
+        pbi_path=pbi_path,
+        sql_include=sql_include,
+        sql_exclude=sql_exclude,
+        pbi_include=pbi_include,
+        pbi_exclude=pbi_exclude,
+        sql_dialect=sql_dialect,
+        mappings=[],
+        layers={},
+        ignore_schemas=[],
+    )
+    try:
+        parsed, _ = build_graph(config, progress=Progress(should_enable(quiet=False)))
+    except Exception as exc:  # noqa: BLE001 — a failed dry-run degrades to typed prompts
+        print(f"  note: could not scan the repos ({exc}); falling back to typed prompts", file=sys.stderr)
+        return None
+    return parsed
+
+
+def _sql_schemas(parsed: LineageGraph | None) -> list[str]:
+    """Distinct schemas of the scanned estate's SQL-side objects, sorted —
+    the checkbox choices for the medallion-layers step."""
+    if parsed is None:
+        return []
+    from coop_data_doc.graph.model import NodeType
+
+    sql_types = (
+        NodeType.BRONZE_TABLE,
+        NodeType.SILVER_TABLE,
+        NodeType.GOLD_TABLE,
+        NodeType.VIEW,
+        NodeType.STORED_PROC,
+    )
+    return sorted(
+        {
+            node.schema_name
+            for node in parsed.nodes.values()
+            if node.node_type in sql_types and node.schema_name
+        }
+    )
+
+
 def _autosuggest_mappings(
     *,
     base_dir: Path,
@@ -250,68 +361,64 @@ def _autosuggest_mappings(
     ignore_schemas: list[str],
     sql_dialect: str,
     mappings: list[tuple[str, str]],
+    parsed: LineageGraph | None,
 ) -> list[tuple[str, str]] | None:
-    """Dry-run the pipeline and propose the schema_mappings actually needed to
-    link Power BI tables to their SQL sources, deriving each from where the
-    unresolved tables' object names really live (confirm, don't type). Returns
-    the final ``[(schema, model)]`` list, or ``None`` when the repos aren't on
-    disk yet so the caller falls back to manual entry. ``mappings`` seeds the
-    working set (prefilled/kept rows).
+    """Propose the schema_mappings actually needed to link Power BI tables to
+    their SQL sources, deriving each from where the unresolved tables' object
+    names really live (confirm, don't type). ``parsed`` is the estate scanned
+    once by ``_scan_estate`` (before the layer questions); returns ``None``
+    when it is ``None`` (repos not on disk) so the caller falls back to manual
+    entry. ``mappings`` seeds the working set (prefilled/kept rows).
     """
-    import logging
     from collections import Counter
 
-    from coop_data_doc.config import Config
     from coop_data_doc.graph.model import NodeType, normalize_identifier
 
-    sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
-    pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
-    if not (sql_abs.is_dir() and pbi_abs.is_dir()):
-        return None  # nothing to scan; caller does manual entry
+    if parsed is None:
+        return None  # nothing was scanned; caller does manual entry
 
-    from coop_data_doc.cli import build_graph, resolve_graph  # lazy: avoid the wizard<->cli cycle
+    from coop_data_doc.cli import resolve_graph  # lazy: avoid the wizard<->cli cycle
+    from coop_data_doc.layering import assign_layers, prune_schemas
     from coop_data_doc.progress import Progress, should_enable
 
-    # Drive the dry-run's own crawl/parse/link progress on stderr so the scan
-    # shows a spinner and bars instead of sitting silent after the message below
-    # (disabled automatically when stderr isn't a TTY, e.g. under tests/CI).
+    # Drive the dry-run's own link progress on stderr so the scan shows bars
+    # instead of sitting silent (disabled when stderr isn't a TTY, e.g. tests).
     scan_progress = Progress(should_enable(quiet=False))
 
     def resolve(working: list[tuple[str, str]]) -> tuple[LineageGraph, ResolutionResult]:
         """Resolve the parsed estate against one mapping set, on a throwaway copy
         so ``parsed`` stays pristine for the next call. Only the (cheap) link
-        step re-runs — the crawl/parse happens once, above."""
+        step re-runs — the crawl/parse happened once, in _scan_estate."""
         graph = parsed.model_copy(deep=True)
         result, _ = resolve_graph(graph, build_config(working), interactive=False, progress=scan_progress)
         return graph, result
 
     def build_config(working: list[tuple[str, str]]) -> Config:
-        rendered = render_config_yaml(
+        return _candidate_config(
+            base_dir=base_dir,
             project_name=project_name,
             sql_path=sql_path,
             pbi_path=pbi_path,
-            mappings=working,
-            layers=layers,
-            ignore_schemas=ignore_schemas,
-            branding={},
             sql_include=sql_include,
             sql_exclude=sql_exclude,
             pbi_include=pbi_include,
             pbi_exclude=pbi_exclude,
             sql_dialect=sql_dialect,
+            mappings=working,
+            layers=layers,
+            ignore_schemas=ignore_schemas,
         )
-        config = Config.model_validate(yaml.safe_load(rendered))
-        config._base_dir = base_dir
-        return config
 
-    logging.getLogger("sqlglot").setLevel(logging.ERROR)  # the dry-run shouldn't spam parse notes
     print(
-        "\nScanning your repos to connect Power BI tables to their SQL sources (read-only, a few seconds)…",
+        "\nConnecting Power BI tables to their SQL sources (read-only, a few seconds)…",
         file=sys.stderr,
     )
-    # Parse the estate ONCE; both the suggest pass here and the verify pass below
-    # re-link this same parsed graph rather than re-crawling and re-parsing.
-    parsed, _ = build_graph(build_config(mappings), progress=scan_progress)
+    # The estate was parsed BEFORE the layer/ignore answers existed (that scan
+    # feeds them) — apply both post-passes to a copy now for parity with a real
+    # build (build_graph runs prune_schemas then assign_layers in this order).
+    parsed = parsed.model_copy(deep=True)
+    prune_schemas(parsed, ignore_schemas)
+    assign_layers(parsed, build_config(mappings))
     graph, result = resolve(mappings)
 
     # index: normalized SQL object name -> set of schemas that contain it
@@ -436,6 +543,66 @@ def _autosuggest_mappings(
             file=sys.stderr,
         )
     return list(mappings)
+
+
+_LAYER_EXAMPLES = {"bronze": "erp_orders, erp_finance", "silver": "stg", "gold": "mart, common, silver"}
+
+
+def _layer_csv_prompt(layer: str, prior: list[str]) -> list[str]:
+    """The classic free-text layer prompt (repos not scanned / nothing found)."""
+    return _ask_csv(
+        f"{layer.capitalize()} layer — schemas (comma-separated, e.g. "
+        f"{_LAYER_EXAMPLES[layer]}, or blank to skip):",
+        prior,
+    )
+
+
+def _ask_layer_schemas(existing: Config | None, discovered: list[str]) -> dict[str, list[str]]:
+    """Per-layer schema assignment. With a scanned estate, each layer offers the
+    not-yet-assigned discovered schemas as checkboxes — confirm, don't type
+    (issue #35) — with a typed escape hatch for schemas not in the repos yet.
+    Without a scan (repos absent/empty), the classic free-text prompts remain,
+    prefilled from the existing config exactly as before."""
+    layer_schemas: dict[str, list[str]] = {}
+    if not discovered:
+        for layer in VALID_LAYERS:
+            existing_rule = existing.layers.get(layer) if existing else None
+            layer_schemas[layer] = _layer_csv_prompt(layer, existing_rule.schemas if existing_rule else [])
+        return layer_schemas
+
+    remaining = list(discovered)
+    for layer in VALID_LAYERS:  # bronze, silver, gold — each schema offered once
+        existing_rule = existing.layers.get(layer) if existing else None
+        prior = list(existing_rule.schemas) if existing_rule else []
+        prior_keys = {schema.lower() for schema in prior}
+        remaining_keys = {schema.lower() for schema in remaining}
+        # schemas saved in this layer's rule but not (or no longer) discovered
+        # stay offered — checked — so a re-run round-trips the config untouched
+        extras = [schema for schema in prior if schema.lower() not in remaining_keys]
+        names = remaining + extras
+        if not names:
+            layer_schemas[layer] = _layer_csv_prompt(layer, prior)
+            continue
+        choices = [questionary.Choice(name, value=name, checked=name.lower() in prior_keys) for name in names]
+        choices.append(questionary.Choice("(add schemas by typing them next)", value="__manual__"))
+        selected = _ask(
+            questionary.checkbox(
+                f"{layer.capitalize()} layer — pick its schemas "
+                "(SPACE toggles, ENTER confirms; none = skip this layer):",
+                choices=choices,
+            )
+        )
+        chosen = [schema for schema in selected if schema != "__manual__"]
+        if "__manual__" in selected:
+            taken = {schema.lower() for schema in chosen}
+            for extra in _ask_csv(f"{layer.capitalize()} layer — additional schemas (comma-separated):", []):
+                if extra.lower() not in taken:
+                    chosen.append(extra)
+                    taken.add(extra.lower())
+        layer_schemas[layer] = chosen
+        assigned = {schema.lower() for schema in chosen}
+        remaining = [schema for schema in remaining if schema.lower() not in assigned]
+    return layer_schemas
 
 
 def run_setup(config_path: Path) -> Config | None:
@@ -571,28 +738,31 @@ def run_setup(config_path: Path) -> Config | None:
             "**/Editor and Theme Files/** — blank for none):",
         )
 
+    # --- scan once (read-only): the layers step below and the schema-mapping
+    #     step later both confirm discovered facts instead of asking the user
+    #     to type schema names from memory (issue #35) ---
+    sql_dialect = existing.sql_dialect if existing else "tsql"
+    parsed = _scan_estate(
+        base_dir=base_dir,
+        project_name=project_name,
+        sql_path=sql_path,
+        pbi_path=pbi_path,
+        sql_include=sql_include,
+        sql_exclude=sql_exclude,
+        pbi_include=pbi_include,
+        pbi_exclude=pbi_exclude,
+        sql_dialect=sql_dialect,
+    )
+
     # --- medallion layers: assign by SCHEMA (the common case) ---
     print("\n── Medallion layers ──", file=sys.stderr)
     print(
         "  Assign each layer by SCHEMA name. In a Fabric/SQL warehouse the schema IS\n"
-        "  the folder, so schemas alone are all you need. Leave a layer blank to skip it.",
+        "  the folder, so schemas alone are all you need. Leave a layer blank (or\n"
+        "  unchecked) to skip it.",
         file=sys.stderr,
     )
-    layer_schemas: dict[str, list[str]] = {}
-    for layer in VALID_LAYERS:  # bronze, silver, gold
-        existing_rule = existing.layers.get(layer) if existing else None
-        layer_schemas[layer] = _ask_csv(
-            f"{layer.capitalize()} layer — schemas (comma-separated, e.g. "
-            + (
-                "erp_orders, erp_finance"
-                if layer == "bronze"
-                else "mart, common, silver"
-                if layer == "gold"
-                else "stg"
-            )
-            + ", or blank to skip):",
-            existing_rule.schemas if existing_rule else [],
-        )
+    layer_schemas = _ask_layer_schemas(existing, _sql_schemas(parsed))
 
     # Folder-based layering is an advanced fallback for repos where a layer is
     # a directory rather than a schema. Most repos don't need it, so it's off
@@ -683,7 +853,6 @@ def run_setup(config_path: Path) -> Config | None:
 
     # --- schema → semantic-model hints ---
     print("\n── Power BI: connecting tables to their SQL sources ──", file=sys.stderr)
-    sql_dialect = existing.sql_dialect if existing else "tsql"
     mappings: list[tuple[str, str]] = []
     if existing is not None and existing.schema_mappings:
         current = ", ".join(f"{m.schema_name} → {m.model}" for m in existing.schema_mappings)
@@ -693,9 +862,9 @@ def run_setup(config_path: Path) -> Config | None:
         if keep:
             mappings = [(m.schema_name, m.model) for m in existing.schema_mappings]
 
-    # When the repos are on disk, dry-run the pipeline and auto-derive the schema
-    # mappings that are actually needed (confirm, don't type). Falls back to
-    # manual entry when the repos aren't cloned yet.
+    # When the repos are on disk (= the estate was scanned above), auto-derive
+    # the schema mappings that are actually needed (confirm, don't type).
+    # Falls back to manual entry when the repos aren't cloned yet.
     auto = _autosuggest_mappings(
         base_dir=base_dir,
         project_name=project_name,
@@ -709,6 +878,7 @@ def run_setup(config_path: Path) -> Config | None:
         ignore_schemas=ignore_schemas,
         sql_dialect=sql_dialect,
         mappings=mappings,
+        parsed=parsed,
     )
     if auto is not None:
         mappings = auto
