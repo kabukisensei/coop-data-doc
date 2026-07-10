@@ -29,6 +29,21 @@
    (many fact columns) grows past the viewport and scrolls instead of squishing
    every cell into an illegible sliver. Per-column min-widths keep the cells
    readable in the scrolling case. */
+/* Material wraps every table in its own .md-typeset__scrollwrap — INSIDE
+   .rel-grid that means two nested horizontal scroll containers (a second
+   scrollbar) and the header row's vertical sticky binding to the inner
+   wrapper, which never scrolls vertically. Flatten the wrappers so .rel-grid
+   is the ONE scroll container for both axes. */
+.md-typeset .rel-grid .md-typeset__scrollwrap {
+  margin: 0;
+  overflow: visible;
+}
+.md-typeset .rel-grid .md-typeset__table {
+  display: block;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
 .md-typeset .rel-grid {
   overflow: auto; /* both axes: wide models scroll right, tall models scroll down... */
   max-height: calc(100vh - 11rem); /* ...against a bounded viewport so the frozen header can stick */
@@ -104,15 +119,18 @@
    hides itself there. */
 @media screen and (min-width: 76.25em) {
   .md-sidebar--primary {
+    /* Material's primary sidebar is a ~53px sticky element whose nav content
+       OVERFLOWS VISIBLY by design — never put overflow:hidden on the base
+       state (it clips the whole menu to the title; the collapsed state below
+       is the only place clipping belongs). */
     transition:
       width 0.25s ease,
       opacity 0.2s ease;
-    overflow: hidden;
-    white-space: nowrap; /* nav labels glide off-edge instead of rewrapping mid-slide */
   }
   body.nav-collapsed .md-sidebar--primary {
     width: 0;
     opacity: 0;
+    overflow: hidden;
     pointer-events: none;
   }
 }

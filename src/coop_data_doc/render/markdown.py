@@ -592,6 +592,20 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
 
     parts = [_front_matter(graph, node), "", f"# {_text(node.qualified_display)}", ""]
 
+    # An unresolved definition.pbir declaration is the #1 "why isn't my report
+    # under its model?" question on messy estates — answer it on the page.
+    if node.metadata.get("declared_model_unresolved"):
+        declared = str(node.metadata.get("declared_model", ""))
+        parts += [
+            "> ⚠ **Not linked to a documented model.** This report's `definition.pbir` "
+            f"declares the model {_inline_code(declared)}, which is not among the documented "
+            "semantic models — no link is made (the tool never guesses). If that model should "
+            "be documented, check that its `.SemanticModel` folder is crawled (the wizard's "
+            "model selection / the powerbi repo's include globs). If it lives only in the "
+            "Power BI service or another repo, this is expected.",
+            "",
+        ]
+
     for model in models:
         tbls = tables_by_model.get(model.name, [])
         meas = measures_by_model.get(model.name, [])

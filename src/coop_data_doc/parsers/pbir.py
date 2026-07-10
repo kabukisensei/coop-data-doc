@@ -395,7 +395,8 @@ def _declared_model_name(data: dict) -> str | None:
         return None
     by_path = ref.get("byPath")
     if isinstance(by_path, dict) and isinstance(by_path.get("path"), str) and by_path["path"].strip():
-        folder = PurePosixPath(by_path["path"].strip()).name
+        # tolerate Windows-authored backslash paths ("..\\Sales.SemanticModel")
+        folder = PurePosixPath(by_path["path"].strip().replace("\\", "/")).name
         if folder.lower().endswith(".semanticmodel"):
             return folder[: -len(".SemanticModel")] or None
         return folder or None
