@@ -67,7 +67,7 @@ after parser/crawler/linker changes.
 
 **1. Unit suite (pytest).** Fixture-driven: `tests/fixtures/repo_sql` and
 `repo_pbi` are miniature real repos, and most tests assert exact node-id /
-edge-key sets. Fast (~310 tests, a few seconds):
+edge-key sets. Fast (~490 tests, a few seconds):
 
 ```bash
 .venv/bin/python -m pytest -q     # or: make test

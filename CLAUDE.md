@@ -14,7 +14,7 @@ interface in depth.
 ```bash
 python3.13 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest -q      # verify: ~310 passed in a few seconds
+.venv/bin/python -m pytest -q      # verify: ~490 passed in a few seconds
 ```
 
 **Python 3.10–3.13 only — never 3.14.** 3.14 breaks the editable-install
