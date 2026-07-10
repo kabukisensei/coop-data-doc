@@ -39,7 +39,7 @@ Linux and macOS are equally supported; every command below is copy-paste on both
 
 - **Venv** (Python 3.13; 3.10–3.13 only, never 3.14). Rebuild from scratch:
   `rm -rf .venv && python3.13 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
-- **Tests:** `.venv/bin/python -m pytest -q` — expect `~310 passed` in a few seconds, zero failures.
+- **Tests:** `.venv/bin/python -m pytest -q` — expect `~490 passed` in a few seconds, zero failures.
 - **Lint:** `.venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests` — pass looks like `All checks passed!` then `N files already formatted`.
 - **Before starting any work:** `git pull --ff-only`. If the tree is dirty or the pull fails: stop and report — do not stash, reset, or commit around it.
 - **Secrets:** none exist and none are needed (the pipeline is offline). Never add tokens, connection strings, or credentials to code, config, or fixtures.
@@ -76,10 +76,10 @@ All commands exit with these codes:
 | `coop-data-doc status` | **Check project state** — config exists? docs built? stale? | `--config` |
 | `coop-data-doc init [PATH]` | Scaffold a starter config | `--force` |
 | `coop-data-doc setup [PATH]` | Interactive wizard (human) | — |
-| `coop-data-doc build` | Full pipeline + render | `--non-interactive`, `--strict`, `--skip-html`, `--no-parse-cache`, `--jobs N`, `--config` |
+| `coop-data-doc build` | Full pipeline + render | `--non-interactive`, `--strict`, `--skip-html`, `--no-parse-cache`, `--jobs N`, `--reviews PATH` (repeatable), `--config` |
 | `coop-data-doc update` | Alias for `build` — prefer `build` in scripts/CI (prints a notice: in the sibling review tools `update` means self-update; the self-update command here is `upgrade`) | Same as `build` |
 | `coop-data-doc scan` | Crawl + parse + link only; writes `graph.json` | `--non-interactive`, `--strict`, `--no-parse-cache`, `--jobs N`, `--config` |
-| `coop-data-doc check` | CI gate — exits 1 if stale, 2 if problems | `--lenient`, `--no-parse-cache`, `--config` |
+| `coop-data-doc check` | CI gate — exits 1 if stale, 2 if problems | `--lenient`, `--no-parse-cache`, `--reviews PATH` (must match the build's), `--config` |
 | `coop-data-doc folders` | List each repo's top-level folders + documented state (JSON) | `--config` |
 | `coop-data-doc set-folders` | Set which top-level folders a repo documents (non-interactive) | `--repo` (required), `--skip` (comma-separated), `--config` |
 | `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON) | `--depth`, `--config` |
@@ -138,6 +138,14 @@ Byte-identical copy of `manifest.json` (written by every pipeline run). Read `ma
 
 Object counts and unresolved items. Human-readable but machine-parseable.
 
+### `data-docs/findings.md`
+
+Present **only** when review files were composed into the build (see "Review
+findings composition" below): summary counts per tool + severity, findings
+grouped severity → rule with links to each object's page, a "Not matched to a
+documented object" section (unmatched findings are listed, never dropped), and
+per-tool `agent_review` counts. A build without review inputs prunes it.
+
 ### `data-docs/<type>/<slug>.md`
 
 One page per object. **Read the `path` field in front-matter** to locate; do not compute filenames.
@@ -158,6 +166,54 @@ instead of re-parsed on the next build. **Do NOT commit this file** — it is *d
 byte-identical to a cold one) and self-healing (a corrupt/stale cache degrades to a cold
 parse with a `parse_cache_invalid` warning, which is a warning, never a CI failure). Pass
 `--no-parse-cache` to `scan`/`build`/`update`/`check` to bypass it.
+
+## Review Findings Composition (`--reviews`)
+
+`build`/`update` (and `check`) accept repeatable `--reviews PATH` arguments,
+each a `coop-sql-review` (schema_version 4) or `coop-dax-review`
+(schema_version 3) `--format json` envelope; the config may also carry
+`reviews: [paths]` (paths relative to the config file's folder, like every
+other config path), which the flag **extends**. A file supplied twice is read
+once. This is an explicit local input file — the offline hard rule is
+untouched.
+
+**Renderer-layer only.** Findings are joined at render time: `graph.json` /
+`manifest.json` / `diagnostics.json`'s shapes are unchanged (review-load
+problems appear in diagnostics as ordinary warnings). Matched objects get a
+"## Review findings" section + a `⚠ N review finding(s)` chip; `findings.md`
+is added (and linked from `index.md` + the site nav next to Diagnostics).
+With no review inputs, output is byte-identical to before the feature.
+
+**Join identity** = the same `normalize_identifier` the linker uses:
+
+- sql findings: `object` is `schema.name`; matched against SQL-typed nodes
+  (bronze/silver/gold table, view, stored_proc) whose `schema_name.name`
+  normalizes equal — attached to ALL matches when types collide (never guess).
+- dax findings: try `measure:model.object`, then `pbi_table:model.object`;
+  a model-level finding (`object` empty or == model) attaches to
+  `semantic_model:model`.
+- Unmatched findings are never dropped: they land in `findings.md`'s
+  "Not matched to a documented object" section with tool/rule/file/line.
+- v1 scope: only `findings` are joined; `agent_review` items appear solely as
+  a per-tool count line on the Findings page.
+
+**Advisory, never a gate.** The linters are advisory: findings never affect
+exit codes, `build --strict`, or `check`'s pass/fail categories. Two new
+warning categories (both severity `warning`, tolerated by every gate):
+`reviews_unreadable` (missing config-listed file, non-JSON, unknown tool,
+wrong shape — the file is skipped) and `reviews_schema_mismatch` (an
+unexpected integer `schema_version` — the join is still attempted). The one
+hard failure: a `--reviews` FLAG path that doesn't exist is an invalid CLI
+argument (exit 2).
+
+**`check` parity.** Review files are a build input, so `check` (and CI) must
+pass the SAME `--reviews` arguments the build used — the config `reviews:`
+list is picked up automatically; only extra flag-passed files need repeating.
+Otherwise the trees legitimately differ (`findings.md`, chips, index) and
+`check` reports stale. `status` honors the config list only (no flag).
+Caveat: re-running the `setup` wizard rewrites the config from its prompts and
+does not carry a `reviews:` list forward — re-add it (or use `config-set`,
+which preserves it).
 
 ## Page Front-Matter Contract
 

@@ -144,6 +144,14 @@ deterministic:
 - **Report pages are deliberately minimal** — just the model(s) a report draws
   from and the measures/tables it references (no per-visual detail); the nav
   nests each report under every model it draws from.
+- **Review findings are a renderer-layer overlay** (`reviews.py`, issue #38):
+  `--reviews` / the config's `reviews:` list feed coop-sql-review /
+  coop-dax-review JSON envelopes into a render-time join (same
+  `normalize_identifier` identity as the linker) that decorates matched object
+  pages and adds a top-level Findings page. The graph and its artifacts
+  (`graph.json` / `manifest.json`) never change, findings never affect exit
+  codes, unmatched findings are listed rather than dropped, and a build
+  without review inputs is byte-identical to one before the feature existed.
 
 `render/site.py` synthesizes a Material config and post-processes the built
 HTML so the portal works over `file://` with zero network: vendored
@@ -182,6 +190,7 @@ src/coop_data_doc/
 ├── parsers/          sql_common/sql_objects/sql_procs, tmdl/bim/mcode/dax/pbir/pbix
 ├── layering.py       medallion layer assignment + system/ignored-schema pruning
 ├── linker/           resolver.py (ladder), cache.py, interactive.py
+├── reviews.py        coop-*-review JSON loading + render-time findings join (issue #38)
 ├── diagnostics.py    severity-classified warnings → console / JSON / HTML page
 ├── progress.py       stderr progress bars + spinner (TTY-only)
 ├── wizard.py         interactive `setup` (repos, layers, ignore, mappings)

@@ -36,15 +36,16 @@ generated docs can live in git and be checked in CI.
 2. [Install](#install)
 3. [First run — about 5 minutes](#first-run--about-5-minutes)
 4. [Day-to-day use](#day-to-day-use)
-5. [The config file, explained](#the-config-file-explained)
-6. [When it asks you questions](#when-it-asks-you-questions)
-7. [Adding your own notes to the docs](#adding-your-own-notes-to-the-docs)
-8. [Command reference](#command-reference)
-9. [Keeping the tool updated](#keeping-the-tool-updated)
-10. [Using it in CI](#using-it-in-ci)
-11. [🤖 For AI agents](#-for-ai-agents)
-12. [Troubleshooting](#troubleshooting)
-13. [Notes on .pbix files](#notes-on-pbix-files)
+5. [Compose review findings into the portal](#compose-review-findings-into-the-portal)
+6. [The config file, explained](#the-config-file-explained)
+7. [When it asks you questions](#when-it-asks-you-questions)
+8. [Adding your own notes to the docs](#adding-your-own-notes-to-the-docs)
+9. [Command reference](#command-reference)
+10. [Keeping the tool updated](#keeping-the-tool-updated)
+11. [Using it in CI](#using-it-in-ci)
+12. [🤖 For AI agents](#-for-ai-agents)
+13. [Troubleshooting](#troubleshooting)
+14. [Notes on .pbix files](#notes-on-pbix-files)
 
 ---
 
@@ -230,6 +231,58 @@ coop-data-doc update     # the same thing, no menu
 Pages for new objects appear, changed objects update, and pages for deleted objects
 are removed. Notes you've written in [Business Intent](#adding-your-own-notes-to-the-docs)
 blocks are preserved. Re-running is always safe.
+
+## Compose review findings into the portal
+
+If your team also runs the suite's linters —
+[coop-sql-review](https://github.com/kabukisensei/coop-sql-review) and
+[coop-dax-review](https://github.com/kabukisensei/coop-dax-review) — the portal can
+show their findings **on the object pages they're about**, so "which gold tables
+feeding this model have open SQL findings?" is answered in one place. First produce
+the machine-readable reports:
+
+```bash
+coop-sql-review check sql-repo --format json -o sql-findings.json
+coop-dax-review check pbi-repo --format json -o dax-findings.json
+```
+
+…then hand them to the build (the flag is repeatable, any number of files):
+
+```bash
+coop-data-doc build --reviews sql-findings.json --reviews dax-findings.json
+```
+
+Or list them once in `coop-data-doc.yml` (paths relative to the config file; the
+`--reviews` flag *extends* the list):
+
+```yaml
+reviews: ["sql-findings.json", "dax-findings.json"]
+```
+
+What you get, all rendered at build time (the lineage graph — `graph.json` /
+`manifest.json` — is untouched):
+
+- **Object pages** — a matched object gains a `⚠ N review findings` chip under its
+  title and a "Review findings" table (severity, rule, message, file:line).
+- **A top-level Findings page** — summary counts per tool and severity, every finding
+  grouped severity → rule with links to the object pages, and a
+  "Not matched to a documented object" section so findings about undocumented objects
+  are listed, never dropped. (`agent_review` judgment items are counted there but not
+  joined — v1 composes `findings` only.)
+- **Matching** uses the same normalized `schema.name` identity as the lineage linker:
+  SQL findings attach to SQL objects (tables/views/procs), DAX findings to the measure
+  or table in their model (a model-level finding attaches to the model's page).
+
+Two things to know:
+
+- **Advisory, always.** Findings never change exit codes — `build --strict` and
+  `check` gate on the same things they always did. An unreadable/foreign review file
+  degrades to a `reviews_unreadable` warning (the build succeeds); a `--reviews` path
+  that doesn't exist at all is a usage error (exit 2), like any bad argument.
+- **`check` needs the same inputs.** Review files are an explicit build input, so a
+  CI `coop-data-doc check` must pass the same `--reviews` arguments the build used
+  (the config's `reviews:` list is picked up automatically) — otherwise the trees
+  legitimately differ and `check` reports the docs stale.
 
 ## The config file, explained
 

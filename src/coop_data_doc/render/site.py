@@ -240,11 +240,15 @@ def _reports_nav_section(graph: LineageGraph) -> list[str]:
     return lines
 
 
-def _nav_section(graph: LineageGraph) -> str:
+def _nav_section(graph: LineageGraph, has_findings: bool = False) -> str:
     """Build a nav tree grouped by layer (Bronze/Silver/Gold) then object
-    type, with Power BI and any unlayered objects as their own sections."""
+    type, with Power BI and any unlayered objects as their own sections.
+    ``has_findings`` adds the review Findings page next to Diagnostics
+    (issue #38) — present only when review files were composed into the build."""
     nodes = graph.nodes
     lines = ["  - Overview: index.md", "  - Diagnostics: diagnostics.md"]
+    if has_findings:
+        lines.append("  - Findings: findings.md")
 
     # layered SQL objects: Layer -> schema -> object type -> pages
     for layer, layer_title in _LAYER_NAV:
@@ -378,7 +382,10 @@ def write_mkdocs_config(
             docs_dir=json.dumps(docs_dir.name),
             site_dir=json.dumps(str(Path(site_dir).resolve())),
             theme_brand=theme_brand,
-            nav=_nav_section(graph),
+            # findings.md exists iff review files were composed into this
+            # build (render_markdown writes/prunes it), so file presence is
+            # the deterministic signal for the nav entry.
+            nav=_nav_section(graph, has_findings=(docs_dir / "findings.md").is_file()),
         ),
         encoding="utf-8",
         newline="\n",

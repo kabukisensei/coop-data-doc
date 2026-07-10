@@ -1,0 +1,73 @@
+{
+  "agent_review": [
+    {
+      "rule_id": "SQL-AGENT-INTENT",
+      "file": "views/sales/dim_customer.sql",
+      "object": "sales.dim_customer",
+      "line": 1,
+      "note": "Confirm the view header comment states the business intent.",
+      "standard_ref": "3.1",
+      "fingerprint": "a1b2c3d4e5f6"
+    }
+  ],
+  "diagnostics": [],
+  "findings": [
+    {
+      "rule_id": "SQL-SELECT-STAR",
+      "severity": "warning",
+      "file": "views/sales/dim_customer.sql",
+      "line": 4,
+      "object": "sales.dim_customer",
+      "message": "SELECT * hides the column contract; list the columns explicitly.",
+      "standard_ref": "2.4",
+      "fingerprint": "0011aabbccdd"
+    },
+    {
+      "rule_id": "SQL-HEADER-COMMENT",
+      "severity": "info",
+      "file": "tables/dbo.fact_sales.sql",
+      "line": 1,
+      "object": "dbo.fact_sales",
+      "message": "Add a header comment describing grain and load owner.",
+      "standard_ref": "1.1",
+      "fingerprint": "1122bbccddee"
+    },
+    {
+      "rule_id": "SQL-NAMING-SNAKE",
+      "severity": "error",
+      "file": "tables/dbo.retired_table.sql",
+      "line": 2,
+      "object": "dbo.no_such_table",
+      "message": "Table name is not snake_case.",
+      "standard_ref": "1.3",
+      "fingerprint": "2233ccddeeff"
+    },
+    {
+      "rule_id": "SQL-FILE-ENCODING",
+      "severity": "warning",
+      "file": "scripts/loose_statements.sql",
+      "line": 0,
+      "object": "",
+      "message": "File is not UTF-8 encoded.",
+      "standard_ref": "0.2",
+      "fingerprint": "3344ddeeff00"
+    }
+  ],
+  "files_checked": 9,
+  "schema_version": 4,
+  "standards": {
+    "path": "standards/sql-standards.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "summary": {
+    "error": 1,
+    "info": 1,
+    "warning": 2
+  },
+  "tool": "coop-sql-review",
+  "verdict": {
+    "clean": false,
+    "highest_severity": "error"
+  },
+  "version": "1.0.0"
+}

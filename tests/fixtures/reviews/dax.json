@@ -1,0 +1,67 @@
+{
+  "agent_review": [],
+  "diagnostics": [],
+  "findings": [
+    {
+      "rule_id": "DAX-FORMAT-STRING",
+      "severity": "warning",
+      "model": "Sales",
+      "file": "Sales.SemanticModel/definition/tables/fact_sales.tmdl",
+      "line": 12,
+      "object": "Total Sales",
+      "message": "Measure has no format string.",
+      "standard_ref": "4.2",
+      "fingerprint": "4455eeff0011"
+    },
+    {
+      "rule_id": "DAX-TABLE-DESCRIPTION",
+      "severity": "info",
+      "model": "Sales",
+      "file": "Sales.SemanticModel/definition/tables/fact_sales.tmdl",
+      "line": 1,
+      "object": "fact_sales",
+      "message": "Table has no description.",
+      "standard_ref": "4.5",
+      "fingerprint": "5566ff001122"
+    },
+    {
+      "rule_id": "DAX-AUTO-DATETIME",
+      "severity": "warning",
+      "model": "Sales",
+      "file": "Sales.SemanticModel/definition/model.tmdl",
+      "line": 0,
+      "object": "",
+      "message": "Disable auto date/time on the model.",
+      "standard_ref": "4.1",
+      "fingerprint": "667700112233"
+    },
+    {
+      "rule_id": "DAX-MEASURE-HOME",
+      "severity": "info",
+      "model": "Sales",
+      "file": "Sales.SemanticModel/definition/tables/retired.tmdl",
+      "line": 3,
+      "object": "No Such Measure",
+      "message": "Measure lives outside the measure home table.",
+      "standard_ref": "4.7",
+      "fingerprint": "778811223344"
+    }
+  ],
+  "models_checked": 1,
+  "schema_version": 3,
+  "standards": {
+    "path": "standards/dax-standards.md",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "summary": {
+    "error": 0,
+    "info": 2,
+    "warning": 2
+  },
+  "tool": "coop-dax-review",
+  "verdict": {
+    "clean": false,
+    "highest_severity": "warning"
+  },
+  "version": "1.0.0"
+}

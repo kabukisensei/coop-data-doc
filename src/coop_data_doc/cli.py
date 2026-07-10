@@ -52,6 +52,7 @@ from coop_data_doc.parsers.tmdl import link_composite_models, parse_tmdl
 from coop_data_doc.progress import Progress, should_enable
 from coop_data_doc.render.markdown import render_markdown, write_diagnostics
 from coop_data_doc.render.site import SiteBuildError, build_site, write_mkdocs_config
+from coop_data_doc.reviews import ReviewEnvelope, join_reviews, load_review_files
 
 # Warning categories that fail `build --strict` and default `check` (tolerated by
 # `check --lenient`): risky parses plus the unresolved items the portal itself
@@ -249,6 +250,47 @@ def _strict_failures(result: ResolutionResult, warnings: list[ParseWarning]) -> 
     return failures
 
 
+def _review_inputs(config: Config, flag_paths: tuple[str, ...]) -> list[tuple[Path, str]] | None:
+    """The review files to compose, as ``(resolved_path, display)`` pairs, or
+    ``None`` when the feature is off (no config ``reviews:`` list, no flags).
+
+    Config-listed paths resolve against the config file's folder (like every
+    other config path) and degrade to a ``reviews_unreadable`` warning when
+    missing; a ``--reviews`` flag path that doesn't exist is a usage error
+    (exit 2). The flag EXTENDS the config list; a file supplied twice is read
+    once (first occurrence wins).
+    """
+    if not config.reviews and not flag_paths:
+        return None
+    inputs: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for raw in config.reviews:
+        resolved = (config.base_dir / Path(raw).expanduser()).resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            inputs.append((resolved, raw))
+    for raw in flag_paths:
+        resolved = Path(raw).expanduser().resolve()
+        if not resolved.is_file():
+            raise click.UsageError(f"--reviews file not found: {raw}")
+        if resolved not in seen:
+            seen.add(resolved)
+            inputs.append((resolved, raw))
+    return inputs
+
+
+def _load_reviews(
+    config: Config, flag_paths: tuple[str, ...]
+) -> tuple[list[tuple[Path, str]] | None, list[ReviewEnvelope], list[ParseWarning]]:
+    """Resolve + load the review files once: ``(inputs, envelopes, warnings)``.
+    ``inputs`` is ``None`` when no review files were supplied (feature off)."""
+    inputs = _review_inputs(config, flag_paths)
+    if inputs is None:
+        return None, [], []
+    envelopes, warnings = load_review_files(inputs)
+    return inputs, envelopes, warnings
+
+
 def _scan(
     config: Config,
     non_interactive: bool,
@@ -257,6 +299,7 @@ def _scan(
     progress: Progress | None = None,
     no_parse_cache: bool = False,
     jobs: int | None = None,
+    extra_warnings: list[ParseWarning] | None = None,
 ) -> tuple[LineageGraph, Diagnostics]:
     # Only prompt when stdin/stdout are a real terminal. Run as a subprocess (e.g.
     # by the coop agent or another program), questionary/prompt_toolkit can't open a
@@ -274,6 +317,10 @@ def _scan(
     graph, result, warnings = run_pipeline(
         config, interactive=interactive, progress=progress, no_parse_cache=no_parse_cache, jobs=jobs
     )
+    if extra_warnings:
+        # e.g. review-file load problems (issue #38) — surfaced through the same
+        # diagnostics channel as parser warnings, advisory (never a strict failure)
+        warnings = warnings + extra_warnings
     out_dir = config.output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     to_json_file(graph, out_dir / "graph.json")
@@ -495,11 +542,15 @@ def status(ctx: click.Context, config_path: str | None) -> None:
     # only when a human is watching (TTY, not --quiet) — issue #33: on a large
     # estate a silent status looks hung for the whole pipeline run.
     progress = Progress(should_enable(ctx.obj["quiet"]))
+    # config-listed review files only (status has no --reviews flag); a portal
+    # built with EXTRA --reviews flags will legitimately read as stale here.
+    review_inputs, envelopes, review_warnings = _load_reviews(config, ())
     try:
         graph, result, warnings = run_pipeline(config, interactive=False, progress=progress)
     except Exception as exc:
         click.echo(f"status:    could not analyze repos ({exc})")
         return
+    warnings += review_warnings
 
     if out_dir.is_dir():
         try:
@@ -513,7 +564,8 @@ def status(ctx: click.Context, config_path: str | None) -> None:
                     # `check` compares (markdown, graph.json, diagnostics.json/.md)
                     # so the two commands can never disagree about staleness.
                     shutil.copytree(out_dir, fresh)
-                    render_markdown(graph, fresh, config.project_name)
+                    review_join = join_reviews(graph, envelopes) if review_inputs is not None else None
+                    render_markdown(graph, fresh, config.project_name, reviews=review_join)
                     diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
                     write_diagnostics(fresh, diagnostics, config.project_name)
                     (fresh / "diagnostics.json").write_text(
@@ -674,6 +726,7 @@ def _render_kwargs_from_config(config: Config) -> dict:
         "output_dir": config.output.dir,
         "site_dir": config.output.site_dir,
         "sql_dialect": config.sql_dialect,
+        "reviews": list(config.reviews),
     }
 
 
@@ -865,6 +918,7 @@ _DEFAULT_CONFIG_DICT = {
     "ignore_schemas": [],
     "branding": {},
     "sql_dialect": "tsql",
+    "reviews": [],
 }
 
 
@@ -885,6 +939,7 @@ def _default_render_kwargs() -> dict:
         "output_dir": "./data-docs",
         "site_dir": "./data-docs-site",
         "sql_dialect": "tsql",
+        "reviews": [],
     }
 
 
@@ -913,6 +968,7 @@ def _config_to_dict(config: Config) -> dict:
         "ignore_schemas": list(config.ignore_schemas),
         "branding": branding,
         "sql_dialect": config.sql_dialect,
+        "reviews": list(config.reviews),
     }
 
 
@@ -959,6 +1015,8 @@ def _apply_config_patch(kwargs: dict, patch: dict) -> None:
         kwargs["branding"] = dict(patch["branding"])
     if "sql_dialect" in patch:
         kwargs["sql_dialect"] = patch["sql_dialect"]
+    if "reviews" in patch:
+        kwargs["reviews"] = [str(p) for p in patch["reviews"]]
 
 
 @cli.command("show-config")
@@ -1143,9 +1201,11 @@ def _run_build(
     serve: bool,
     no_parse_cache: bool = False,
     jobs: int | None = None,
+    reviews: tuple[str, ...] = (),
 ) -> None:
     """Shared implementation behind `build` and `update`."""
     config = _load_config(config_path)
+    review_inputs, envelopes, review_warnings = _load_reviews(config, reviews)
     progress = Progress(should_enable(ctx.obj["quiet"]))
     graph, diagnostics = _scan(
         config,
@@ -1155,10 +1215,13 @@ def _run_build(
         progress=progress,
         no_parse_cache=no_parse_cache,
         jobs=_resolve_jobs(jobs),
+        extra_warnings=review_warnings,
     )
+    # renderer-layer join (issue #38): graph.json/manifest.json are untouched
+    review_join = join_reviews(graph, envelopes) if review_inputs is not None else None
     out_dir = config.output_dir()
     with progress.bar("Rendering pages", total=len(graph.nodes)) as tick:
-        render_markdown(graph, out_dir, config.project_name, on_node=tick)
+        render_markdown(graph, out_dir, config.project_name, reviews=review_join, on_node=tick)
     write_diagnostics(out_dir, diagnostics, config.project_name)
     # The ONE place stale lineage-cache answers are actually deleted: an explicit
     # build that got this far succeeded against the full configured estate, so an
@@ -1195,6 +1258,16 @@ def _run_build(
     click.echo(f"HTML portal:   {index.resolve().as_uri()}", err=True)
 
 
+_REVIEWS_OPTION = click.option(
+    "--reviews",
+    "reviews",
+    multiple=True,
+    type=click.Path(),
+    help="A coop-sql-review / coop-dax-review `--format json` report to compose "
+    "into the portal (repeatable; extends the config's `reviews:` list). "
+    "Advisory: findings never affect exit codes.",
+)
+
 _BUILD_OPTIONS = [
     click.option(
         "--config",
@@ -1212,6 +1285,7 @@ _BUILD_OPTIONS = [
         help="Force a cold SQL parse (bypass the incremental per-file parse cache).",
     ),
     _JOBS_OPTION,
+    _REVIEWS_OPTION,
 ]
 
 
@@ -1233,9 +1307,10 @@ def build(
     serve: bool,
     no_parse_cache: bool,
     jobs: int | None,
+    reviews: tuple[str, ...],
 ) -> None:
     """Full pipeline: scan + markdown docs + searchable HTML portal."""
-    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve, no_parse_cache, jobs)
+    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve, no_parse_cache, jobs, reviews)
 
 
 @cli.command()
@@ -1250,6 +1325,7 @@ def update(
     serve: bool,
     no_parse_cache: bool,
     jobs: int | None,
+    reviews: tuple[str, ...],
 ) -> None:
     """Alias of build — re-scan the repos and refresh all documentation.
 
@@ -1263,7 +1339,7 @@ def update(
             "itself, run: coop-data-doc upgrade",
             file=sys.stderr,
         )
-    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve, no_parse_cache, jobs)
+    _run_build(ctx, config_path, non_interactive, strict, skip_html, serve, no_parse_cache, jobs, reviews)
 
 
 @cli.command()
@@ -1317,15 +1393,29 @@ def upgrade(ctx: click.Context) -> None:
     is_flag=True,
     help="Force a cold SQL parse (bypass the incremental per-file parse cache).",
 )
+@_REVIEWS_OPTION
 @click.pass_context
-def check(ctx: click.Context, config_path: str | None, lenient: bool, no_parse_cache: bool) -> None:
+def check(
+    ctx: click.Context,
+    config_path: str | None,
+    lenient: bool,
+    no_parse_cache: bool,
+    reviews: tuple[str, ...],
+) -> None:
     """CI gate: fail when committed docs are stale, references are unresolved,
     an error-severity diagnostic means data is missing (corrupt/undecodable file,
     truncated proc), or (unless --lenient) risky/unresolved warnings exist
     (regex_fallback / dynamic_sql / unresolved_partition_source /
-    ambiguous_visual_binding). Exit 2 for pipeline problems, 1 for stale docs."""
+    ambiguous_visual_binding). Exit 2 for pipeline problems, 1 for stale docs.
+
+    Pass the SAME --reviews arguments the build used (the config's `reviews:`
+    list is picked up automatically) — review findings are an explicit build
+    input, so the trees legitimately differ otherwise. Findings themselves
+    never affect the exit code (the linters are advisory)."""
     config = _load_config(config_path)
+    review_inputs, envelopes, review_warnings = _load_reviews(config, reviews)
     graph, result, warnings = run_pipeline(config, interactive=False, no_parse_cache=no_parse_cache)
+    warnings += review_warnings
     if lenient:
         # --lenient forgives risky-parse warnings, but a corrupt/undecodable file (error
         # severity) is never "known and accepted" — it still fails.
@@ -1340,12 +1430,13 @@ def check(ctx: click.Context, config_path: str | None, lenient: bool, no_parse_c
     committed = config.output_dir()
     if not committed.is_dir():
         raise click.ClickException(f"no committed docs at {committed}; run `coop-data-doc build` first")
+    review_join = join_reviews(graph, envelopes) if review_inputs is not None else None
     with tempfile.TemporaryDirectory() as tmp:
         fresh = Path(tmp) / "docs"
         # start from the committed tree so human-authored Business Intent
         # blocks are preserved in the regenerated pages
         shutil.copytree(committed, fresh)
-        render_markdown(graph, fresh, config.project_name)
+        render_markdown(graph, fresh, config.project_name, reviews=review_join)
         diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
         write_diagnostics(fresh, diagnostics, config.project_name)
         (fresh / "diagnostics.json").write_text(
