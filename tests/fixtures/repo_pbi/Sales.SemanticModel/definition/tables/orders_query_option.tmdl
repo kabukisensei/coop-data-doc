@@ -1,0 +1,15 @@
+table orders_query_option
+	lineageTag: dddddddd-3333-3333-3333-333333333333
+
+	column order_id
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: order_id
+
+	partition orders_query_option = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("myserver.database.windows.net", "gold", [Query="SELECT order_id FROM sales.v_orders_star", CommandTimeout=#duration(0,0,5,0)])
+				in
+				    Source

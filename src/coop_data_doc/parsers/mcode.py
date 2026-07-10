@@ -27,6 +27,14 @@ class SourceRef(BaseModel):
 # quoted query — never the comma inside Sql.Database(...). Otherwise the DB name
 # would be mis-extracted as the SQL and all referenced tables dropped.
 _NATIVE_QUERY_RE = re.compile(r'Value\.NativeQuery\s*\((?:[^(),]|\([^()]*\))+,\s*"((?:[^"]|"")*)"', re.S)
+# The OTHER standard native-SQL shape (what Desktop's "SQL statement" import box
+# generates): an options record on the connector itself —
+# Sql.Database("srv", "db", [Query="SELECT …", CommandTimeout=…]). The call span
+# is walked with a string-aware paren scanner (_call_args) so parens inside the
+# SQL never truncate it; the Query value may be a quoted literal ("" escapes
+# honored) or a let-bound identifier resolved via _BINDING_RE (issue #36).
+_SQL_DATABASE_CALL_RE = re.compile(r"\bSql\.Databases?\s*\(")
+_QUERY_OPTION_RE = re.compile(r'\bQuery\s*=\s*(?:"((?:[^"]|"")*)"|([A-Za-z_]\w*))', re.S)
 _LAKEHOUSE_RE = re.compile(r"Lakehouse\.Contents\s*\(|Fabric\.|\.Warehouse\s*\(")
 # A composite/DirectQuery reference to another Power BI semantic model:
 # AnalysisServices.Database("powerbi://…", "ModelName", …) — the 2nd arg is the
@@ -84,6 +92,35 @@ def strip_m_comments(m_expression: str) -> str:
     return "".join(out)
 
 
+def _call_args(text: str, open_paren: int) -> str:
+    """The argument text of a call: from just after ``open_paren`` to its
+    matching ``)``. String literals (with ``""`` escapes) are skipped whole so
+    parens inside a SQL string never unbalance the depth count."""
+    depth = 1
+    i = open_paren + 1
+    n = len(text)
+    start = i
+    while i < n and depth:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == '"':
+                    if j + 1 < n and text[j + 1] == '"':
+                        j += 2
+                        continue
+                    break
+                j += 1
+            i = min(j + 1, n)
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        i += 1
+    return text[start : i - 1] if depth == 0 else text[start:]
+
+
 def _resolve(match: re.Match | None, bindings: dict[str, str]) -> str | None:
     """A Schema=/Item= match resolves to its literal, or via a let binding."""
     if match is None:
@@ -101,6 +138,26 @@ def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
     if native_sql:
         return SourceRef(schema_name="", object_name="", raw_kind="native_query"), native_sql
 
+    # `let` variable bindings: shared by the Query= option below (a let-bound
+    # query string) and the navigation records further down.
+    bindings = {name: value for name, value in _BINDING_RE.findall(text)}
+
+    # Sql.Database(server, db, [Query="…"]) — native SQL in the connector's
+    # options record (issue #36). Same downstream handling as Value.NativeQuery.
+    option_sql: list[str] = []
+    for call in _SQL_DATABASE_CALL_RE.finditer(text):
+        args = _call_args(text, call.end() - 1)
+        query = _QUERY_OPTION_RE.search(args)
+        if query is None:
+            continue
+        sql = (
+            query.group(1).replace('""', '"') if query.group(1) is not None else bindings.get(query.group(2))
+        )
+        if sql:
+            option_sql.append(sql)
+    if option_sql:
+        return SourceRef(schema_name="", object_name="", raw_kind="native_query"), option_sql
+
     # composite/DirectQuery chain to another semantic model. The string-aware
     # comment strip keeps the `powerbi://…` connection URL intact, so matching
     # `text` works — and a commented-out AnalysisServices.Database line can no
@@ -113,7 +170,6 @@ def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
     # PBIP template that binds the schema/table to `let` variables first.
     # Anchor Schema=/Item= to an actual `{[ ... ]}` navigation record so a
     # `let` step named Schema/Item can't poison the result.
-    bindings = {name: value for name, value in _BINDING_RE.findall(text)}
     for record in _NAV_RECORD_RE.findall(text):
         schema = _resolve(_NAV_SCHEMA_RE.search(record), bindings)
         item = _resolve(_NAV_ITEM_RE.search(record), bindings)

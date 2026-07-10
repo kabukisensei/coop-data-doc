@@ -95,6 +95,49 @@ def test_mcode_native_query():
     assert sqls == ["SELECT a FROM sales.v_orders_star"]
 
 
+def test_mcode_sql_database_query_option():
+    # issue #36: Desktop's "SQL statement" import box generates an options
+    # record on the connector itself — same handling as Value.NativeQuery.
+    ref, sqls = extract_source(
+        'let Source = Sql.Database("srv", "gold", '
+        '[Query="SELECT a FROM sales.fact_sales", CommandTimeout=#duration(0,0,5,0)]) in Source'
+    )
+    assert ref is not None and ref.raw_kind == "native_query"
+    assert sqls == ["SELECT a FROM sales.fact_sales"]
+
+
+def test_mcode_query_option_escaped_quotes_and_parens():
+    # "" escapes inside the query are unescaped, and parens inside the SQL
+    # string must not truncate the call-span scan.
+    ref, sqls = extract_source(
+        'let Source = Sql.Database("srv", "gold", '
+        '[Query="SELECT COUNT(a) AS ""n"" FROM mart.t WHERE (a > 0)"]) in Source'
+    )
+    assert ref is not None and ref.raw_kind == "native_query"
+    assert sqls == ['SELECT COUNT(a) AS "n" FROM mart.t WHERE (a > 0)']
+
+
+def test_mcode_query_option_let_bound():
+    # the query bound to a `let` variable resolves via the bindings machinery
+    ref, sqls = extract_source(
+        'let Q = "SELECT a FROM mart.t", Source = Sql.Database("srv", "gold", [Query=Q]) in Source'
+    )
+    assert ref is not None and ref.raw_kind == "native_query"
+    assert sqls == ["SELECT a FROM mart.t"]
+
+
+def test_mcode_options_record_without_query_still_navigates():
+    # an options record WITHOUT Query (e.g. CreateNavigationProperties) must
+    # not shadow the navigation-record resolution
+    ref, sqls = extract_source(
+        'let Source = Sql.Database("srv", "gold", [CreateNavigationProperties=false]), '
+        'd = Source{[Schema="sales",Item="dim_customer"]}[Data] in d'
+    )
+    assert sqls == []
+    assert ref is not None and ref.raw_kind == "sql_database"
+    assert (ref.schema_name, ref.object_name) == ("sales", "dim_customer")
+
+
 def test_mcode_lakehouse():
     ref, _ = extract_source(
         "let Source = Lakehouse.Contents(), "
@@ -337,6 +380,16 @@ def test_tmdl_partition_sources():
     native = graph.nodes["pbi_table:sales.orders_native"]
     assert native.metadata["native_query_tables"] == ["sales.v_orders_star"]
     assert native.metadata["partition_source"]["raw_kind"] == "native_query"
+    # issue #36: the Sql.Database(..., [Query="…"]) options-record shape lands
+    # on the exact same native-query path
+    option = graph.nodes["pbi_table:sales.orders_query_option"]
+    assert option.metadata["native_query_tables"] == ["sales.v_orders_star"]
+    assert option.metadata["partition_source"] == {
+        "schema": "sales",
+        "object": "v_orders_star",
+        "raw_kind": "native_query",
+    }
+    assert "partition_source_unresolved" not in option.metadata
     unresolved = graph.nodes["pbi_table:sales.ext_unresolved"]
     assert unresolved.metadata.get("partition_source_unresolved") is True
     assert any(w.category == "unresolved_partition_source" for w in warnings)
@@ -1038,6 +1091,32 @@ def test_native_query_with_no_extractable_tables_flagged_unresolved():
         assert node.metadata["native_query_tables"] == []
         assert node.metadata.get("partition_source_unresolved") is True
         assert any(w.category == "unresolved_partition_source" for w in warnings)
+
+
+def test_query_option_multi_table_records_all_sources():
+    # issue #36: a multi-table JOIN in the options-record Query lists every
+    # source in native_query_tables (composite keys resolved by the linker),
+    # exactly like the Value.NativeQuery path.
+    from coop_data_doc.parsers.tmdl import parse_table_file
+
+    class _E:
+        path = "M.SemanticModel/definition/tables/joined.tmdl"
+        repo_key = "powerbi"
+
+    g = LineageGraph()
+    tmdl = (
+        "table joined\n"
+        "\tpartition joined = m\n"
+        "\t\tmode: import\n"
+        "\t\tsource =\n"
+        '\t\t\tlet Source = Sql.Database("s", "db", '
+        '[Query="SELECT a.x, b.y FROM sales.a AS a JOIN sales.b AS b ON a.k = b.k"]) in Source\n'
+    )
+    warnings = parse_table_file(tmdl, "M", "semantic_model:m", _E(), g)
+    node = g.nodes["pbi_table:m.joined"]
+    assert node.metadata["native_query_tables"] == ["sales.a", "sales.b"]
+    assert "partition_source" not in node.metadata  # multi-table: linker resolves each
+    assert not any(w.category == "unresolved_partition_source" for w in warnings)
 
 
 def test_tmdl_utf16_with_bom_parsed(tmp_path):
