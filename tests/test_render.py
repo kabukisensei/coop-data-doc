@@ -258,7 +258,7 @@ def test_site_nav_grouped_by_layer():
     from coop_data_doc.render.site import _nav_section
 
     g = LineageGraph()
-    g.add_node(make_node(NodeType.BRONZE_TABLE, "d365", "src", metadata={"layer": "bronze"}))
+    g.add_node(make_node(NodeType.BRONZE_TABLE, "erp_orders", "src", metadata={"layer": "bronze"}))
     gold_tbl = make_node(NodeType.GOLD_TABLE, "mart", "fact", metadata={"layer": "gold"})
     g.add_node(gold_tbl)
     g.add_node(make_node(NodeType.VIEW, "sales", "v_fact", source_file="v.sql", metadata={"layer": "gold"}))
