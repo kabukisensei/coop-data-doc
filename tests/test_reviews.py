@@ -379,6 +379,73 @@ def test_reviews_config_key_and_flag_extends_config(tmp_path: Path):
     assert "SQL-SELECT-STAR" in findings and "DAX-FORMAT-STRING" in findings
 
 
+def test_reviews_config_and_flag_overlap_dedups_no_double_count(tmp_path: Path):
+    # sql.json is listed in config AND passed via --reviews (plus dax.json):
+    # the config+flag overlap is deduped, so counts/chips/index never double.
+    setup_workspace(tmp_path)
+    copy_reviews(tmp_path)
+    config = tmp_path / "coop-data-doc.yml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + 'reviews: ["reviews/sql.json"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    result = run(
+        [
+            "build",
+            "--non-interactive",
+            "--skip-html",
+            "--reviews",
+            "reviews/sql.json",
+            "--reviews",
+            "reviews/dax.json",
+        ],
+        tmp_path,
+    )
+    assert result.exit_code == 0, result.output
+    findings = (tmp_path / "data-docs" / "findings.md").read_text(encoding="utf-8")
+    # single-count: sql.json is read once despite config+flag overlap
+    assert "| coop-sql-review | warning | 2 |" in findings
+    index = (tmp_path / "data-docs" / "index.md").read_text(encoding="utf-8")
+    assert "[8 review findings](findings.md)" in index
+
+
+def test_reviews_flag_repeated_twice_dedups_no_double_count(tmp_path: Path):
+    # the SAME --reviews flag repeated is read once (first occurrence wins).
+    setup_workspace(tmp_path)
+    copy_reviews(tmp_path)
+    result = run(
+        [
+            "build",
+            "--non-interactive",
+            "--skip-html",
+            "--reviews",
+            "reviews/sql.json",
+            "--reviews",
+            "reviews/sql.json",
+            "--reviews",
+            "reviews/dax.json",
+        ],
+        tmp_path,
+    )
+    assert result.exit_code == 0, result.output
+    findings = (tmp_path / "data-docs" / "findings.md").read_text(encoding="utf-8")
+    assert "| coop-sql-review | warning | 2 |" in findings
+    index = (tmp_path / "data-docs" / "index.md").read_text(encoding="utf-8")
+    assert "[8 review findings](findings.md)" in index
+
+
+def test_check_reviews_flag_missing_file_is_exit_2(tmp_path: Path):
+    # check shares _review_inputs with build: a --reviews flag path that
+    # doesn't exist is a usage error (exit 2) on the command CI actually runs.
+    setup_workspace(tmp_path)
+    build = run(["build", "--non-interactive", "--skip-html"], tmp_path)
+    assert build.exit_code == 0, build.output
+    result = run(["check", "--lenient", "--reviews", "no-such.json"], tmp_path)
+    assert result.exit_code == 2
+    assert "no-such.json" in result.output
+
+
 def test_missing_config_listed_review_degrades_to_warning(tmp_path: Path):
     setup_workspace(tmp_path)
     config = tmp_path / "coop-data-doc.yml"
