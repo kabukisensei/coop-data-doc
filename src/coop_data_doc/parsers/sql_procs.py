@@ -28,6 +28,7 @@ from coop_data_doc.graph.model import (
 )
 from coop_data_doc.parsers.sql_common import (
     DYNAMIC_SQL_RE,
+    EXEC_CALL_RE,
     EXEC_RE,
     PROC_HEADER_RE,
     StatementLineage,
@@ -315,10 +316,21 @@ def _parse_procs_entry(
                 if not line.strip():
                     continue
                 m = EXEC_RE.match(line)
-                if m is None:
-                    non_exec_present = True
-                elif m.group(1).upper() not in _EXEC_AS_KEYWORDS:
-                    exec_callees.append(m.group(1))
+                if m is not None:
+                    # a bare line-start EXEC statement: the callee (unless it's an
+                    # EXECUTE AS context keyword) with no non-EXEC content to reparse.
+                    if m.group(1).upper() not in _EXEC_AS_KEYWORDS:
+                        exec_callees.append(m.group(1))
+                    continue
+                # Not a line-start EXEC: it may still carry a same-line conditional
+                # EXEC (`IF ... EXEC x`, `ELSE EXEC y`, `WHILE ... EXEC z`). Collect
+                # those callees; the leading condition/block is real non-EXEC text
+                # (it can hold a subquery worth parsing), so this line stays
+                # non_exec_present and the chunk still flows to sqlglot below.
+                non_exec_present = True
+                for match in EXEC_CALL_RE.finditer(line):
+                    if match.group(1).upper() not in _EXEC_AS_KEYWORDS:
+                        exec_callees.append(match.group(1))
             seen_callees: set[tuple[str, str]] = set()
             for raw_callee in exec_callees:
                 callee_schema, callee_name = qualify(raw_callee)

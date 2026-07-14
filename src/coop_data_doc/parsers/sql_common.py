@@ -34,6 +34,22 @@ DYNAMIC_SQL_RE = re.compile(r"\bsp_executesql\b|\bEXEC(?:UTE)?\s*\(", re.IGNOREC
 # assignment (EXEC @rc = dbo.Proc) so `@rc` isn't mistaken for the callee.
 EXEC_RE = re.compile(rf"^\s*EXEC(?:UTE)?\s+(?:@\w+\s*=\s*)?({_IDENT})", re.IGNORECASE)
 
+# Same callee capture, but for an EXEC that starts a statement AFTER a leading
+# conditional/block keyword ON THE SAME LINE — the very common single-line forms
+# `IF @debug = 1 EXEC dbo.log`, `ELSE EXEC dbo.fallback`, `WHILE ... EXEC x`, and
+# `IF ... BEGIN EXEC x END`. EXEC_RE (anchored to line start) misses these, so the
+# references edge to the callee was silently lost. The prefix is one of: start /
+# `;` / `ELSE` / `BEGIN` / an `IF`/`WHILE` condition (consumed non-greedily up to
+# EXEC). `EXECUTE AS <ctx>` is NOT special-cased here — it captures the bare
+# keyword `AS`, which the caller rejects via _EXEC_AS_KEYWORDS, same as EXEC_RE.
+# `EXEC(...)` / sp_executesql (dynamic SQL) never reach this: the caller diverts
+# those to a dynamic_sql warning first (DYNAMIC_SQL_RE), so requiring whitespace
+# after EXEC(UTE) here is enough to keep the `EXEC(` form out.
+EXEC_CALL_RE = re.compile(
+    rf"(?:^|;|\bELSE\b|\bBEGIN\b|\b(?:IF|WHILE)\b[^\n;]*?)\s*\bEXEC(?:UTE)?\s+(?:@\w+\s*=\s*)?({_IDENT})",
+    re.IGNORECASE,
+)
+
 # lines that only drive cursor mechanics; their identifiers are cursors,
 # not tables, so they must never reach the regex table extractor
 _CURSOR_LINE_RE = re.compile(r"^\s*(?:FETCH|OPEN|CLOSE|DEALLOCATE)\b.*$", re.IGNORECASE | re.MULTILINE)

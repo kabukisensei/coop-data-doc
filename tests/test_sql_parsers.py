@@ -453,6 +453,64 @@ def test_conditional_exec_creates_reference_edge(tmp_path: Path):
     assert (src, "stored_proc:etl.load_orders", "references") in keys
 
 
+def test_same_line_if_exec_creates_reference_edge(tmp_path: Path):
+    # issue #43: `IF <cond> EXEC x` on ONE line (not IF then EXEC on the next).
+    # EXEC_RE is anchored to line start, so the callee was silently dropped with
+    # parse_quality still "ast" — a proc-orchestration link lost without a hint.
+    graph, _ = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE dbo.orchestrator AS\n"
+        "BEGIN\n"
+        "    IF @debug = 1 EXEC dbo.log_something;\n"
+        "    ELSE EXEC dbo.fallback;\n"
+        "END\n"
+        "GO\n",
+    )
+    keys = edge_keys(graph)
+    src = "stored_proc:dbo.orchestrator"
+    assert (src, "stored_proc:dbo.log_something", "references") in keys
+    assert (src, "stored_proc:dbo.fallback", "references") in keys
+
+
+def test_same_line_while_and_begin_exec_reference_edges(tmp_path: Path):
+    # `WHILE <cond> EXEC x` and a single-line `IF <cond> BEGIN EXEC y END` are the
+    # same class of same-line conditional EXEC and must both link their callee.
+    graph, _ = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE dbo.looper AS\n"
+        "BEGIN\n"
+        "    WHILE @i < 10 EXEC dbo.step;\n"
+        "    IF @flag = 1 BEGIN EXEC dbo.finish END\n"
+        "END\n"
+        "GO\n",
+    )
+    keys = edge_keys(graph)
+    src = "stored_proc:dbo.looper"
+    assert (src, "stored_proc:dbo.step", "references") in keys
+    assert (src, "stored_proc:dbo.finish", "references") in keys
+
+
+def test_same_line_execute_as_owner_is_not_a_phantom(tmp_path: Path):
+    # `IF ... EXECUTE AS OWNER` must not invent a phantom proc named `as`/`owner`;
+    # the same-line detection reuses the _EXEC_AS_KEYWORDS rejection.
+    graph, _ = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE dbo.secure AS\n"
+        "BEGIN\n"
+        "    IF @impersonate = 1 EXECUTE AS OWNER;\n"
+        "    EXEC etl.load;\n"
+        "END\n"
+        "GO\n",
+    )
+    proc_names = {n.name for n in graph.nodes.values()}
+    assert "as" not in proc_names and "owner" not in proc_names
+    assert (
+        "stored_proc:dbo.secure",
+        "stored_proc:etl.load",
+        "references",
+    ) in edge_keys(graph)
+
+
 def test_two_execs_in_one_semicolonless_chunk(tmp_path: Path):
     graph, _ = _parse_proc_sql(
         tmp_path,
