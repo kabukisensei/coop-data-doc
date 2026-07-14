@@ -46,6 +46,8 @@ coop-data-doc = "coop_data_doc.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/kabukisensei/coop-data-doc"
+Repository = "https://github.com/kabukisensei/coop-data-doc"
+Issues = "https://github.com/kabukisensei/coop-data-doc/issues"
 
 [tool.hatch.version]
 path = "src/coop_data_doc/__init__.py"

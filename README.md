@@ -542,7 +542,7 @@ Beyond the commands above, the CLI exposes a non-interactive surface for agents 
 | `coop-data-doc resolve` | list ambiguous cross-repo links + their candidates (JSON) |
 | `coop-data-doc resolve-apply --from-json -` | write link decisions to the cache (run `build` separately to apply them) |
 
-See [AGENTS.md](AGENTS.md) for the full machine-readable contract (flags, exit codes, JSON shapes).
+See [AGENTS.md](https://github.com/kabukisensei/coop-data-doc/blob/main/AGENTS.md) for the full machine-readable contract (flags, exit codes, JSON shapes).
 
 `scan`/`build`/`update` show progress bars on stderr while they work, but only in an
 interactive terminal — they're suppressed by `-q` and absent in CI or piped output, and
@@ -731,9 +731,9 @@ pip install -e ".[dev]"
 pytest
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the module map and design rules, and
-[ARCHITECTURE.md](ARCHITECTURE.md) for how it all works.
+See [CONTRIBUTING.md](https://github.com/kabukisensei/coop-data-doc/blob/main/CONTRIBUTING.md) for the module map and design rules, and
+[ARCHITECTURE.md](https://github.com/kabukisensei/coop-data-doc/blob/main/ARCHITECTURE.md) for how it all works.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/kabukisensei/coop-data-doc/blob/main/LICENSE).
