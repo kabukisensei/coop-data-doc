@@ -28,6 +28,7 @@ from pathlib import Path
 
 from coop_data_doc.config import ParseWarning
 from coop_data_doc.graph.model import LineageGraph, Node, NodeType, normalize_identifier
+from coop_data_doc.parsers.sql_common import decode_text
 
 SQL_REVIEW_TOOL = "coop-sql-review"
 DAX_REVIEW_TOOL = "coop-dax-review"
@@ -135,15 +136,28 @@ def load_review_file(path: Path, display: str) -> tuple[ReviewEnvelope | None, l
     file with an unexpected integer ``schema_version`` loads anyway with a
     ``reviews_schema_mismatch`` warning.
     """
+    # PowerShell hint reused from Config.load (config.py): a UTF-16 file (e.g.
+    # PowerShell 5.1's default `>` redirect encoding) either fails to decode or
+    # decodes to NUL-riddled text that json.loads rejects — name the likely
+    # cause and the fix instead of a bare "not valid JSON".
+    _PS_HINT = "was it saved as UTF-16, e.g. by a PowerShell `>` redirect? Re-save as UTF-8"
     warnings: list[ParseWarning] = []
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        raw = path.read_bytes()
+    except OSError as exc:
         return None, [_warn(display, f"could not read review file: {exc}")]
+    # decode_text is BOM-aware (utf-8-sig drops a UTF-8 BOM; UTF-16/UTF-32 BOMs
+    # are honored — same tolerance every other JSON reader in the repo has),
+    # so a BOM-prefixed report json.loads cleanly. It never raises: a BOM-less
+    # UTF-16 file decodes to text with surviving NULs, which we flag below.
+    text = decode_text(raw)
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        return None, [_warn(display, f"not valid JSON ({exc}) — is this a --format json report?")]
+        message = f"not valid JSON ({exc}) — is this a --format json report?"
+        if "\x00" in text:
+            message = f"not valid JSON ({exc}) — {_PS_HINT}"
+        return None, [_warn(display, message)]
     if not isinstance(data, dict):
         return None, [_warn(display, "not a JSON object — expected a coop-*-review envelope")]
     tool = data.get("tool")

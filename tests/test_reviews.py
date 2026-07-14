@@ -90,6 +90,45 @@ def test_load_non_json_degrades_to_warning(tmp_path: Path):
     assert [w.category for w in warnings] == ["reviews_unreadable"]
 
 
+def test_load_utf8_bom_prefixed_report_still_loads(tmp_path: Path):
+    # Windows editors and several redirect paths prepend a UTF-8 BOM; it must
+    # not degrade a real --format json report to a reviews_unreadable warning.
+    good = tmp_path / "bom.json"
+    envelope = {
+        "tool": "coop-sql-review",
+        "schema_version": 4,
+        "findings": [
+            {
+                "rule_id": "R",
+                "severity": "warning",
+                "file": "a.sql",
+                "line": 1,
+                "object": "s.t",
+                "message": "m",
+            }
+        ],
+    }
+    good.write_bytes(b"\xef\xbb\xbf" + json.dumps(envelope).encode("utf-8"))
+    result, warnings = load_review_file(good, "bom.json")
+    assert result is not None
+    assert len(result.findings) == 1
+    assert warnings == []
+
+
+def test_load_utf16_report_warns_with_powershell_hint(tmp_path: Path):
+    # A UTF-16 report (e.g. PowerShell 5.1's `>` redirect) can't be joined, but
+    # the warning must point at the encoding + fix, not just "not valid JSON".
+    envelope = {"tool": "coop-sql-review", "schema_version": 4, "findings": []}
+    # BOM-less UTF-16LE: reaches json.loads as NUL-riddled text (the BOM case is
+    # decoded correctly by decode_text and loads fine — covered above in spirit)
+    utf16 = tmp_path / "utf16.json"
+    utf16.write_bytes(json.dumps(envelope).encode("utf-16-le"))
+    result, warnings = load_review_file(utf16, "utf16.json")
+    assert result is None
+    assert [w.category for w in warnings] == ["reviews_unreadable"]
+    assert "UTF-16" in warnings[0].message and "PowerShell" in warnings[0].message
+
+
 def test_load_unknown_tool_degrades_to_warning(tmp_path: Path):
     other = tmp_path / "other.json"
     other.write_text(json.dumps({"tool": "some-other-linter", "schema_version": 1, "findings": []}))
