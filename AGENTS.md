@@ -57,6 +57,13 @@ All commands exit with these codes:
 | `2` | Unresolved references, risky/unresolved warnings (`regex_fallback`, `dynamic_sql`, `unresolved_partition_source`, `ambiguous_visual_binding`), error-severity diagnostics (corrupt/undecodable files, truncated procs — data is missing), or invalid CLI args |
 | `130` | Cancelled with Ctrl+C |
 
+> **Tolerated (non-gating) advisory warning:** `unmatched_visual_entity` — a
+> visual binding entity matching NO documented table in any model. Unlike
+> `ambiguous_visual_binding` (a real object exists but can't be attributed to one
+> model), there is nothing to link, so per "never guess lineage" it is a heads-up
+> the portal lists, never a failure: it does **not** affect exit code 2, even
+> under `build --strict` / `check`.
+
 ### Global flags (before subcommand)
 
 | Flag | Effect |

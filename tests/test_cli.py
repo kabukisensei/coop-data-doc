@@ -132,6 +132,48 @@ def test_ambiguous_visual_binding_fails_strict_gate(tmp_path: Path):
     assert run(["check", "--lenient"], tmp_path).exit_code == 0
 
 
+def _unmatched_entity_workspace(tmp_path: Path) -> None:
+    """A workspace whose only diagnostic is unmatched_visual_entity: one model,
+    one table, and a report visual binding a 'ghost' entity no table matches."""
+    pbi = tmp_path / "pbi-repo"
+    tables = pbi / "Alpha.SemanticModel" / "definition" / "tables"
+    tables.mkdir(parents=True)
+    (tables / "date.tmdl").write_text("table date\n\tcolumn year\n\t\tdataType: int64\n", encoding="utf-8")
+    report = pbi / "GhostDash"
+    report.mkdir()
+    (report / "report.json").write_text(
+        '{"sections": [{"name": "s1", "displayName": "Main", "visualContainers": [{'
+        '"config": "{\\"name\\":\\"v1\\",\\"singleVisual\\":{\\"visualType\\":\\"columnChart\\",'
+        '\\"projections\\":{\\"Y\\":[{\\"queryRef\\":\\"ghost.value\\"}]}}}"}]}]}',
+        encoding="utf-8",
+    )
+    (tmp_path / "coop-data-doc.yml").write_text(
+        """\
+project_name: Ghost Estate
+repos:
+  powerbi:
+    path: ./pbi-repo
+    include: ["**/*.tmdl", "**/report.json"]
+output:
+  dir: ./data-docs
+  site_dir: ./site
+""",
+        encoding="utf-8",
+    )
+
+
+def test_unmatched_visual_entity_is_tolerated_by_strict_gate(tmp_path: Path):
+    # issue #45: an entity that matches NO documented table is a heads-up, never
+    # a missing edge to a known object ("never guess lineage") — so unlike
+    # ambiguous_visual_binding it does NOT gate: build --strict AND check pass.
+    _unmatched_entity_workspace(tmp_path)
+    strict = run(["build", "--non-interactive", "--strict", "--skip-html"], tmp_path)
+    assert strict.exit_code == 0, strict.output
+    assert "unmatched_visual_entity" in strict.output  # still reported, just not fatal
+    chk = run(["check"], tmp_path)
+    assert chk.exit_code == 0, chk.output
+
+
 def test_build_skip_html(tmp_path: Path):
     setup_workspace(tmp_path)
     result = run(["build", "--non-interactive", "--skip-html"], tmp_path)

@@ -43,6 +43,14 @@ _SEVERITY: dict[str, str] = {
     "unresolved_partition_source": "warning",
     "unresolved_reference": "warning",
     "ambiguous_visual_binding": "warning",
+    # a visual binding entity matching NO documented table in any model: unlike
+    # ambiguous_visual_binding (a real object exists, we just can't attribute it
+    # to one model), there is nothing to link at all — the model may have dropped
+    # the table or the model isn't documented. Deliberately NOT in STRICT_CATEGORIES:
+    # "never guess lineage" (rule #4) means an entity that matches nothing is a
+    # heads-up, never a missing edge to a known object, so it's tolerated by
+    # --strict/check like the equally-unguessable pbir_external_model.
+    "unmatched_visual_entity": "warning",
     # a report's definition.pbir declares a model not among the loaded repos
     # (e.g. a published model reached byConnection): the report's table/measure
     # lineage is knowingly incomplete, never wired to a guessed local model.
