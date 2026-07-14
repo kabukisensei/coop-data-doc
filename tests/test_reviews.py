@@ -562,6 +562,44 @@ def test_check_needs_the_same_reviews_arguments(tmp_path: Path):
     assert "findings.md" in without.output
 
 
+def test_status_fresh_with_config_listed_reviews(tmp_path: Path):
+    # status honors the config `reviews:` list (no flag): a build whose review
+    # inputs all come from the config reads back 'up to date'. Pins the AGENTS.md
+    # 'status honors the config list only (no flag)' contract, whose only caller
+    # of the reviews render path is easy to drop in a refactor.
+    from test_cli import _FULL_CACHE
+
+    setup_workspace(tmp_path)
+    (tmp_path / ".lineage-cache.json").write_text(_FULL_CACHE, encoding="utf-8")
+    copy_reviews(tmp_path)
+    config = tmp_path / "coop-data-doc.yml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + 'reviews: ["reviews/sql.json", "reviews/dax.json"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    # build with NO flags — the config list supplies both review files
+    build = run(["build", "--non-interactive", "--skip-html"], tmp_path)
+    assert build.exit_code == 0, build.output
+    fresh = run(["status"], tmp_path)
+    assert fresh.exit_code == 0, fresh.output
+    assert "up to date" in fresh.output
+
+    # documented caveat: a portal built with an EXTRA --reviews flag not in the
+    # config reads as stale from status (status honors the config list only)
+    extra = tmp_path / "extra.json"
+    extra.write_text((tmp_path / "reviews" / "sql.json").read_text(encoding="utf-8"), encoding="utf-8")
+    # a distinct rule id so the extra file adds findings the config-only render won't reproduce
+    extra.write_text(
+        extra.read_text(encoding="utf-8").replace("SQL-SELECT-STAR", "SQL-EXTRA-ONLY"), encoding="utf-8"
+    )
+    rebuilt = run(["build", "--non-interactive", "--skip-html", "--reviews", "extra.json"], tmp_path)
+    assert rebuilt.exit_code == 0, rebuilt.output
+    stale = run(["status"], tmp_path)
+    assert stale.exit_code == 0  # status reports, never fails the way check does
+    assert "stale" in stale.output
+
+
 # --- site nav + config round-trip -------------------------------------------------
 
 
