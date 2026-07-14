@@ -103,7 +103,7 @@ Check it worked:
 coop-data-doc --version
 ```
 
-You should see `coop-data-doc, version 0.17.0` (or newer). If the terminal says
+You should see `coop-data-doc, version X.Y.Z` matching the latest release on PyPI. If the terminal says
 *"command not found"* (macOS) or *"the term 'coop-data-doc' is not recognized…"*
 (Windows), the install location just isn't on your PATH yet — see
 [Troubleshooting](#troubleshooting) to fix it permanently.

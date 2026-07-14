@@ -27,7 +27,7 @@ Each `module-N.md` is a self-contained brief for a coding LLM (Claude Sonnet, Ki
 | 5 | ~~M7 packaging/CI hardening~~ ✅ done | — |
 
 ## Review checklist for every returned module
-- [ ] `.venv/bin/python -m pytest -q` green (expect `~310 passed`, zero failures), including new fixtures
+- [ ] `.venv/bin/python -m pytest -q` green (expect `~490 passed`, zero failures), including new fixtures
 - [ ] No prints/exits outside cli.py, wizard.py, progress.py, and linker/interactive.py; warnings returned as data
 - [ ] Determinism: two builds on the same inputs are byte-identical — `tests/test_determinism.py` (part of the suite above) enforces this; sorted iteration everywhere
 - [ ] No new dependencies beyond the allowed list (`[project.dependencies]` in `pyproject.toml`; mirrored in `_shared-context.md`)
