@@ -138,6 +138,34 @@ def parse_batch(
     return [expression for expression in parsed if expression is not None]
 
 
+def _block_comment_end(sql: str, start: int) -> int:
+    """Index just past the `*/` that closes the block comment opening at
+    ``start`` (which must point at its `/*`), or ``len(sql)`` if unterminated.
+
+    T-SQL block comments NEST: ``/* outer /* inner */ still outer */`` is ONE
+    comment through the FINAL ``*/``. A flat ``sql.find('*/')`` stops at the
+    first ``*/`` and un-hides the code archived after it (a nested-comment
+    INSERT/CREATE PROCEDURE leaking a phantom object — hard rule 4). Track a
+    depth counter instead: +1 on each ``/*``, -1 on each ``*/``, done at depth
+    0. Per documented T-SQL server semantics, quotes/`--` inside a block comment
+    have no special meaning, so this scans characters without quote-awareness.
+    """
+    depth = 0
+    i, n = start, len(sql)
+    while i < n:
+        if sql.startswith("/*", i):
+            depth += 1
+            i += 2
+        elif sql.startswith("*/", i):
+            depth -= 1
+            i += 2
+            if depth == 0:
+                return i
+        else:
+            i += 1
+    return n
+
+
 def scrub(sql: str, *, strip_strings: bool) -> str:
     """Remove comments (and optionally string-literal contents) via a scanner."""
     out: list[str] = []
@@ -168,8 +196,8 @@ def scrub(sql: str, *, strip_strings: bool) -> str:
             j = sql.find("\n", i)
             i = n if j == -1 else j
         elif sql.startswith("/*", i):
-            j = sql.find("*/", i)
-            i = n if j == -1 else j + 2
+            # nesting-aware: skip through the FINAL matching */ (see _block_comment_end)
+            i = _block_comment_end(sql, i)
             out.append(" ")
         else:
             out.append(ch)
@@ -218,8 +246,8 @@ def blank_comments_and_strings(sql: str) -> str:
             blank(i, end)
             i = end
         elif sql.startswith("/*", i):
-            j = sql.find("*/", i)
-            end = n if j == -1 else j + 2
+            # nesting-aware: blank through the FINAL matching */ (see _block_comment_end)
+            end = _block_comment_end(sql, i)
             blank(i, end)
             i = end
         else:
@@ -260,8 +288,10 @@ def split_statements(sql: str) -> list[str]:
             buf.append(sql[i:j])
             i = j
         elif sql.startswith("/*", i):
-            j = sql.find("*/", i)
-            j = n if j == -1 else j + 2
+            # nesting-aware: preserve the WHOLE comment (through the final */) so a
+            # `;` inside a nested comment can't split the statement (see
+            # _block_comment_end)
+            j = _block_comment_end(sql, i)
             buf.append(sql[i:j])
             i = j
         elif ch == ";":

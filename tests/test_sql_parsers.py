@@ -591,6 +591,56 @@ def test_regex_fallback_ignores_create_in_comments_and_strings(tmp_path: Path):
     assert graph.nodes == {}  # none of the commented/quoted CREATEs became a node
 
 
+def test_nested_block_comment_hides_archived_insert(tmp_path: Path):
+    # issue #42: T-SQL block comments NEST — `/* outer /* inner */ still outer */`
+    # is ONE comment. A flat find('*/') stopped at the inner `*/` and un-hid the
+    # archived INSERT after it, leaking phantom reads/writes edges alongside the
+    # real lineage. The nesting-aware scanner must keep the whole block hidden.
+    graph, warnings = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE dbo.loader AS\n"
+        "BEGIN\n"
+        "    /* archived approach /* v1 note */\n"
+        "       INSERT INTO dbo.phantom_target SELECT * FROM dbo.phantom_source */\n"
+        "    INSERT INTO dbo.real_target SELECT * FROM dbo.real_source;\n"
+        "END\n"
+        "GO\n",
+    )
+    node_ids = set(graph.nodes)
+    assert not any("phantom" in node_id for node_id in node_ids)
+    keys = edge_keys(graph)
+    src = "stored_proc:dbo.loader"
+    assert (src, "gold_table:dbo.real_target", "writes") in keys
+    assert (src, "gold_table:dbo.real_source", "reads") in keys
+    # the real statement parses cleanly (AST), so no regex fallback fires
+    assert not any(w.category == "regex_fallback" for w in warnings)
+    assert graph.nodes[src].metadata["parse_quality"] == "ast"
+
+
+def test_nested_block_comment_around_archived_proc_header(tmp_path: Path):
+    # Worse failure mode: a nested comment containing an archived CREATE PROCEDURE
+    # header used to document the PHANTOM proc as the file's only proc, so the real
+    # proc got no node and its lineage was attributed to the phantom.
+    graph, warnings = _parse_proc_sql(
+        tmp_path,
+        "/* legacy design /* superseded 2024 */\n"
+        "   CREATE PROCEDURE dbo.phantom_proc AS SELECT * FROM dbo.old_source */\n"
+        "CREATE PROCEDURE dbo.real_proc AS\n"
+        "BEGIN\n"
+        "    INSERT INTO dbo.tgt SELECT * FROM dbo.src;\n"
+        "END\n"
+        "GO\n",
+    )
+    assert "stored_proc:dbo.phantom_proc" not in graph.nodes
+    assert "stored_proc:dbo.real_proc" in graph.nodes
+    assert not any("old_source" in node_id for node_id in graph.nodes)
+    keys = edge_keys(graph)
+    src = "stored_proc:dbo.real_proc"
+    assert (src, "gold_table:dbo.tgt", "writes") in keys
+    assert (src, "gold_table:dbo.src", "reads") in keys
+    assert not any(w.category == "regex_fallback" for w in warnings)
+
+
 def test_end_to_end_lineage_chain():
     graph, _ = parse_all()
     upstream = graph.upstream("view:sales.dim_customer")
