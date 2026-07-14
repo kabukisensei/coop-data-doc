@@ -17,3 +17,6 @@ the package version.
 | --- | --- |
 | `custom.css` | Site styling tweaks (nav, relationship-grid gridlines, collapsible trees). |
 | `doc-tree.js` | Dependency-free collapsible "Upstream lineage" trees (each branch starts collapsed; click ▸/▾ to drill down). Degrades to the full Markdown list with no JS. |
+| `nav-collapse.js` | Dependency-free desktop toggle to collapse the left navigation sidebar and hand its width to the content column (wide relationship grids benefit). Choice persists per browser via localStorage; degrades gracefully with no JS. |
+| `brand/logo.png` | Default Cooptimize logo, used when `branding.logo` is unset in the config. |
+| `brand/favicon.png` | Default Cooptimize favicon, used when `branding.favicon` (and `branding.logo`) are unset in the config. |

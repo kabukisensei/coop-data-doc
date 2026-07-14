@@ -196,7 +196,7 @@ src/coop_data_doc/
 ├── wizard.py         interactive `setup` (repos, layers, ignore, mappings)
 ├── upgrade.py        `upgrade` — the only networked command (PyPI/git); on Windows, defers to a fresh shell rather than replace its own running launcher
 ├── render/           markdown.py, paths.py, site.py (layer-grouped nav)
-└── templates/assets/ vendored iframe-worker + first-party doc-tree.js + custom.css
+└── templates/assets/ vendored iframe-worker + first-party doc-tree.js/nav-collapse.js + custom.css + brand/ defaults
 tasks/                original builder briefs — double as interface docs
 tests/                fixtures/repo_sql + fixtures/repo_pbi drive everything
 ```

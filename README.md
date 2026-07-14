@@ -720,9 +720,10 @@ hold anyway. The tool tells you when it hits an opaque model.
 ## Third-party assets
 
 The package vendors `iframe-worker` 1.0.4 (MIT) so generated sites search over
-`file://` with no network, plus a small first-party script — `doc-tree.js`
-(collapsible lineage trees) — hand-rolled rather than vendored to stay within the
-no-CDN rule. See `src/coop_data_doc/templates/assets/README.md` for provenance.
+`file://` with no network, plus two small first-party scripts — `doc-tree.js`
+(collapsible lineage trees) and `nav-collapse.js` (desktop sidebar-collapse
+toggle) — hand-rolled rather than vendored to stay within the no-CDN rule. See
+`src/coop_data_doc/templates/assets/README.md` for provenance.
 
 ## Development
 
