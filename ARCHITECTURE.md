@@ -194,7 +194,7 @@ src/coop_data_doc/
 ├── diagnostics.py    severity-classified warnings → console / JSON / HTML page
 ├── progress.py       stderr progress bars + spinner (TTY-only)
 ├── wizard.py         interactive `setup` (repos, layers, ignore, mappings)
-├── upgrade.py        `upgrade` — the only networked command (PyPI/git); on Windows, defers to a fresh shell rather than replace its own running launcher
+├── upgrade.py        `upgrade` — the only networked command (PyPI/git); reports whether a newer release exists and prints the command to run (never self-updates)
 ├── render/           markdown.py, paths.py, site.py (layer-grouped nav)
 └── templates/assets/ vendored iframe-worker + first-party doc-tree.js/nav-collapse.js + custom.css + brand/ defaults
 tasks/                original builder briefs — double as interface docs
