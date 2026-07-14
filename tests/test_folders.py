@@ -275,3 +275,21 @@ def test_resolve_apply_rejects_bad_payload(tmp_path: Path):
     res = _run(["resolve-apply"], tmp_path, stdin='{"nope": 1}')
     assert res.exit_code != 0
     assert "decisions" in res.output
+
+
+def test_resolve_apply_fails_loud_on_unwritable_cache(tmp_path: Path, monkeypatch):
+    # resolve-apply's only job is to persist decisions; a locked/read-only cache
+    # must fail loud (exit 1) — never print "Applied N" while nothing reached disk.
+    _workspace(tmp_path)
+
+    def boom(*_a, **_k):
+        raise OSError("locked by another process")
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    decision = json.dumps(
+        {"decisions": [{"cache_key": "pbi_table:sales.fact_sales", "target": "gold_table:dbo.fact_sales"}]}
+    )
+    res = _run(["resolve-apply"], tmp_path, stdin=decision)
+    assert res.exit_code == 1
+    assert "Applied" not in res.output
+    assert "lineage cache" in res.output

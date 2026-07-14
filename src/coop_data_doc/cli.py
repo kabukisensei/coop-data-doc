@@ -1133,7 +1133,16 @@ def resolve_apply(config_path: str | None, json_src) -> None:
             entry = CacheEntry(target=None, method="skip")
         cache.put(key, entry)
         applied += 1
-    cache.write()
+    # resolve-apply's whole job is to persist these human decisions to disk;
+    # unlike the interactive loop there is no later write to self-heal a lock, so
+    # a swallowed write failure would print "Applied N" while nothing reached the
+    # file — silently breaking the agent contract. Fail loud (exit 1) instead.
+    if not cache.write():
+        message = next(
+            (w.message for w in cache.warnings if w.category == "cache_write_failed"),
+            "could not write lineage cache",
+        )
+        raise click.ClickException(f"{message} — no decisions were saved")
     click.echo(f"Applied {applied} decision(s) to {cache.path}. Run `coop-data-doc build` to use them.")
 
 
@@ -1229,9 +1238,18 @@ def _run_build(
     # disk (interactive answers were written during linking) and prune for real —
     # read-only commands (check/status/resolve/scan, wizard dry-runs) only ever
     # ignore such entries for the run (see LineageCache.prune_invalid).
-    pruned = LineageCache.load(config.base_dir / ".lineage-cache.json").prune_invalid(graph, persist=True)
+    prune_cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
+    pruned = prune_cache.prune_invalid(graph, persist=True)
     if pruned:
         _log.debug("pruned %d stale lineage-cache entr%s", len(pruned), "y" if len(pruned) == 1 else "ies")
+    # prune_invalid writes only when it dropped entries, and write() now records
+    # a cache_write_failed warning (never raises) if the file is locked/read-only
+    # — surface it here since diagnostics were already emitted upstream. The docs
+    # are fully rendered; only the on-disk prune didn't stick (harmless: those
+    # dead entries are re-ignored next run and dropped on the next writable build).
+    for warning in prune_cache.warnings:
+        if warning.category == "cache_write_failed":
+            click.echo(f"warning: {warning.message}", err=True)
     click.echo(f"Markdown docs: {out_dir}", err=True)
     if skip_html:
         return

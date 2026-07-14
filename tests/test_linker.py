@@ -185,6 +185,46 @@ def test_prune_invalid_persist_deletes_and_writes(tmp_path: Path):
     assert reloaded.mappings[valid].target == "view:sales.dim_customer"
 
 
+def test_write_failure_records_warning_never_raises(tmp_path: Path, monkeypatch):
+    # A locked/read-only .lineage-cache.json (Windows OneDrive/Defender) must not
+    # crash write(): it records a cache_write_failed warning and returns False,
+    # while the answer stays in memory so a later write persists it all.
+    cache = cache_at(tmp_path)
+
+    def boom(*_a, **_k):
+        raise OSError("locked by another process")
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    cache.mappings["k"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
+    assert cache.write() is False
+    assert [w.category for w in cache.warnings] == ["cache_write_failed"]
+    assert cache.mappings["k"].target == "view:sales.dim_customer"  # kept in memory
+
+
+def test_interactive_link_survives_unwritable_cache(tmp_path: Path, fake_q, monkeypatch):
+    # An interactive mapping session whose cache.put() can't reach disk must
+    # finish the whole session (edges still created, answers in memory) and
+    # surface a single cache_write_failed warning — never die mid-prompt.
+    cache = cache_at(tmp_path)
+
+    def boom(*_a, **_k):
+        raise OSError("locked by another process")
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    graph = build_graph()
+    result, warnings = link_graph(graph, make_config(), cache, interactive_mode=True)
+
+    assert result.methods["interactive"] == 1  # the prompt was still answered
+    assert (
+        "view:sales.dim_customer",
+        f"pbi_table:{MODEL_KEY}.dcust",
+        "feeds",
+    ) in edge_keys(graph)
+    assert cache.get(f"pbi_table:{MODEL_KEY}.dcust").target == "view:sales.dim_customer"
+    # exactly one warning despite the per-answer write attempts (deduped)
+    assert [w.category for w in warnings].count("cache_write_failed") == 1
+
+
 def test_ignored_entry_superseded_by_fresh_answer(tmp_path: Path, fake_q):
     # after a stale entry is ignored and the human re-answers, put() replaces it
     # (and the replacement — not the stale target — is what persists)

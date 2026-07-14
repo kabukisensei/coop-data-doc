@@ -159,6 +159,10 @@ def link_graph(
     can present them and feed decisions back via `resolve-apply`.
     """
     result = ResolutionResult()
+    # Snapshot the cache warnings present now (load-time problems); the
+    # interactive loop's cache.put() writes may add cache_write_failed warnings
+    # to cache.warnings, which we re-collect after prompting (below).
+    seen_cache_warnings = len(cache.warnings)
     warnings: list[ParseWarning] = list(cache.warnings)
 
     # persist=False: entries whose target isn't in THIS graph are ignored for
@@ -309,5 +313,16 @@ def link_graph(
                 )
             )
 
+    # Surface any cache-write failures the interactive put()s recorded — the
+    # answers are safe in memory but couldn't reach disk, so the human must know
+    # to re-run once the lock clears. Dedup by (category, message): a persistent
+    # lock adds one warning per put(), which would otherwise flood the summary.
+    new_cache_warnings = cache.warnings[seen_cache_warnings:]
+    seen_keys = {(w.category, w.message) for w in warnings}
+    for warning in new_cache_warnings:
+        key = (warning.category, warning.message)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            warnings.append(warning)
     result.unresolved.sort()
     return result, warnings

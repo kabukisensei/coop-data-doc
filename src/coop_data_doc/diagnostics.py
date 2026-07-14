@@ -49,6 +49,13 @@ _SEVERITY: dict[str, str] = {
     "pbir_external_model": "warning",
     "fuzzy_auto": "warning",
     "cache_pruned": "warning",
+    # a locked/read-only .lineage-cache.json couldn't be written (Windows
+    # OneDrive/Defender lock small JSON files transiently). The answers stay in
+    # memory and each subsequent write re-attempts the whole file, so a transient
+    # lock self-heals; a warning, never a gate failure (unlike the READ failure
+    # "cache_invalid", missing committed answers can't be silently missing here —
+    # they're still resolved for this run, just not yet on disk).
+    "cache_write_failed": "warning",
     # the SQL parse cache is DERIVABLE (gitignored) — a corrupt/stale one self-heals on
     # the next build, so it degrades to a cold parse and is a warning, never a CI failure
     # (unlike the committed .lineage-cache.json's "cache_invalid", which is an error).

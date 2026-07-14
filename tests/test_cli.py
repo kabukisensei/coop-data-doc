@@ -839,6 +839,39 @@ def test_status_detects_staleness(tmp_path: Path):
     assert "stale" in result.output
 
 
+def test_build_prune_survives_unwritable_cache(tmp_path: Path, monkeypatch):
+    # The post-render prune (persist=True) rewrites .lineage-cache.json when it
+    # drops a stale entry. A locked/read-only file there must NOT abort a fully
+    # rendered build: the write records a cache_write_failed warning (never
+    # raises) and _run_build surfaces it. Seed a stale entry so the prune writes.
+    from coop_data_doc.config import ParseWarning
+    from coop_data_doc.linker.cache import LineageCache
+
+    setup_workspace(tmp_path)
+    (tmp_path / ".lineage-cache.json").write_text(
+        '{\n  "version": 1,\n  "mappings": {\n'
+        '    "pbi_table:sales.fact_sales": {\n'
+        '      "target": "gold_table:dbo.gone",\n'  # target absent from the graph → pruned
+        '      "method": "interactive"\n    }\n  }\n}\n',
+        encoding="utf-8",
+    )
+
+    def failing_write(self):
+        self.warnings.append(
+            ParseWarning(
+                file=str(self.path),
+                message="could not write lineage cache: locked",
+                category="cache_write_failed",
+            )
+        )
+        return False
+
+    monkeypatch.setattr(LineageCache, "write", failing_write)
+    result = run(["build", "--non-interactive", "--skip-html"], tmp_path)
+    assert result.exit_code == 0, result.output  # docs rendered; prune write is non-fatal
+    assert "could not write lineage cache" in result.output
+
+
 def test_undecodable_sql_file_fails_ci_gate(tmp_path: Path):
     # issue #16: a BOM-less UTF-16 (undecodable) SQL file means objects are silently
     # missing — an error-severity diagnostic that must fail build --strict AND check.

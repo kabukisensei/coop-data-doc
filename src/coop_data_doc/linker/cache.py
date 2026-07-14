@@ -132,14 +132,37 @@ class LineageCache:
             self._ignored.update(dropped)
         return dropped
 
-    def write(self) -> None:
-        """Persist with sorted keys and stable formatting for clean git diffs."""
+    def write(self) -> bool:
+        """Persist with sorted keys and stable formatting for clean git diffs.
+
+        Returns True on a successful write. An ``OSError`` (a locked or
+        read-only file — Windows OneDrive/Defender routinely hold short-lived
+        locks on small JSON files) is caught, recorded on ``self.warnings`` as
+        a ``cache_write_failed`` warning, and reported as False rather than
+        crashing the caller. The mapping was already stored in memory before
+        this call, so a later successful ``write()`` in the same session
+        persists every accumulated answer — transient locks self-heal. Unlike
+        the derivable parse cache, these are human answers, so callers that
+        can't rely on a later write (``resolve-apply``) must check the return
+        value and surface a hard error.
+        """
         payload = {
             "version": self.VERSION,
             "mappings": {key: self.mappings[key].model_dump() for key in sorted(self.mappings)},
         }
-        self.path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        try:
+            self.path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        except OSError as exc:
+            self.warnings.append(
+                ParseWarning(
+                    file=str(self.path),
+                    message=f"could not write lineage cache: {exc}",
+                    category="cache_write_failed",
+                )
+            )
+            return False
+        return True
