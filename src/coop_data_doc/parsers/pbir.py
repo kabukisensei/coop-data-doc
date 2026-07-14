@@ -197,24 +197,33 @@ def _append_report_filters(
         pending.append({"entity": entity, "property": prop, "kind": kind, "scope": scope})
 
 
-def _load_pbir_json(entry: FileEntry, warnings: list[ParseWarning]) -> dict | None:
-    """Read + JSON-parse a PBIR file into a dict, or append a ``pbir_parse``
-    warning and return ``None``. Valid-but-non-object JSON (a top-level array,
-    string, or number) degrades to a warning too — the parser never raises on
-    malformed input (hard rule 3)."""
+def _dict_or_empty(value) -> dict:
+    """``value`` when it is a dict, else ``{}`` — a malformed nested report
+    shape (a string/list where an object belongs) degrades to "nothing here"
+    instead of raising (hard rule 3)."""
+    return value if isinstance(value, dict) else {}
+
+
+def _load_pbir_json(
+    entry: FileEntry, warnings: list[ParseWarning], *, category: str = "pbir_parse"
+) -> dict | None:
+    """Read + JSON-parse a report file into a dict, or append a warning under
+    ``category`` and return ``None``. Valid-but-non-object JSON (a top-level
+    array, string, or number) degrades to a warning too — the parser never
+    raises on malformed input (hard rule 3)."""
     try:
         data = json.loads(
             Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"), strict=False
         )
     except (OSError, json.JSONDecodeError) as exc:
-        warnings.append(ParseWarning(file=entry.path, message=str(exc), category="pbir_parse"))
+        warnings.append(ParseWarning(file=entry.path, message=str(exc), category=category))
         return None
     if not isinstance(data, dict):
         warnings.append(
             ParseWarning(
                 file=entry.path,
                 message=f"{PurePosixPath(entry.path).name} is not a JSON object",
-                category="pbir_parse",
+                category=category,
             )
         )
         return None
@@ -280,7 +289,9 @@ def parse_pbir(
         page_name = page_display.get((root, page_folder), page_folder)
         page = _ensure_page(graph, report, page_name, entry.path)
 
-        visual_obj = data.get("visual") or {}
+        # a "visual" value that isn't an object (malformed export) is treated as
+        # absent — the visual node still exists, just untyped/unbound
+        visual_obj = _dict_or_empty(data.get("visual"))
         visual_type = visual_obj.get("visualType") or data.get("visualType") or "unknown"
         # Walk the displayed query and the visual-level filterConfig SEPARATELY so
         # filter fields carry role="filter" instead of leaking into shown fields.
@@ -301,6 +312,8 @@ def parse_layout_json(
     # Legacy report-level filters (a JSON-embedded string) → report-scope filters.
     _append_report_filters(graph, report_name, source_file, _filter_fields(data.get("filters")), "report")
     for section_index, section in enumerate(data.get("sections") or []):
+        if not isinstance(section, dict):
+            continue  # malformed section entry — skip, never raise (hard rule 3)
         page_name = section.get("displayName") or section.get("name") or f"page{section_index}"
         page = _ensure_page(graph, report, page_name, source_file)
         # Legacy section-level filters (a JSON-embedded string) → page-scope filters.
@@ -308,12 +321,18 @@ def parse_layout_json(
             graph, report_name, source_file, _filter_fields(section.get("filters")), "page"
         )
         for container_index, container in enumerate(section.get("visualContainers") or []):
+            if not isinstance(container, dict):
+                continue  # malformed container entry — skip, never raise (hard rule 3)
             config_raw = container.get("config")
             if not isinstance(config_raw, str):
                 continue
             try:
                 config = json.loads(config_raw, strict=False)
             except json.JSONDecodeError:
+                config = None
+            # unparseable OR valid-but-non-object (a top-level array/string/
+            # number): either way the config is unusable — warn and skip
+            if not isinstance(config, dict):
                 warnings.append(
                     ParseWarning(
                         file=source_file,
@@ -322,12 +341,12 @@ def parse_layout_json(
                     )
                 )
                 continue
-            single = config.get("singleVisual") or {}
+            single = _dict_or_empty(config.get("singleVisual"))
             visual_type = single.get("visualType") or "unknown"
             visual_id = config.get("name") or f"{page_name}_{container_index}"
             bindings: set[tuple[str, str, str, str]] = set()
 
-            for refs in (single.get("projections") or {}).values():
+            for refs in _dict_or_empty(single.get("projections")).values():
                 for ref in refs or []:
                     query_ref = ref.get("queryRef") if isinstance(ref, dict) else None
                     if isinstance(query_ref, str) and "." in query_ref:
@@ -336,7 +355,7 @@ def parse_layout_json(
             # visual-level legacy filters live on the container itself
             bindings |= _filter_fields(container.get("filters"))
 
-            prototype = single.get("prototypeQuery") or {}
+            prototype = _dict_or_empty(single.get("prototypeQuery"))
             alias_map = {
                 item.get("Name"): item.get("Entity")
                 for item in prototype.get("From") or []
@@ -349,7 +368,9 @@ def parse_layout_json(
                     if not isinstance(payload, dict):
                         continue
                     prop = payload.get("Property")
-                    source_alias = ((payload.get("Expression") or {}).get("SourceRef") or {}).get("Source")
+                    source_alias = _dict_or_empty(
+                        _dict_or_empty(payload.get("Expression")).get("SourceRef")
+                    ).get("Source")
                     entity = alias_map.get(source_alias)
                     if isinstance(prop, str) and isinstance(entity, str):
                         kind = _KIND_KEYS.get(kind_key.lower(), "unknown")
@@ -373,12 +394,11 @@ def parse_legacy_reports(
     for entry in sorted(entries, key=lambda e: e.path):
         if on_file:
             on_file(entry.path)
-        try:
-            data = json.loads(
-                Path(entry.abs_path).read_text(encoding="utf-8-sig", errors="replace"), strict=False
-            )
-        except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(ParseWarning(file=entry.path, message=str(exc), category="report_json_parse"))
+        # report.json is a generic filename other tools also emit (often as a
+        # top-level JSON array) — a non-object one degrades to a warning and is
+        # skipped, never raised on (hard rule 3, issue #41).
+        data = _load_pbir_json(entry, warnings, category="report_json_parse")
+        if data is None:
             continue
         # report_root strips a `.Report` folder suffix (and handles the
         # definition/ fallback), so a legacy `<Name>.Report/report.json` yields

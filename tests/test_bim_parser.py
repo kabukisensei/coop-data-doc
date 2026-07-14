@@ -224,6 +224,61 @@ def test_bim_malformed_json_warns_and_skips(tmp_path: Path):
     assert graph.edges == []
 
 
+def test_bim_top_level_array_warns_and_skips(tmp_path: Path):
+    # a .bim whose top level is a JSON list (valid JSON, wrong shape) must
+    # degrade to a bim_parse warning — previously it crashed the pipeline with
+    # AttributeError at data.get("model") (hard rule 3, issue #41).
+    path = tmp_path / "listy.bim"
+    path.write_text(json.dumps([1, 2]), encoding="utf-8")
+    graph = LineageGraph()
+    warnings = parse_bim([entry_for(path)], graph)  # must not raise
+    assert [w.category for w in warnings] == ["bim_parse"]
+    assert warnings[0].file == "listy.bim"
+    assert graph.nodes == {}
+    assert graph.edges == []
+
+
+def test_bim_non_dict_model_and_entries_degrade_to_warnings(tmp_path: Path):
+    # non-object values where TOM objects belong — "model" itself, and
+    # tables/partitions/measures/relationships entries — are each skipped with
+    # a bim_parse warning instead of raising (hard rule 3, issue #41).
+    path = tmp_path / "modelstr.bim"
+    path.write_text(json.dumps({"name": "M", "model": "nope"}), encoding="utf-8")
+    graph = LineageGraph()
+    warnings = parse_bim([entry_for(path)], graph)
+    assert [w.category for w in warnings] == ["bim_parse"]
+    assert "semantic_model:m" in graph.nodes  # the model node still exists, just empty
+
+    path = tmp_path / "entries.bim"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "M2",
+                "model": {
+                    "tables": [
+                        "oops",  # non-dict table entry
+                        {
+                            "name": "good",
+                            "columns": [{"name": "id", "dataType": "int64"}, "oops"],
+                            "partitions": ["oops"],
+                            "measures": ["oops"],
+                        },
+                    ],
+                    "relationships": ["oops"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    graph = LineageGraph()
+    warnings = parse_bim([entry_for(path)], graph)
+    # one warning per malformed table/partition/measure/relationship entry
+    # (non-dict columns are skipped quietly — they carry no name to report)
+    assert [w.category for w in warnings] == ["bim_parse"] * 4
+    good = graph.nodes["pbi_table:m2.good"]
+    assert [c.name for c in good.columns] == ["id"]  # the good column survived
+
+
 def test_bim_determinism():
     first, _ = parse_fixture()
     second, _ = parse_fixture()

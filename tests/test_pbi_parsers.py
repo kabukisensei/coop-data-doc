@@ -611,6 +611,87 @@ def test_pbir_non_object_json_degrades_to_warning(tmp_path: Path):
     assert any(w.category == "pbir_parse" for w in warnings)
 
 
+def legacy_report_entry(tmp_path: Path, payload) -> FileEntry:
+    """A standalone legacy report.json FileEntry with ``payload`` as content."""
+    bad = tmp_path / "report.json"
+    bad.write_text(json.dumps(payload), encoding="utf-8")
+    return FileEntry(
+        path="stray/report.json",
+        abs_path=str(bad),
+        repo_key="powerbi",
+        kind=FileKind.REPORT_JSON_LEGACY,
+        size=bad.stat().st_size,
+    )
+
+
+def test_legacy_report_top_level_array_degrades_to_warning(tmp_path: Path):
+    # report.json is a generic filename other tools also emit — often a
+    # top-level JSON array (e.g. a test-suite report). The default include
+    # globs crawl ANY report.json, so an array one must degrade to a
+    # report_json_parse warning, never crash the build with AttributeError
+    # (hard rule 3, issue #41).
+    graph = LineageGraph()
+    warnings = parse_legacy_reports([legacy_report_entry(tmp_path, [{"suite": "x"}])], graph)
+    assert [w.category for w in warnings] == ["report_json_parse"]
+    assert warnings[0].file == "stray/report.json"
+    assert graph.nodes == {}
+
+
+def test_legacy_layout_non_dict_section_skipped(tmp_path: Path):
+    # a sections entry that is a string (malformed layout) is skipped; the
+    # well-formed sibling section still parses (hard rule 3, issue #41).
+    payload = {"sections": ["oops", {"name": "real", "visualContainers": []}]}
+    graph = LineageGraph()
+    warnings = parse_legacy_reports([legacy_report_entry(tmp_path, payload)], graph)
+    assert warnings == []
+    assert "report_page:stray.real" in graph.nodes  # the good section survived
+    assert len([n for n in graph.nodes.values() if n.node_type.value == "report_page"]) == 1
+
+
+def test_legacy_layout_non_dict_container_skipped(tmp_path: Path):
+    # a visualContainers entry that is a string is skipped without raising
+    # (hard rule 3, issue #41).
+    payload = {"sections": [{"name": "p1", "visualContainers": ["oops"]}]}
+    graph = LineageGraph()
+    warnings = parse_legacy_reports([legacy_report_entry(tmp_path, payload)], graph)
+    assert warnings == []
+    assert not any(n.node_type.value == "visual" for n in graph.nodes.values())
+
+
+def test_legacy_layout_non_dict_visual_config_warns(tmp_path: Path):
+    # an embedded config string that parses to valid-but-non-object JSON is as
+    # unusable as unparseable JSON — the same 'unparseable visual config'
+    # warning, never an AttributeError (hard rule 3, issue #41).
+    payload = {"sections": [{"name": "p1", "visualContainers": [{"config": "[1, 2]"}]}]}
+    graph = LineageGraph()
+    warnings = parse_legacy_reports([legacy_report_entry(tmp_path, payload)], graph)
+    assert [w.category for w in warnings] == ["report_json_parse"]
+    assert "unparseable visual config" in warnings[0].message
+
+
+def test_pbir_non_dict_visual_object_treated_as_absent(tmp_path: Path):
+    # a visual.json whose "visual" value is a truthy non-object (malformed
+    # export) is treated as {} — the visual node still exists, just untyped,
+    # and nothing raises (hard rule 3, issue #41).
+    from coop_data_doc.graph.model import NodeType
+
+    v = tmp_path / "visual.json"
+    v.write_text('{"name": "v1", "visual": "card"}', encoding="utf-8")
+    entry = FileEntry(
+        path="X.Report/definition/pages/p1/visuals/v1/visual.json",
+        abs_path=str(v),
+        repo_key="powerbi",
+        kind=FileKind.PBIR_VISUAL,
+        size=v.stat().st_size,
+    )
+    graph = LineageGraph()
+    warnings = parse_pbir([entry], [], [], graph)  # must not raise
+    assert warnings == []
+    visual = next(n for n in graph.nodes.values() if n.node_type is NodeType.VISUAL)
+    assert visual.metadata["visual_type"] == "unknown"
+    assert visual.metadata["bindings"] == []
+
+
 def test_visual_json_with_control_chars_parses(tmp_path: Path):
     # Power BI writes raw control characters (literal newlines/tabs) inside
     # JSON strings; strict parsers reject them. The tool must parse leniently —
@@ -894,6 +975,20 @@ def test_pbix_opaque_model_warns(tmp_path: Path):
     warnings = parse_pbix([pbix_entry(pbix_path)], graph)
     assert graph.nodes["semantic_model:opaque"].metadata["pbix_model_opaque"] is True
     assert any(w.category == "pbix_opaque_model" for w in warnings)
+
+
+def test_pbix_non_object_layout_degrades_to_warning(tmp_path: Path):
+    # a Report/Layout that decodes to valid JSON but not an object (a top-level
+    # array) must degrade to a pbix_layout_parse warning — previously the
+    # AttributeError escaped the except tuple and aborted the build (hard
+    # rule 3, issue #41).
+    pbix_path = tmp_path / "ArrayLayout.pbix"
+    with zipfile.ZipFile(pbix_path, "w") as zf:
+        zf.writestr("Report/Layout", json.dumps([1, 2]).encode("utf-16-le"))
+    graph = LineageGraph()
+    warnings = parse_pbix([pbix_entry(pbix_path)], graph)  # must not raise
+    assert any(w.category == "pbix_layout_parse" for w in warnings)
+    assert not any(n.node_type.value == "report" for n in graph.nodes.values())
 
 
 def test_pbix_garbage_never_raises(tmp_path: Path):

@@ -35,6 +35,33 @@ def _expression_text(expression) -> str:
     return str(expression or "")
 
 
+def _dict_entries(value, label: str, file: str, warnings: list[ParseWarning]) -> list[dict]:
+    """The dict entries of a parsed-JSON .bim collection. A malformed shape (a
+    non-list collection, a non-dict entry) degrades to a ``bim_parse`` warning
+    and is skipped — the parser never raises on malformed input (hard rule 3,
+    issue #41)."""
+    if not value:
+        return []
+    if not isinstance(value, list):
+        warnings.append(
+            ParseWarning(file=file, message=f"{label} is not a JSON array — skipped", category="bim_parse")
+        )
+        return []
+    out: list[dict] = []
+    for index, item in enumerate(value):
+        if isinstance(item, dict):
+            out.append(item)
+        else:
+            warnings.append(
+                ParseWarning(
+                    file=file,
+                    message=f"{label}[{index}] is not a JSON object — skipped",
+                    category="bim_parse",
+                )
+            )
+    return out
+
+
 def parse_bim(
     entries: list[FileEntry],
     graph: LineageGraph,
@@ -54,8 +81,28 @@ def parse_bim(
         except (OSError, json.JSONDecodeError) as exc:
             warnings.append(ParseWarning(file=entry.path, message=str(exc), category="bim_parse"))
             continue
+        # valid JSON but not a TOM object (e.g. a top-level array) — degrade to
+        # a warning and skip, never raise (hard rule 3, issue #41)
+        if not isinstance(data, dict):
+            warnings.append(
+                ParseWarning(
+                    file=entry.path,
+                    message=f"{PurePosixPath(entry.path).name} is not a JSON object",
+                    category="bim_parse",
+                )
+            )
+            continue
         model = data.get("model") or {}
-        model_name = data.get("name") or PurePosixPath(entry.path).stem
+        if not isinstance(model, dict):
+            warnings.append(
+                ParseWarning(
+                    file=entry.path, message="'model' is not a JSON object — skipped", category="bim_parse"
+                )
+            )
+            model = {}
+        model_name = data.get("name")
+        if not isinstance(model_name, str) or not model_name:
+            model_name = PurePosixPath(entry.path).stem
         model_key = normalize_identifier(model_name)
         model_node = graph.add_node(
             Node(
@@ -67,17 +114,20 @@ def parse_bim(
             )
         )
 
-        for table in model.get("tables") or []:
-            table_name = table.get("name") or ""
-            if not table_name:
+        for table in _dict_entries(model.get("tables"), "model.tables", entry.path, warnings):
+            table_name = table.get("name")
+            if not table_name or not isinstance(table_name, str):
                 continue
+            # non-dict column entries are the same malformed-shape class as the
+            # collections above; they carry no name to warn about, so skip quietly
+            table_columns = [c for c in table.get("columns") or [] if isinstance(c, dict)]
             columns = [
                 Column(
                     name=normalize_identifier(column.get("name") or ""),
                     data_type=str(column.get("dataType") or ""),
                     description=str(column.get("description") or ""),
                 )
-                for column in table.get("columns") or []
+                for column in table_columns
                 if column.get("name")
             ]
             table_desc = str(table.get("description") or "")
@@ -101,10 +151,16 @@ def parse_bim(
                     evidence=entry.path,
                 )
             )
-            for partition in table.get("partitions") or []:
+            for partition in _dict_entries(
+                table.get("partitions"), f"table '{table_name}' partitions", entry.path, warnings
+            ):
                 if partition.get("mode"):
                     table_node.metadata["storage_mode"] = str(partition["mode"]).lower()
+                # a non-dict source is unusable: coerce to {} so the partition
+                # falls through to _mark_partition_unresolved (which warns)
                 source = partition.get("source") or {}
+                if not isinstance(source, dict):
+                    source = {}
                 source_type = str(source.get("type") or "m").lower()  # TOM default is "m"
                 expression = _expression_text(source.get("expression"))
                 if source_type == "m" and expression:
@@ -128,15 +184,18 @@ def parse_bim(
                     _mark_partition_unresolved(
                         table_node, f"source type '{source_type}'", entry.path, warnings
                     )
+            table_measures = _dict_entries(
+                table.get("measures"), f"table '{table_name}' measures", entry.path, warnings
+            )
             # a table hosting measures but with no visible data columns is a
             # "measure home table" (issue #27) — parity with the TMDL parser.
-            has_measure = any(m.get("name") for m in table.get("measures") or [])
-            has_data_column = any(c.get("name") and not c.get("isHidden") for c in table.get("columns") or [])
+            has_measure = any(m.get("name") for m in table_measures)
+            has_data_column = any(c.get("name") and not c.get("isHidden") for c in table_columns)
             if has_measure and not has_data_column:
                 table_node.metadata["measure_table"] = True
-            for measure in table.get("measures") or []:
+            for measure in table_measures:
                 measure_name = measure.get("name") or ""
-                if not measure_name:
+                if not measure_name or not isinstance(measure_name, str):
                     continue
                 measure_node = graph.add_node(
                     Node(
@@ -174,7 +233,7 @@ def parse_bim(
                 "active": r.get("isActive", True) is not False,
                 "bidirectional": str(r.get("crossFilteringBehavior", "")).lower() == "bothdirections",
             }
-            for r in model.get("relationships") or []
+            for r in _dict_entries(model.get("relationships"), "model.relationships", entry.path, warnings)
             if r.get("fromTable") and r.get("toTable")
         ]
         if relationships:

@@ -101,7 +101,13 @@ def parse_pbix(
                     if layout_bytes is None:
                         raise ValueError("oversized or unreadable Report/Layout")
                     raw = layout_bytes.decode("utf-16-le", errors="replace").lstrip("﻿")
-                    warnings += parse_layout_json(json.loads(raw), stem, entry.path, graph)
+                    layout = json.loads(raw)
+                    if not isinstance(layout, dict):
+                        # valid JSON but not a layout object — same degradation
+                        # as an undecodable layout (hard rule 3, issue #41);
+                        # ValueError is caught just below
+                        raise ValueError("Report/Layout is not a JSON object")
+                    warnings += parse_layout_json(layout, stem, entry.path, graph)
                 except (json.JSONDecodeError, KeyError, ValueError):
                     warnings.append(
                         ParseWarning(
