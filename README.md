@@ -320,6 +320,11 @@ layers:                             # medallion layers (all optional)
 
 ignore_schemas: [staging, scratch]  # schemas to drop entirely (never documented)
 
+# reviews: ["sql-findings.json"]   # optional: coop-sql-review / coop-dax-review
+                                    # --format json reports to compose into the
+                                    # portal (see "Compose review findings" above).
+                                    # setup only writes this block when non-empty.
+
 branding:                           # optional HTML-site branding (all optional)
   logo: ./assets/logo.png           # paths resolve against THIS file's folder
   favicon: ./assets/favicon.ico
@@ -386,6 +391,7 @@ upstream link.
 | `output.dir` | string | Where the Markdown (agent docs) is written. |
 | `output.site_dir` | string | Where the HTML site is built. **Must be a separate folder from `output.dir`** — not the same folder and not nested inside it (each build wipes `site_dir`, which would clobber your Markdown). Side-by-side like `./data-docs` + `./data-docs-site` is the convention. |
 | `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
+| `reviews` | list of paths | `coop-sql-review` / `coop-dax-review` `--format json` reports to compose into the portal (see [Compose review findings into the portal](#compose-review-findings-into-the-portal)); paths relative to this file. The `--reviews` flag extends the list. Advisory — never affects exit codes. |
 
 ### include / exclude — choosing what gets crawled
 
