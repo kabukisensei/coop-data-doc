@@ -36,7 +36,7 @@ DAX_REVIEW_TOOL = "coop-dax-review"
 # different (integer) version still joins — the fields consumed here
 # (rule_id / severity / message / file / line / object / model) are the stable
 # core — but it is flagged so a human knows to eyeball the result.
-KNOWN_SCHEMA_VERSIONS = {SQL_REVIEW_TOOL: 4, DAX_REVIEW_TOOL: 3}
+KNOWN_SCHEMA_VERSIONS = {SQL_REVIEW_TOOL: 4, DAX_REVIEW_TOOL: 3, "coop-data-doc": 1}
 
 # SQL findings key objects as "schema.name"; they may only ever match nodes of
 # the SQL types (never pbi_table/measure nodes that happen to share a name).

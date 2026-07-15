@@ -112,11 +112,11 @@ class Diagnostics:
     warnings: list[ParseWarning] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
 
-    def items(self) -> list[tuple[str, str, str, str]]:
+    def items(self) -> list[tuple[str, str, str, str, str]]:
         """Unified, sorted (severity, category, file, message) rows."""
-        rows: list[tuple[str, str, str, str]] = []
+        rows: list[tuple[str, str, str, str, str]] = []
         for w in self.warnings:
-            rows.append((severity_of(w.category), w.category, w.file, w.message))
+            rows.append((severity_of(w.category), w.category, w.file, w.message, ""))
         for node_id in self.unresolved:
             rows.append(
                 (
@@ -124,6 +124,7 @@ class Diagnostics:
                     "unresolved_reference",
                     node_id,
                     f"{node_id} could not be matched to a SQL object",
+                    node_id
                 )
             )
         rows.sort(key=lambda r: (_SEVERITY_ORDER.index(r[0]), r[1], r[2], r[3]))
@@ -131,13 +132,13 @@ class Diagnostics:
 
     def category_counts(self) -> Counter:
         counts: Counter = Counter()
-        for severity, category, _file, _msg in self.items():
+        for severity, category, _file, _msg, _obj in self.items():
             counts[(severity, category)] += 1
         return counts
 
     def severity_counts(self) -> dict[str, int]:
         counts = {s: 0 for s in _SEVERITY_ORDER}
-        for severity, _c, _f, _m in self.items():
+        for severity, _c, _f, _m, _obj in self.items():
             counts[severity] += 1
         return counts
 
@@ -161,18 +162,36 @@ class Diagnostics:
             for category in cats:
                 lines.append(f"  [{severity}] {category:30} {by_cat[(severity, category)]}")
         # top offending files (deterministic: by count desc, then filename)
-        file_counts = Counter(f for _s, _c, f, _m in rows)
+        file_counts = Counter(f for _s, _c, f, _m, _obj in rows)
         top = sorted(file_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
         if top:
             lines.append("  most affected:")
             lines.extend(f"    {f} ({n})" for f, n in top)
         return lines
 
+    
+    def to_envelope(self) -> dict:
+        return {
+            "tool": "coop-data-doc",
+            "schema_version": 1,
+            "findings": [
+                {
+                    "rule": c,
+                    "severity": s,
+                    "message": m,
+                    "file": f,
+                    "line": 0,
+                    "object": obj,
+                }
+                for s, c, f, m, obj in self.items()
+            ],
+        }
+
     def to_json(self) -> dict:
         return {
             "severity_counts": self.severity_counts(),
             "issues": [
-                {"severity": s, "category": c, "file": f, "message": m} for s, c, f, m in self.items()
+                {"severity": s, "category": c, "file": f, "message": m} for s, c, f, m, _obj in self.items()
             ],
         }
 
@@ -207,7 +226,7 @@ class Diagnostics:
                 out.append("")
                 out.append("| File / Object | Detail |")
                 out.append("| --- | --- |")
-                for s, c, f, m in rows:
+                for s, c, f, m, _obj in rows:
                     if s == severity and c == category:
                         out.append(f"| {_md_cell(f)} | {_md_cell(m)} |")
         out.append("")

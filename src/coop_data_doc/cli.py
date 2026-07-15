@@ -1550,3 +1550,15 @@ def export(config_path: str | None, out_dir_str: str | None) -> None:
     
     export_csvs(graph, out_dir)
     click.echo(f"Exported objects, columns, measures, and edges to {out_dir}/")
+
+@cli.command()
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+@click.option("--out", "out_file", type=click.File("w"), default="-", help="Output JSON file (default stdout).")
+@click.option("--no-parse-cache", is_flag=True, help="Force a cold parse.")
+def findings(config_path: str | None, out_file, no_parse_cache: bool) -> None:
+    """Emit data-doc diagnostics as a standard review-findings envelope."""
+    config = _load_config(config_path)
+    graph, result, warnings = run_pipeline(config, interactive=False, no_parse_cache=no_parse_cache)
+    diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
+    envelope = diagnostics.to_envelope()
+    out_file.write(json.dumps(envelope, indent=2, sort_keys=True) + "\n")

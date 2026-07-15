@@ -77,6 +77,9 @@ All commands exit with these codes:
 
 ### Commands
 
+- **`coop-data-doc findings`**: Emits data-doc diagnostics (dynamic SQL, unresolved refs, etc.) as a standard JSON review-findings envelope. This makes coop-data-doc a first-class producer of findings that can be consumed by other suite tools.
+
+
 - **`coop-data-doc export`**: Exports the built graph (`graph.json`) as 4 deterministic CSV files: `objects.csv`, `columns.csv`, `measures.csv`, `edges.csv`. Ideal for providing spreadsheet deliverables.
 
 
