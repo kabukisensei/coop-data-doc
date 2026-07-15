@@ -57,3 +57,27 @@ def test_warm_parse_cache_matches_cold_build(tmp_path: Path):
     for relative in cold:
         assert warm[relative] == cold[relative], f"warm != cold: {relative}"
         assert cold_again[relative] == cold[relative], f"cold != cold: {relative}"
+def test_export_csvs_twice_byte_identical(tmp_path: Path):
+    ws_a = tmp_path / "a"
+    ws_b = tmp_path / "b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+    setup_workspace(ws_a)
+    setup_workspace(ws_b)
+    
+    # build graphs
+    assert run(["build", "--non-interactive", "--skip-html"], ws_a).exit_code == 0
+    assert run(["build", "--non-interactive", "--skip-html"], ws_b).exit_code == 0
+    
+    # export csvs
+    assert run(["export"], ws_a).exit_code == 0
+    assert run(["export"], ws_b).exit_code == 0
+    
+    out_a = tree_bytes(ws_a / "data-docs")
+    out_b = tree_bytes(ws_b / "data-docs")
+    
+    csv_keys = [k for k in out_a.keys() if k.endswith('.csv')]
+    assert len(csv_keys) == 4
+    
+    for relative in csv_keys:
+        assert out_a[relative] == out_b[relative], f"CSV non-deterministic: {relative}"

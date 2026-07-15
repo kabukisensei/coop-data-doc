@@ -77,6 +77,9 @@ All commands exit with these codes:
 
 ### Commands
 
+- **`coop-data-doc export`**: Exports the built graph (`graph.json`) as 4 deterministic CSV files: `objects.csv`, `columns.csv`, `measures.csv`, `edges.csv`. Ideal for providing spreadsheet deliverables.
+
+
 | Command | Agent use | Key flags |
 |---------|---------|-----------|
 | `coop-data-doc` | Interactive menu (bare, TTY only) | — |

@@ -1533,3 +1533,20 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+@cli.command()
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+@click.option("--out", "out_dir_str", default=None, help="Output directory for CSVs (defaults to output.dir).")
+def export(config_path: str | None, out_dir_str: str | None) -> None:
+    """Export the built graph as deterministic CSV files (client deliverable)."""
+    from coop_data_doc.render.export import export_csvs
+    config = _load_config(config_path)
+    graph_path = config.output_dir() / "graph.json"
+    if not graph_path.is_file():
+        raise click.ClickException(f"no built graph at {graph_path} — run `coop-data-doc build` first.")
+    
+    graph = LineageGraph.model_validate(json.loads(graph_path.read_text(encoding="utf-8")))
+    out_dir = Path(out_dir_str) if out_dir_str else config.output_dir()
+    
+    export_csvs(graph, out_dir)
+    click.echo(f"Exported objects, columns, measures, and edges to {out_dir}/")
