@@ -1,7 +1,7 @@
 """Estate map SVG generation (Issue #57)."""
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from coop_data_doc.graph.model import LineageGraph, NodeType
 
 
