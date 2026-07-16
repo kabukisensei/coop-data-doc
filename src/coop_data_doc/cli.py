@@ -1562,3 +1562,70 @@ def findings(config_path: str | None, out_file, no_parse_cache: bool) -> None:
     diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
     envelope = diagnostics.to_envelope()
     out_file.write(json.dumps(envelope, indent=2, sort_keys=True) + "\n")
+
+@cli.command()
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+@click.option("--baseline", "baseline_path", type=click.Path(exists=True, dir_okay=False), help="Path to baseline graph.json.")
+@click.option("--git", "git_ref", help="Git ref to read graph.json from (e.g. main).")
+@click.option("--files", "files_list", multiple=True, help="Seed from these changed source files.")
+@click.option("--format", "fmt", type=click.Choice(["json", "markdown"]), default="json", help="Output format (default json).")
+def impact(config_path: str | None, baseline_path: str | None, git_ref: str | None, files_list: tuple[str, ...], fmt: str) -> None:
+    """Change-impact diff against a baseline graph.json (e.g., git main)."""
+    import subprocess
+    from coop_data_doc.graph.diff import diff_graphs
+    config = _load_config(config_path)
+    
+    current_graph_path = config.output_dir() / "graph.json"
+    if not current_graph_path.is_file():
+        raise click.ClickException(f"no built graph at {current_graph_path} — run `coop-data-doc build` first.")
+    current_graph = LineageGraph.model_validate(json.loads(current_graph_path.read_text(encoding="utf-8")))
+
+    old_graph = None
+    if baseline_path:
+        old_graph = LineageGraph.model_validate(json.loads(Path(baseline_path).read_text(encoding="utf-8")))
+    elif git_ref:
+        rel_path = current_graph_path.relative_to(config.base_dir).as_posix()
+        try:
+            old_json_bytes = subprocess.check_output(
+                ["git", "show", f"{git_ref}:{rel_path}"],
+                cwd=config.base_dir,
+                stderr=subprocess.DEVNULL
+            )
+            old_graph = LineageGraph.model_validate(json.loads(old_json_bytes.decode("utf-8")))
+        except subprocess.CalledProcessError:
+            raise click.ClickException(f"Could not read {rel_path} from git ref {git_ref}")
+    else:
+        raise click.ClickException("Must provide --baseline or --git")
+        
+    diff = diff_graphs(old_graph, current_graph)
+    
+    # Identify seeded nodes
+    seed_node_ids = set()
+    if files_list:
+        file_set = set(files_list)
+        for node in current_graph.nodes.values():
+            if node.source_file in file_set:
+                seed_node_ids.add(node.id)
+    else:
+        seed_node_ids.update(n.id for n in diff.added_nodes)
+        seed_node_ids.update(n.id for n in diff.changed_nodes)
+        
+    # Calculate downstream impact
+    impact_map = {}
+    for nid in sorted(seed_node_ids):
+        if nid not in current_graph.nodes:
+            continue
+        down = current_graph.downstream(nid)
+        impact_map[nid] = sorted(list(down))
+        
+    if fmt == "json":
+        click.echo(json.dumps(impact_map, indent=2))
+    else:
+        for nid, down in impact_map.items():
+            node = current_graph.nodes[nid]
+            trust = " ⚠️ " + node.metadata.get("trust") if node.metadata.get("trust") else ""
+            click.echo(f"### {node.qualified_display} ({node.node_type.value}){trust}")
+            for d_id in down:
+                d_node = current_graph.nodes[d_id]
+                click.echo(f"- {d_node.qualified_display} ({d_node.node_type.value})")
+            click.echo()
