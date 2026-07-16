@@ -124,7 +124,7 @@ class Diagnostics:
                     "unresolved_reference",
                     node_id,
                     f"{node_id} could not be matched to a SQL object",
-                    node_id
+                    node_id,
                 )
             )
         rows.sort(key=lambda r: (_SEVERITY_ORDER.index(r[0]), r[1], r[2], r[3]))
@@ -169,7 +169,6 @@ class Diagnostics:
             lines.extend(f"    {f} ({n})" for f, n in top)
         return lines
 
-    
     def to_envelope(self) -> dict:
         return {
             "tool": "coop-data-doc",

@@ -1534,26 +1534,33 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
+
 @cli.command()
 @click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
-@click.option("--out", "out_dir_str", default=None, help="Output directory for CSVs (defaults to output.dir).")
+@click.option(
+    "--out", "out_dir_str", default=None, help="Output directory for CSVs (defaults to output.dir)."
+)
 def export(config_path: str | None, out_dir_str: str | None) -> None:
     """Export the built graph as deterministic CSV files (client deliverable)."""
     from coop_data_doc.render.export import export_csvs
+
     config = _load_config(config_path)
     graph_path = config.output_dir() / "graph.json"
     if not graph_path.is_file():
         raise click.ClickException(f"no built graph at {graph_path} — run `coop-data-doc build` first.")
-    
+
     graph = LineageGraph.model_validate(json.loads(graph_path.read_text(encoding="utf-8")))
     out_dir = Path(out_dir_str) if out_dir_str else config.output_dir()
-    
+
     export_csvs(graph, out_dir)
     click.echo(f"Exported objects, columns, measures, and edges to {out_dir}/")
 
+
 @cli.command()
 @click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
-@click.option("--out", "out_file", type=click.File("w"), default="-", help="Output JSON file (default stdout).")
+@click.option(
+    "--out", "out_file", type=click.File("w"), default="-", help="Output JSON file (default stdout)."
+)
 @click.option("--no-parse-cache", is_flag=True, help="Force a cold parse.")
 def findings(config_path: str | None, out_file, no_parse_cache: bool) -> None:
     """Emit data-doc diagnostics as a standard review-findings envelope."""
@@ -1563,21 +1570,42 @@ def findings(config_path: str | None, out_file, no_parse_cache: bool) -> None:
     envelope = diagnostics.to_envelope()
     out_file.write(json.dumps(envelope, indent=2, sort_keys=True) + "\n")
 
+
 @cli.command()
 @click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
-@click.option("--baseline", "baseline_path", type=click.Path(exists=True, dir_okay=False), help="Path to baseline graph.json.")
+@click.option(
+    "--baseline",
+    "baseline_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Path to baseline graph.json.",
+)
 @click.option("--git", "git_ref", help="Git ref to read graph.json from (e.g. main).")
 @click.option("--files", "files_list", multiple=True, help="Seed from these changed source files.")
-@click.option("--format", "fmt", type=click.Choice(["json", "markdown"]), default="json", help="Output format (default json).")
-def impact(config_path: str | None, baseline_path: str | None, git_ref: str | None, files_list: tuple[str, ...], fmt: str) -> None:
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["json", "markdown"]),
+    default="json",
+    help="Output format (default json).",
+)
+def impact(
+    config_path: str | None,
+    baseline_path: str | None,
+    git_ref: str | None,
+    files_list: tuple[str, ...],
+    fmt: str,
+) -> None:
     """Change-impact diff against a baseline graph.json (e.g., git main)."""
     import subprocess
     from coop_data_doc.graph.diff import diff_graphs
+
     config = _load_config(config_path)
-    
+
     current_graph_path = config.output_dir() / "graph.json"
     if not current_graph_path.is_file():
-        raise click.ClickException(f"no built graph at {current_graph_path} — run `coop-data-doc build` first.")
+        raise click.ClickException(
+            f"no built graph at {current_graph_path} — run `coop-data-doc build` first."
+        )
     current_graph = LineageGraph.model_validate(json.loads(current_graph_path.read_text(encoding="utf-8")))
 
     old_graph = None
@@ -1587,18 +1615,16 @@ def impact(config_path: str | None, baseline_path: str | None, git_ref: str | No
         rel_path = current_graph_path.relative_to(config.base_dir).as_posix()
         try:
             old_json_bytes = subprocess.check_output(
-                ["git", "show", f"{git_ref}:{rel_path}"],
-                cwd=config.base_dir,
-                stderr=subprocess.DEVNULL
+                ["git", "show", f"{git_ref}:{rel_path}"], cwd=config.base_dir, stderr=subprocess.DEVNULL
             )
             old_graph = LineageGraph.model_validate(json.loads(old_json_bytes.decode("utf-8")))
         except subprocess.CalledProcessError:
             raise click.ClickException(f"Could not read {rel_path} from git ref {git_ref}")
     else:
         raise click.ClickException("Must provide --baseline or --git")
-        
+
     diff = diff_graphs(old_graph, current_graph)
-    
+
     # Identify seeded nodes
     seed_node_ids = set()
     if files_list:
@@ -1609,7 +1635,7 @@ def impact(config_path: str | None, baseline_path: str | None, git_ref: str | No
     else:
         seed_node_ids.update(n.id for n in diff.added_nodes)
         seed_node_ids.update(n.id for n in diff.changed_nodes)
-        
+
     # Calculate downstream impact
     impact_map = {}
     for nid in sorted(seed_node_ids):
@@ -1617,7 +1643,7 @@ def impact(config_path: str | None, baseline_path: str | None, git_ref: str | No
             continue
         down = current_graph.downstream(nid)
         impact_map[nid] = sorted(list(down))
-        
+
     if fmt == "json":
         click.echo(json.dumps(impact_map, indent=2))
     else:
