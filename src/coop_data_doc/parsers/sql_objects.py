@@ -303,6 +303,7 @@ def _handle_create_table(
             node.metadata["columns_unresolved"] = True
         else:
             from coop_data_doc.parsers.sql_common import extract_column_lineage
+
             col_lineage = extract_column_lineage(select, dialect)
             if col_lineage:
                 node.metadata["column_lineage"] = col_lineage
@@ -346,6 +347,7 @@ def _handle_create_view(
             )
         else:
             from coop_data_doc.parsers.sql_common import extract_column_lineage
+
             col_lineage = extract_column_lineage(select, dialect)
             if col_lineage:
                 node.metadata["column_lineage"] = col_lineage
@@ -410,6 +412,7 @@ def _handle_create_function(
         )
     else:
         from coop_data_doc.parsers.sql_common import extract_column_lineage
+
         col_lineage = extract_column_lineage(select, dialect)
         if col_lineage:
             node.metadata["column_lineage"] = col_lineage

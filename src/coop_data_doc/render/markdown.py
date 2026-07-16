@@ -168,14 +168,14 @@ def _contract_section(node: Node, graph: LineageGraph) -> str:
                         break
         if not col_lineage:
             col_lineage = {}
-            
+
         if has_lineage:
             lines.append("| Column | Type | Constraints | Description | Source Columns |")
             lines.append("| --- | --- | --- | --- | --- |")
         else:
             lines.append("| Column | Type | Constraints | Description |")
             lines.append("| --- | --- | --- | --- |")
-        
+
         for column in node.columns:
             nullable = ""
             if column.nullable is False:
@@ -183,7 +183,7 @@ def _contract_section(node: Node, graph: LineageGraph) -> str:
             elif column.nullable is True:
                 nullable = "NULL"
             constraints = ", ".join(part for part in [nullable, *column.constraints] if part)
-            
+
             row = f"| {_cell(column.name)} | {_cell(column.data_type)} | {_cell(constraints)} | {_cell(column.description)} |"
             if has_lineage:
                 sources = col_lineage.get(normalize_identifier(column.name))

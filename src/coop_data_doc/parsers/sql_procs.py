@@ -148,14 +148,15 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
         if isinstance(statement.expression, exp.Select):
             from coop_data_doc.parsers.sql_common import extract_column_lineage
             from coop_data_doc.graph.model import normalize_identifier
+
             target_schema, target_name = table_parts(target)
             target_key = (target_schema, target_name)
-            
+
             # Map select expression aliases to explicit target columns if available
             target_cols = []
             if isinstance(statement.this, exp.Schema):
                 target_cols = [normalize_identifier(e.name) for e in statement.this.expressions]
-            
+
             # Use a dummy Select to trace against (since statement.expression might not have proper aliases)
             # wait, extract_column_lineage expects aliases to be the target column names.
             # If target_cols are explicit, we need to map them:
@@ -229,15 +230,16 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
             target = into.this
             if isinstance(target, exp.Table) and not is_temp_table(target):
                 lineage.writes.add(table_parts(target))
-                
+
                 # Extract column lineage for SELECT ... INTO
                 from coop_data_doc.parsers.sql_common import extract_column_lineage
+
                 target_schema, target_name = table_parts(target)
                 target_key = (target_schema, target_name)
                 col_lineage = extract_column_lineage(statement, dialect)
                 if col_lineage:
                     lineage.dml_column_lineage[target_key] = col_lineage
-                    
+
         lineage.reads |= collect_source_tables(statement)
 
     lineage.reads -= lineage.writes

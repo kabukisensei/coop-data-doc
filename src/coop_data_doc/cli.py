@@ -890,26 +890,26 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
         return
     nid = matches[0]
     node = graph.nodes[nid]
-    
+
     if column_name:
         col_name_norm = normalize_identifier(column_name)
         visited_cols = set()
         frontier = [(nid, col_name_norm)]
         traced_sources = set()
-        
+
         while frontier:
             curr_nid, curr_col = frontier.pop(0)
             if (curr_nid, curr_col) in visited_cols:
                 continue
             visited_cols.add((curr_nid, curr_col))
-            
+
             curr_node = graph.nodes.get(curr_nid)
             if not curr_node:
                 continue
-                
+
             col_lineage = curr_node.metadata.get("column_lineage", {})
             sources = col_lineage.get(curr_col)
-            
+
             if not sources:
                 # Check if an upstream stored procedure populates this column
                 upstreams = graph.upstream(curr_nid, depth=1)
@@ -928,7 +928,7 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
                     if len(parts) != 2:
                         continue
                     src_obj, src_col = parts
-                    
+
                     matched_up = None
                     for up_id in upstreams:
                         up_node = graph.nodes.get(up_id)
@@ -937,14 +937,14 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
                         if up_node.qualified_display.lower() == src_obj or up_node.name.lower() == src_obj:
                             matched_up = up_id
                             break
-                            
+
                     if matched_up:
                         frontier.append((matched_up, src_col))
                     else:
                         traced_sources.add(f"{src_obj}.{src_col} (unresolved node)")
             else:
                 traced_sources.add(f"{curr_node.qualified_display}.{curr_col}")
-                
+
         click.echo(
             json.dumps(
                 {
