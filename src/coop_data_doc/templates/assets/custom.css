@@ -197,3 +197,19 @@
 .tree-branch:not(.tree-collapsed) > .tree-toggle::before {
   content: "\25BE"; /* ▾ */
 }
+
+/* Estate Map (Issue #57) */
+.estate-map-container {
+  overflow: auto;
+  max-width: 100%;
+  margin: 2rem 0;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 4px;
+  background: var(--md-default-bg-color);
+}
+.estate-node {
+  transition: opacity 0.2s;
+}
+.estate-node:hover {
+  opacity: 0.8;
+}

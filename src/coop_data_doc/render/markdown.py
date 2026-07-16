@@ -15,6 +15,7 @@ from pathlib import Path
 
 from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, normalize_identifier
 from coop_data_doc.graph.serialize import to_json_str
+from coop_data_doc.render.estate_map import render_estate_map_page
 from coop_data_doc.render.paths import doc_relpath, slug
 from coop_data_doc.reviews import ReviewFinding, ReviewJoin, severity_rank
 
@@ -1110,6 +1111,10 @@ def render_markdown(
     index_path = out_dir / "index.md"
     index_path.write_text(_index_page(graph, project_name, reviews), encoding="utf-8", newline="\n")
     written.append(index_path)
+
+    estate_map_path = out_dir / "estate_map.md"
+    estate_map_path.write_text(render_estate_map_page(graph), encoding="utf-8", newline="\n")
+    written.append(estate_map_path)
 
     findings_path = out_dir / "findings.md"
     if reviews is not None:

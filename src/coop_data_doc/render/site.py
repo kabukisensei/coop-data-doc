@@ -246,7 +246,7 @@ def _nav_section(graph: LineageGraph, has_findings: bool = False) -> str:
     ``has_findings`` adds the review Findings page next to Diagnostics
     (issue #38) — present only when review files were composed into the build."""
     nodes = graph.nodes
-    lines = ["  - Overview: index.md", "  - Diagnostics: diagnostics.md"]
+    lines = ["  - Overview: index.md", "  - Estate Map: estate_map.md", "  - Diagnostics: diagnostics.md"]
     if has_findings:
         lines.append("  - Findings: findings.md")
 
@@ -369,6 +369,11 @@ def write_mkdocs_config(
     vendor_dir.mkdir(parents=True, exist_ok=True)
     for asset in ("doc-tree.js", "nav-collapse.js", "iframe-worker-shim.js"):
         shutil.copyfile(_VENDOR_SRC / asset, vendor_dir / asset)
+
+    js_dir = docs_dir / "assets" / "javascripts"
+    js_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_VENDOR_SRC / "javascripts" / "estate-map.js", js_dir / "estate-map.js")
+
     css_dir = docs_dir / _CSS_REL
     css_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(_VENDOR_SRC / "custom.css", css_dir / "custom.css")
