@@ -29,7 +29,7 @@ from coop_data_doc.folders import (
 )
 from coop_data_doc.diagnostics import Diagnostics, severity_of
 from coop_data_doc.crawler import FileKind, crawl
-from coop_data_doc.graph.model import LineageGraph
+from coop_data_doc.graph.model import LineageGraph, normalize_identifier
 from coop_data_doc.graph.serialize import to_json_file
 from coop_data_doc.linker.cache import CacheEntry, LineageCache
 from coop_data_doc.linker.resolver import ResolutionResult, link_graph
@@ -857,9 +857,10 @@ def _match_nodes(graph: LineageGraph, query: str) -> list[str]:
 
 @cli.command()
 @click.argument("object_name")
+@click.option("--column", "column_name", default=None, help="Trace a specific column's lineage.")
 @click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
 @click.option("--depth", default=1, type=int, help="Lineage hops up- and downstream (default 1).")
-def lineage(object_name: str, config_path: str | None, depth: int) -> None:
+def lineage(object_name: str, column_name: str | None, config_path: str | None, depth: int) -> None:
     """Print one object's lineage (upstream/downstream + relationships) as JSON.
 
     Reads the BUILT graph.json so the agent can ground a change in an object's
@@ -889,6 +890,63 @@ def lineage(object_name: str, config_path: str | None, depth: int) -> None:
         return
     nid = matches[0]
     node = graph.nodes[nid]
+    
+    if column_name:
+        col_name_norm = normalize_identifier(column_name)
+        visited_cols = set()
+        frontier = [(nid, col_name_norm)]
+        traced_sources = set()
+        
+        while frontier:
+            curr_nid, curr_col = frontier.pop(0)
+            if (curr_nid, curr_col) in visited_cols:
+                continue
+            visited_cols.add((curr_nid, curr_col))
+            
+            curr_node = graph.nodes.get(curr_nid)
+            if not curr_node:
+                continue
+                
+            col_lineage = curr_node.metadata.get("column_lineage", {})
+            sources = col_lineage.get(curr_col)
+            
+            if sources:
+                upstreams = graph.upstream(curr_nid, depth=1)
+                for source_str in sources:
+                    parts = source_str.rsplit(".", 1)
+                    if len(parts) != 2:
+                        continue
+                    src_obj, src_col = parts
+                    
+                    matched_up = None
+                    for up_id in upstreams:
+                        up_node = graph.nodes.get(up_id)
+                        if not up_node:
+                            continue
+                        if up_node.qualified_display.lower() == src_obj or up_node.name.lower() == src_obj:
+                            matched_up = up_id
+                            break
+                            
+                    if matched_up:
+                        frontier.append((matched_up, src_col))
+                    else:
+                        traced_sources.add(f"{src_obj}.{src_col} (unresolved node)")
+            else:
+                traced_sources.add(f"{curr_node.qualified_display}.{curr_col}")
+                
+        click.echo(
+            json.dumps(
+                {
+                    "object": _node_ref(graph, nid),
+                    "column": column_name,
+                    "source_columns": sorted(traced_sources),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
     click.echo(
         json.dumps(
             {

@@ -70,6 +70,9 @@ def test_expected_nodes():
         "silver_table:silver.customers",
         "silver_table:silver.events",
         "silver_table:silver.invoices",  # read only inside a WITH ... INSERT ... SELECT CTE
+        "gold_table:db.base_table",
+        "view:db.view_hop_1",
+        "view:db.view_hop_2",
     }
     assert set(graph.nodes) == expected
 

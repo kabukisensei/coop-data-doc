@@ -154,8 +154,16 @@ def _front_matter(graph: LineageGraph, node: Node) -> str:
 def _contract_section(node: Node) -> str:
     lines = ["## Structural Contract", ""]
     if node.columns:
-        lines.append("| Column | Type | Constraints | Description |")
-        lines.append("| --- | --- | --- | --- |")
+        has_lineage = "column_lineage" in node.metadata
+        if has_lineage:
+            lines.append("| Column | Type | Constraints | Description | Source Columns |")
+            lines.append("| --- | --- | --- | --- | --- |")
+        else:
+            lines.append("| Column | Type | Constraints | Description |")
+            lines.append("| --- | --- | --- | --- |")
+            
+        col_lineage = node.metadata.get("column_lineage", {})
+        
         for column in node.columns:
             nullable = ""
             if column.nullable is False:
@@ -163,10 +171,16 @@ def _contract_section(node: Node) -> str:
             elif column.nullable is True:
                 nullable = "NULL"
             constraints = ", ".join(part for part in [nullable, *column.constraints] if part)
-            lines.append(
-                f"| {_cell(column.name)} | {_cell(column.data_type)} "
-                f"| {_cell(constraints)} | {_cell(column.description)} |"
-            )
+            
+            row = f"| {_cell(column.name)} | {_cell(column.data_type)} | {_cell(constraints)} | {_cell(column.description)} |"
+            if has_lineage:
+                sources = col_lineage.get(normalize_identifier(column.name))
+                if sources:
+                    source_str = ", ".join(f"`{s}`" for s in sources)
+                else:
+                    source_str = ""
+                row += f" {source_str} |"
+            lines.append(row)
     else:
         lines.append("_Columns not statically resolvable for this object._")
     if node.metadata.get("columns_unresolved"):

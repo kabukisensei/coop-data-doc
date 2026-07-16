@@ -69,6 +69,10 @@ class _Contribution:
         # Node.source_code is exclude=True, so BOTH model_dump modes strip it —
         # add it back explicitly so the cached page keeps its Source section
         # (HAZARD B); _replay_entry re-validates the dict WITH source_code.
+        if node.id in self.nodes:
+            if self.nodes[node.id].get("source_file") and not node.source_file:
+                # Do not let a read-stub overwrite a real definition from the same file.
+                return
         dumped = node.model_dump(mode="python")
         dumped["source_code"] = node.source_code
         self.nodes[node.id] = dumped
@@ -297,6 +301,11 @@ def _handle_create_table(
         node.columns.extend(derived)
         if unresolved:
             node.metadata["columns_unresolved"] = True
+        else:
+            from coop_data_doc.parsers.sql_common import extract_column_lineage
+            col_lineage = extract_column_lineage(select, dialect)
+            if col_lineage:
+                node.metadata["column_lineage"] = col_lineage
     _add_node(graph, node, contribution)
     if isinstance(select, exp.Select):  # CTAS
         _add_reads(graph, node.id, collect_source_tables(select), entry.path, contribution)
@@ -335,6 +344,11 @@ def _handle_create_view(
                 message=f"view {schema}.{name} uses SELECT * — output columns unresolved",
                 category="select_star_view",
             )
+        else:
+            from coop_data_doc.parsers.sql_common import extract_column_lineage
+            col_lineage = extract_column_lineage(select, dialect)
+            if col_lineage:
+                node.metadata["column_lineage"] = col_lineage
     _add_node(graph, node, contribution)
     if view_warning is not None:
         warnings.append(view_warning)
@@ -348,6 +362,7 @@ def _handle_create_function(
     create: exp.Create,
     graph: LineageGraph,
     entry: FileEntry,
+    dialect: str,
     warnings: list[ParseWarning],
     source: str,
     contribution: _Contribution | None = None,
@@ -393,6 +408,11 @@ def _handle_create_function(
             message=f"inline TVF {schema}.{name} uses SELECT * — output columns unresolved",
             category="select_star_view",
         )
+    else:
+        from coop_data_doc.parsers.sql_common import extract_column_lineage
+        col_lineage = extract_column_lineage(select, dialect)
+        if col_lineage:
+            node.metadata["column_lineage"] = col_lineage
     _add_node(graph, node, contribution)
     if fn_warning is not None:
         warnings.append(fn_warning)
@@ -437,7 +457,7 @@ def _parse_objects_entry(
                 elif kind == "VIEW":
                     _handle_create_view(create, graph, entry, dialect, warnings, batch, contribution)
                 else:  # FUNCTION — only inline TVFs produce a node (issue #31)
-                    _handle_create_function(create, graph, entry, warnings, batch, contribution)
+                    _handle_create_function(create, graph, entry, dialect, warnings, batch, contribution)
             continue
         # regex fallback for batches sqlglot couldn't parse — on the SCRUBBED text, so
         # a CREATE TABLE/VIEW mentioned only in a comment/string doesn't become a node.

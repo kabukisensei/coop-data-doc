@@ -571,3 +571,31 @@ def parse_worker_both_passes(
         )
     except Exception as exc:  # noqa: BLE001 — degrade, never crash the pool
         return (path, None, None, f"{type(exc).__name__}: {exc}")
+
+def extract_column_lineage(select: exp.Select, dialect: str) -> dict[str, list[str]]:
+    from sqlglot.lineage import lineage
+    col_lineage = {}
+    for item in select.expressions:
+        if isinstance(item, exp.Star):
+            return {}
+        name = normalize_identifier(item.alias_or_name or "")
+        if not name or name == "*":
+            continue
+        try:
+            node = lineage(name, select, dialect=dialect)
+        except Exception:
+            continue
+            
+        sources = set()
+        for d in node.downstream:
+            if isinstance(d.source, exp.Table):
+                schema, table_name = table_parts(d.source)
+                col_name = d.name.split('.')[-1]
+                schema = normalize_identifier(schema) if schema else ""
+                table_name = normalize_identifier(table_name)
+                col_name = normalize_identifier(col_name)
+                prefix = f"{schema}.{table_name}" if schema else table_name
+                sources.add(f"{prefix}.{col_name}")
+        if sources:
+            col_lineage[name] = sorted(sources)
+    return col_lineage

@@ -404,6 +404,9 @@ def test_cli_deleted_caller_warm_rebuild_matches_cold(tmp_path: Path):
     # cold rebuild of the same (caller-less) estate
     assert run(["build", "--non-interactive", "--skip-html", "--no-parse-cache"], tmp_path).exit_code == 0
     cold = _tree_bytes(tmp_path / "data-docs")
+    if warm.keys() != cold.keys():
+        print("Warm missing:", set(cold.keys()) - set(warm.keys()))
+        print("Cold missing:", set(warm.keys()) - set(cold.keys()))
     assert warm.keys() == cold.keys()
     for rel in cold:
         assert warm[rel] == cold[rel], f"warm != cold after caller deletion: {rel}"
