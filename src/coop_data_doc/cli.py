@@ -910,8 +910,19 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
             col_lineage = curr_node.metadata.get("column_lineage", {})
             sources = col_lineage.get(curr_col)
             
-            if sources:
+            if not sources:
+                # Check if an upstream stored procedure populates this column
                 upstreams = graph.upstream(curr_nid, depth=1)
+                for up_id in upstreams:
+                    up_node = graph.nodes.get(up_id)
+                    if up_node and "dml_column_lineage" in up_node.metadata:
+                        dml_lineage = up_node.metadata["dml_column_lineage"]
+                        if curr_nid in dml_lineage and curr_col in dml_lineage[curr_nid]:
+                            sources = dml_lineage[curr_nid][curr_col]
+                            break
+
+            if sources:
+                upstreams = graph.upstream(curr_nid, depth=2)
                 for source_str in sources:
                     parts = source_str.rsplit(".", 1)
                     if len(parts) != 2:

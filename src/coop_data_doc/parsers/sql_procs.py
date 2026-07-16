@@ -116,7 +116,7 @@ def _alias_map(statement: exp.Expression) -> dict[str, tuple[str, str]]:
     return aliases
 
 
-def _extract_statement(statement: exp.Expression) -> tuple[StatementLineage, list[exp.Create]]:
+def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[StatementLineage, list[exp.Create]]:
     """AST lineage for one parsed statement; also returns CREATE TABLEs."""
     lineage = StatementLineage()
     creates: list[exp.Create] = []
@@ -143,6 +143,36 @@ def _extract_statement(statement: exp.Expression) -> tuple[StatementLineage, lis
         # on the node it's given). The write target is removed below via
         # `reads -= writes`, mirroring the Merge branch.
         lineage.reads |= collect_source_tables(statement)
+
+        # Extract column lineage for INSERT ... SELECT
+        if isinstance(statement.expression, exp.Select):
+            from coop_data_doc.parsers.sql_common import extract_column_lineage
+            from coop_data_doc.graph.model import normalize_identifier
+            target_schema, target_name = table_parts(target)
+            target_key = (target_schema, target_name)
+            
+            # Map select expression aliases to explicit target columns if available
+            target_cols = []
+            if isinstance(statement.this, exp.Schema):
+                target_cols = [normalize_identifier(e.name) for e in statement.this.expressions]
+            
+            # Use a dummy Select to trace against (since statement.expression might not have proper aliases)
+            # wait, extract_column_lineage expects aliases to be the target column names.
+            # If target_cols are explicit, we need to map them:
+            col_lineage = extract_column_lineage(statement.expression, dialect)
+            if col_lineage:
+                if target_cols and len(target_cols) == len(statement.expression.expressions):
+                    # Map positional source lineage to explicit target columns
+                    mapped_lineage = {}
+                    for target_col, src_expr in zip(target_cols, statement.expression.expressions):
+                        src_name = normalize_identifier(src_expr.alias_or_name or "")
+                        if src_name in col_lineage:
+                            mapped_lineage[target_col] = col_lineage[src_name]
+                    if mapped_lineage:
+                        lineage.dml_column_lineage[target_key] = mapped_lineage
+                else:
+                    # SELECT ... INTO or INSERT without explicit columns: the SELECT aliases are the target columns
+                    lineage.dml_column_lineage[target_key] = col_lineage
 
     elif isinstance(statement, exp.Merge):
         target = statement.this
@@ -199,6 +229,15 @@ def _extract_statement(statement: exp.Expression) -> tuple[StatementLineage, lis
             target = into.this
             if isinstance(target, exp.Table) and not is_temp_table(target):
                 lineage.writes.add(table_parts(target))
+                
+                # Extract column lineage for SELECT ... INTO
+                from coop_data_doc.parsers.sql_common import extract_column_lineage
+                target_schema, target_name = table_parts(target)
+                target_key = (target_schema, target_name)
+                col_lineage = extract_column_lineage(statement, dialect)
+                if col_lineage:
+                    lineage.dml_column_lineage[target_key] = col_lineage
+                    
         lineage.reads |= collect_source_tables(statement)
 
     lineage.reads -= lineage.writes
@@ -224,6 +263,16 @@ def _apply_lineage(
             ),
             contribution,
         )
+        if lineage.dml_column_lineage and (schema, name) in lineage.dml_column_lineage:
+            if "dml_column_lineage" not in proc.metadata:
+                proc.metadata["dml_column_lineage"] = {}
+            target_lineage = proc.metadata["dml_column_lineage"].setdefault(table.id, {})
+            # Merge dictionary (union source columns for same target column)
+            for col, sources in lineage.dml_column_lineage[(schema, name)].items():
+                if col not in target_lineage:
+                    target_lineage[col] = list(sources)
+                else:
+                    target_lineage[col] = sorted(list(set(target_lineage[col] + sources)))
     for schema, name in sorted(lineage.reads):
         table = stub_table(graph, schema, name, contribution)
         _add_edge(
@@ -375,7 +424,7 @@ def _parse_procs_entry(
             ]
             if usable:
                 for statement in usable:
-                    lineage, creates = _extract_statement(statement)
+                    lineage, creates = _extract_statement(statement, dialect)
                     _apply_lineage(graph, proc, lineage, entry.path, contribution)
                     for create in creates:
                         target = create.this

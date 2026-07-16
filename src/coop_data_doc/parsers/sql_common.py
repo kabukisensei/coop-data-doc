@@ -449,6 +449,7 @@ class StatementLineage:
 
     writes: set[tuple[str, str]] = field(default_factory=set)
     reads: set[tuple[str, str]] = field(default_factory=set)
+    dml_column_lineage: dict[tuple[str, str], dict[str, list[str]]] = field(default_factory=dict)
 
 
 def regex_extract(statement: str) -> StatementLineage:

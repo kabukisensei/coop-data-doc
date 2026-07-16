@@ -151,18 +151,30 @@ def _front_matter(graph: LineageGraph, node: Node) -> str:
     return "\n".join(lines)
 
 
-def _contract_section(node: Node) -> str:
+def _contract_section(node: Node, graph: LineageGraph) -> str:
     lines = ["## Structural Contract", ""]
     if node.columns:
-        has_lineage = "column_lineage" in node.metadata
+        col_lineage = node.metadata.get("column_lineage")
+        has_lineage = col_lineage is not None
+        if not col_lineage:
+            # Check upstream stored procedures for DML column lineage
+            for up_id in graph.upstream(node.id, depth=1):
+                up_node = graph.nodes.get(up_id)
+                if up_node and "dml_column_lineage" in up_node.metadata:
+                    dml_lineage = up_node.metadata["dml_column_lineage"]
+                    if node.id in dml_lineage:
+                        col_lineage = dml_lineage[node.id]
+                        has_lineage = True
+                        break
+        if not col_lineage:
+            col_lineage = {}
+            
         if has_lineage:
             lines.append("| Column | Type | Constraints | Description | Source Columns |")
             lines.append("| --- | --- | --- | --- | --- |")
         else:
             lines.append("| Column | Type | Constraints | Description |")
             lines.append("| --- | --- | --- | --- |")
-            
-        col_lineage = node.metadata.get("column_lineage", {})
         
         for column in node.columns:
             nullable = ""
@@ -829,7 +841,7 @@ def render_node_page(
             if node.node_type is NodeType.MEASURE and node.id not in used_measures
             else []
         ),
-        *([_contract_section(node), ""] if node.node_type in _CONTRACT_TYPES else []),
+        *([_contract_section(node, graph), ""] if node.node_type in _CONTRACT_TYPES else []),
         # fact × dimension relationship matrix, semantic models only
         *([_relationship_grid(graph, node), ""] if node.node_type is NodeType.SEMANTIC_MODEL else []),
         # the reports drawing from this model, right where a reader asks ("" when none)
