@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.5"]
+dev = ["pytest>=8.0", "ruff>=0.15.18,<0.16"]
 
 [project.scripts]
 coop-data-doc = "coop_data_doc.cli:main"
