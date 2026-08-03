@@ -12,7 +12,6 @@ from coop_data_doc.upgrade import (
     manual_upgrade_command,
 )
 
-
 # ---- classification (pure) ---------------------------------------------------
 
 
@@ -146,7 +145,7 @@ def test_pipx_editable_local_path_is_not_vcs():
 def test_build_plan_pipx_from_git_reads_origin(monkeypatch):
     # pipx git installs still carry direct_url.json — read it like a pip install
     monkeypatch.setattr(sys, "prefix", "/Users/x/.local/pipx/venvs/coop-data-doc")
-    monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])
+    monkeypatch.setattr(upgrade, "direct_dependencies", list)
     git_url = "git+https://github.com/kabukisensei/coop-data-doc.git"
     plan = build_plan(fetch=lambda _n: None, origin=lambda: git_url)
     assert plan.install_method == "pipx"
@@ -158,7 +157,7 @@ def test_build_plan_pipx_from_git_reads_origin(monkeypatch):
 def test_build_plan_pipx_from_pypi_uses_upgrade(monkeypatch):
     # a pipx PyPI install (no direct_url) keeps the plain `pipx upgrade` command
     monkeypatch.setattr(sys, "prefix", "/Users/x/.local/pipx/venvs/coop-data-doc")
-    monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])
+    monkeypatch.setattr(upgrade, "direct_dependencies", list)
     plan = build_plan(fetch=lambda _n: "9.9.9", origin=lambda: None)
     assert plan.install_method == "pipx"
     assert plan.pip_spec is None
@@ -168,7 +167,7 @@ def test_build_plan_pipx_from_pypi_uses_upgrade(monkeypatch):
 
 def test_build_plan_pip_from_git_reinstalls_from_url(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "plain"))
-    monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])
+    monkeypatch.setattr(upgrade, "direct_dependencies", list)
     git_url = "git+https://github.com/kabukisensei/coop-data-doc.git"
     plan = build_plan(
         fetch=lambda _n: None,
@@ -182,7 +181,7 @@ def test_build_plan_pip_from_git_reinstalls_from_url(monkeypatch, tmp_path):
 
 def test_pip_without_origin_falls_back_to_pypi(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "plain"))
-    monkeypatch.setattr(upgrade, "direct_dependencies", lambda: [])
+    monkeypatch.setattr(upgrade, "direct_dependencies", list)
     plan = build_plan(fetch=lambda _n: None, origin=lambda: None)
     assert plan.pip_spec is None
     assert manual_upgrade_command(plan) == "python -m pip install -U coop-data-doc"

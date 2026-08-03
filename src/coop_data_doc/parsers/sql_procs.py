@@ -26,6 +26,7 @@ from coop_data_doc.graph.model import (
     NodeType,
     normalize_identifier,
 )
+from coop_data_doc.parsers.parse_cache import ParseCache, cache_key
 from coop_data_doc.parsers.sql_common import (
     DYNAMIC_SQL_RE,
     EXEC_CALL_RE,
@@ -44,7 +45,6 @@ from coop_data_doc.parsers.sql_common import (
     split_statements,
     table_parts,
 )
-from coop_data_doc.parsers.parse_cache import ParseCache, cache_key
 from coop_data_doc.parsers.sql_objects import (
     _add_edge,
     _add_node,
@@ -146,8 +146,8 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
 
         # Extract column lineage for INSERT ... SELECT
         if isinstance(statement.expression, exp.Select):
-            from coop_data_doc.parsers.sql_common import extract_column_lineage
             from coop_data_doc.graph.model import normalize_identifier
+            from coop_data_doc.parsers.sql_common import extract_column_lineage
 
             target_schema, target_name = table_parts(target)
             target_key = (target_schema, target_name)
@@ -274,7 +274,7 @@ def _apply_lineage(
                 if col not in target_lineage:
                     target_lineage[col] = list(sources)
                 else:
-                    target_lineage[col] = sorted(list(set(target_lineage[col] + sources)))
+                    target_lineage[col] = sorted(set(target_lineage[col] + sources))
     for schema, name in sorted(lineage.reads):
         table = stub_table(graph, schema, name, contribution)
         _add_edge(

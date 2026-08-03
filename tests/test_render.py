@@ -1333,6 +1333,6 @@ def test_description_with_pipe_does_not_break_contract_table(tmp_path: Path):
     )
     render_markdown(g, tmp_path, "X")
     page = page_path(tmp_path, "pbi_table:m.t").read_text(encoding="utf-8")
-    row = [ln for ln in page.splitlines() if ln.startswith("| c ")][0]
+    row = next(ln for ln in page.splitlines() if ln.startswith("| c "))
     assert "a \\| b second line" in row  # pipe escaped, newline collapsed to a space
     assert row.count(" | ") == 3  # exactly 4 cells (3 interior separators)

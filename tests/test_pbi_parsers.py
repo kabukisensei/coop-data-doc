@@ -720,9 +720,10 @@ def test_visual_json_with_control_chars_parses(tmp_path: Path):
 def test_stray_definition_pbir_outside_report_folder_skipped(tmp_path: Path):
     # a definition.pbir at the repo root (download debris) must not mint a junk
     # report node — warn and skip
+    import json as _json
+
     from coop_data_doc.crawler import FileEntry
     from coop_data_doc.graph.model import NodeType
-    import json as _json
 
     f = tmp_path / "definition.pbir"
     f.write_text(

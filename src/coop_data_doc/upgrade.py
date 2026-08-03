@@ -146,7 +146,7 @@ def pip_install_origin() -> str | None:
         return f"{spec}@{ref}" if ref else spec  # keep the pinned branch/ref
     if info.get("dir_info", {}).get("editable"):
         # editable install (`pip install -e`) — preserve it as editable
-        return f"-e {url[len('file://') :] if url.startswith('file://') else url}"
+        return f"-e {url.removeprefix('file://')}"
     return url  # local directory or a direct archive URL
 
 

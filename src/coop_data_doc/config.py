@@ -209,7 +209,7 @@ class Config(BaseModel):
         return None
 
     @classmethod
-    def load(cls, path: Path | str) -> "Config":
+    def load(cls, path: Path | str) -> Config:
         """Load and validate a config file; raises ConfigError with a
         user-printable message naming the offending key or path.
         """

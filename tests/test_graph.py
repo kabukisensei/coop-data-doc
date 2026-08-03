@@ -112,7 +112,7 @@ def test_cycle_safety():
 
 
 def test_retype_node_rewrites_edges():
-    g, silver, proc, gold, view, pbit, vis = build_chain()
+    _g, _silver, _proc, _gold, _view, _pbit, _vis = build_chain()
     # pretend silver came in misclassified as gold, then got retyped
     g2 = LineageGraph()
     t = g2.add_node(make_node(NodeType.GOLD_TABLE, "silver", "src"))
@@ -143,7 +143,7 @@ def test_retype_node_dedupes_collided_edges():
 
 
 def test_subgraph():
-    g, silver, proc, gold, view, pbit, vis = build_chain()
+    g, _silver, _proc, gold, view, pbit, _vis = build_chain()
     sub = g.subgraph({gold.id, view.id, pbit.id})
     assert sorted(sub.nodes) == sorted([gold.id, view.id, pbit.id])
     assert {e.key() for e in sub.edges} == {

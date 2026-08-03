@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -81,7 +80,7 @@ class Column(BaseModel):
 
     name: str
     data_type: str = ""
-    nullable: Optional[bool] = None
+    nullable: bool | None = None
     constraints: list[str] = Field(default_factory=list)
     description: str = ""
 
@@ -162,7 +161,7 @@ class LineageGraph(BaseModel):
     # a single rebuild reused across the whole render — O(nodes×edges) -> O(nodes+edges).
     _adj_cache: dict[str, dict[str, set[str]]] = PrivateAttr(default_factory=dict)
 
-    def model_post_init(self, __context: object) -> None:
+    def model_post_init(self, context: object, /) -> None:
         self._reindex()
 
     def _reindex(self) -> None:
@@ -275,7 +274,7 @@ class LineageGraph(BaseModel):
         self._adj_cache[direction] = adj
         return adj
 
-    def _walk(self, node_id: str, direction: str, depth: Optional[int]) -> list[str]:
+    def _walk(self, node_id: str, direction: str, depth: int | None) -> list[str]:
         adj = self._adjacency(direction)
         visited: set[str] = set()
         frontier = [node_id]
@@ -291,15 +290,15 @@ class LineageGraph(BaseModel):
             level += 1
         return sorted(visited)
 
-    def upstream(self, node_id: str, depth: Optional[int] = None) -> list[str]:
+    def upstream(self, node_id: str, depth: int | None = None) -> list[str]:
         """Ids of nodes whose data flows into node_id (cycle-safe BFS)."""
         return self._walk(node_id, "up", depth)
 
-    def downstream(self, node_id: str, depth: Optional[int] = None) -> list[str]:
+    def downstream(self, node_id: str, depth: int | None = None) -> list[str]:
         """Ids of nodes that consume node_id's data (cycle-safe BFS)."""
         return self._walk(node_id, "down", depth)
 
-    def subgraph(self, ids: set[str]) -> "LineageGraph":
+    def subgraph(self, ids: set[str]) -> LineageGraph:
         """A new graph containing the given nodes and edges among them."""
         sub = LineageGraph()
         for node_id in sorted(ids):

@@ -16,8 +16,8 @@ __all__ = [
     "LineageGraph",
     "Node",
     "NodeType",
-    "normalize_identifier",
     "from_json_file",
+    "normalize_identifier",
     "to_json_file",
     "to_json_str",
 ]

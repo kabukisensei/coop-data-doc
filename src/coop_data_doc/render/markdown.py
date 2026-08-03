@@ -22,7 +22,7 @@ from coop_data_doc.reviews import ReviewFinding, ReviewJoin, severity_rank
 INTENT_BEGIN = "<!-- intent:begin -->"
 INTENT_END = "<!-- intent:end -->"
 _DEFAULT_INTENT = "_Add a short description of what this object is for and who relies on it._"
-_INTENT_RE = re.compile(re.escape(INTENT_BEGIN) + r"(.*?)" + re.escape(INTENT_END), re.S)
+_INTENT_RE = re.compile(re.escape(INTENT_BEGIN) + r"(.*?)" + re.escape(INTENT_END), re.DOTALL)
 
 # Object types that have a column contract worth a "Structural Contract"
 # section. Procs/measures/semantic-models/reports/visuals never carry columns,
@@ -625,12 +625,14 @@ def _report_page(graph: LineageGraph, node: Node, out_path: Path) -> str:
     if node.metadata.get("declared_model_unresolved"):
         declared = str(node.metadata.get("declared_model", ""))
         parts += [
-            "> ⚠ **Not linked to a documented model.** This report's `definition.pbir` "
-            f"declares the model {_inline_code(declared)}, which is not among the documented "
-            "semantic models — no link is made (the tool never guesses). If that model should "
-            "be documented, check that its `.SemanticModel` folder is crawled (the wizard's "
-            "model selection / the powerbi repo's include globs). If it lives only in the "
-            "Power BI service or another repo, this is expected.",
+            (
+                "> ⚠ **Not linked to a documented model.** This report's `definition.pbir` "
+                f"declares the model {_inline_code(declared)}, which is not among the documented "
+                "semantic models — no link is made (the tool never guesses). If that model should "
+                "be documented, check that its `.SemanticModel` folder is crawled (the wizard's "
+                "model selection / the powerbi repo's include globs). If it lives only in the "
+                "Power BI service or another repo, this is expected."
+            ),
             "",
         ]
 
@@ -765,8 +767,10 @@ def _findings_section(findings: list[ReviewFinding]) -> str:
     lines = [
         "## Review findings",
         "",
-        "_Advisory findings from the composed review files (see the "
-        "[Findings](../findings.md) page); they never gate a build._",
+        (
+            "_Advisory findings from the composed review files (see the "
+            "[Findings](../findings.md) page); they never gate a build._"
+        ),
         "",
         "| Severity | Rule | Message | File:line |",
         "| --- | --- | --- | --- |",
@@ -956,14 +960,18 @@ def _index_page(graph: LineageGraph, project_name: str, reviews: ReviewJoin | No
             "",
             "Each object page has two kinds of description:",
             "",
-            "- **Description** (italic, under the title) is imported automatically from the "
-            "Power BI model — the `///` doc comment on a TMDL table/column/measure (or the "
-            "`description` field in a `.bim`). Fill those in inside Power BI and they appear "
-            "here on the next build.",
-            "- **Business Intent** (the section at the bottom of every page) is for *your* "
-            "notes — ownership, gotchas, why an object exists. Edit the text between the "
-            "`<!-- intent:begin -->` / `<!-- intent:end -->` markers in the matching "
-            "`.md` file under the docs folder; it is preserved verbatim across rebuilds.",
+            (
+                "- **Description** (italic, under the title) is imported automatically from the "
+                "Power BI model — the `///` doc comment on a TMDL table/column/measure (or the "
+                "`description` field in a `.bim`). Fill those in inside Power BI and they appear "
+                "here on the next build."
+            ),
+            (
+                "- **Business Intent** (the section at the bottom of every page) is for *your* "
+                "notes — ownership, gotchas, why an object exists. Edit the text between the "
+                "`<!-- intent:begin -->` / `<!-- intent:end -->` markers in the matching "
+                "`.md` file under the docs folder; it is preserved verbatim across rebuilds."
+            ),
             "",
             "After editing, rerun `coop-data-doc build` (or `update`) to regenerate the site.",
         ]

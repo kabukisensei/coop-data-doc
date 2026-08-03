@@ -31,7 +31,7 @@ from coop_data_doc.graph.model import (
 from coop_data_doc.parsers.pbir import parse_layout_json
 from coop_data_doc.parsers.tmdl import _attach_partition_source
 
-_SHARED_RE = re.compile(r'\bshared\s+(?:#"([^"]+)"|([\w.]+))\s*=\s*(.*?);\s*(?=\bshared\b|\Z)', re.S)
+_SHARED_RE = re.compile(r'\bshared\s+(?:#"([^"]+)"|([\w.]+))\s*=\s*(.*?);\s*(?=\bshared\b|\Z)', re.DOTALL)
 
 PBIP_ADVICE = "open in Power BI Desktop and save as a .pbip project for full lineage"
 
@@ -105,8 +105,8 @@ def parse_pbix(
                     if not isinstance(layout, dict):
                         # valid JSON but not a layout object — same degradation
                         # as an undecodable layout (hard rule 3, issue #41);
-                        # ValueError is caught just below
-                        raise ValueError("Report/Layout is not a JSON object")
+                        # the raise funnels into the except just below
+                        raise ValueError("Report/Layout is not a JSON object")  # noqa: TRY004
                     warnings += parse_layout_json(layout, stem, entry.path, graph)
                 except (json.JSONDecodeError, KeyError, ValueError):
                     warnings.append(

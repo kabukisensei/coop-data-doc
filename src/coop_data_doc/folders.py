@@ -47,8 +47,7 @@ def folder_name_from_glob(pattern: str) -> str | None:
     returns None and is preserved verbatim as a hand-written pattern.
     """
     body = pattern.strip()
-    if body.startswith("**/"):
-        body = body[3:]
+    body = body.removeprefix("**/")
     for suffix in ("/**", "/*"):
         if body.endswith(suffix):
             body = body[: -len(suffix)]

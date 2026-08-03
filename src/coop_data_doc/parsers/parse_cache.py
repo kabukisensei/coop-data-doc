@@ -126,7 +126,7 @@ class ParseCache:
         self.misses = 0
 
     @classmethod
-    def load(cls, path: Path | str) -> "ParseCache":
+    def load(cls, path: Path | str) -> ParseCache:
         """Load a cache file; missing -> empty (no warning, it is derivable);
         corrupt/unknown-version/invalid-entry -> empty (or partial) + warning.
         Never raises — a bad cache always degrades to a cold parse."""
@@ -170,7 +170,7 @@ class ParseCache:
         for key, raw in (data.get("cache") or {}).items():
             try:
                 cache.entries[key] = ParseCacheEntry.model_validate(raw)
-            except Exception:
+            except Exception:  # noqa: BLE001 — a corrupt cache entry degrades to a cold re-parse
                 cache.warnings.append(
                     ParseWarning(
                         file=str(path),

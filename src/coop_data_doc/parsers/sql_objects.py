@@ -57,7 +57,7 @@ class _Contribution:
     the fuller node); edges are appended and deduped by key, in first-seen order.
     """
 
-    __slots__ = ("nodes", "edges", "_edge_keys", "warnings")
+    __slots__ = ("_edge_keys", "edges", "nodes", "warnings")
 
     def __init__(self) -> None:
         self.nodes: dict[str, dict] = {}
@@ -69,10 +69,9 @@ class _Contribution:
         # Node.source_code is exclude=True, so BOTH model_dump modes strip it —
         # add it back explicitly so the cached page keeps its Source section
         # (HAZARD B); _replay_entry re-validates the dict WITH source_code.
-        if node.id in self.nodes:
-            if self.nodes[node.id].get("source_file") and not node.source_file:
-                # Do not let a read-stub overwrite a real definition from the same file.
-                return
+        # Do not let a read-stub overwrite a real definition from the same file.
+        if node.id in self.nodes and self.nodes[node.id].get("source_file") and not node.source_file:
+            return
         dumped = node.model_dump(mode="python")
         dumped["source_code"] = node.source_code
         self.nodes[node.id] = dumped
@@ -210,7 +209,7 @@ def columns_from_schema(schema_expr: exp.Schema, dialect: str) -> list[Column]:
             elif isinstance(kind_expr, exp.DefaultColumnConstraint):
                 try:
                     constraints.append(f"DEFAULT {kind_expr.this.sql(dialect=dialect)}")
-                except Exception:
+                except Exception:  # noqa: BLE001 — an unrenderable constraint degrades to bare "DEFAULT"
                     constraints.append("DEFAULT")
             elif isinstance(kind_expr, exp.GeneratedAsIdentityColumnConstraint):
                 constraints.append("IDENTITY")
@@ -219,7 +218,7 @@ def columns_from_schema(schema_expr: exp.Schema, dialect: str) -> list[Column]:
             elif kind_expr is not None:
                 try:
                     constraints.append(kind_expr.sql(dialect=dialect))
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — an unrenderable constraint is simply omitted
                     pass
         if name in table_level_pk and "PK" not in constraints:
             constraints.append("PK")

@@ -78,7 +78,7 @@ def test_export_csvs_twice_byte_identical(tmp_path: Path):
     out_a = tree_bytes(ws_a / "data-docs")
     out_b = tree_bytes(ws_b / "data-docs")
 
-    csv_keys = [k for k in out_a.keys() if k.endswith(".csv")]
+    csv_keys = [k for k in out_a if k.endswith(".csv")]
     assert len(csv_keys) == 4
 
     for relative in csv_keys:

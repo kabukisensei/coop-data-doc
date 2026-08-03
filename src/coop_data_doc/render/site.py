@@ -51,8 +51,6 @@ def _node_layer(node: Node) -> str | None:
 class SiteBuildError(Exception):
     """mkdocs build failed; message carries the stderr tail."""
 
-    pass
-
 
 _MKDOCS_TEMPLATE = """\
 site_name: {site_name}
@@ -430,7 +428,7 @@ def build_site(config_path: Path, site_dir: Path, *, on_page: Callable[..., None
     """
     base = [sys.executable, "-m", "mkdocs", "build", "-f", str(config_path)]
     if on_page is None:
-        completed = subprocess.run(base, capture_output=True, text=True)
+        completed = subprocess.run(base, capture_output=True, text=True, check=False)
         if completed.returncode != 0:
             tail = "\n".join(completed.stderr.splitlines()[-15:])
             raise SiteBuildError(f"mkdocs build failed:\n{tail}")

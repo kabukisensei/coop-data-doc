@@ -28,6 +28,8 @@ from coop_data_doc.config import (
     ParseWarning,
     render_config_yaml,
 )
+from coop_data_doc.crawler import FileKind, crawl
+from coop_data_doc.diagnostics import Diagnostics, severity_of
 from coop_data_doc.folders import (
     base_patterns_from_includes,
     folder_scoped_includes,
@@ -36,13 +38,14 @@ from coop_data_doc.folders import (
     split_excludes,
     top_level_folders,
 )
-from coop_data_doc.diagnostics import Diagnostics, severity_of
-from coop_data_doc.crawler import FileKind, crawl
 from coop_data_doc.graph.model import LineageGraph, normalize_identifier
 from coop_data_doc.graph.serialize import to_json_file
+from coop_data_doc.layering import assign_layers, prune_schemas
 from coop_data_doc.linker.cache import CacheEntry, LineageCache
 from coop_data_doc.linker.resolver import ResolutionResult, link_graph
 from coop_data_doc.parsers.bim import parse_bim
+from coop_data_doc.parsers.parallel import _MAX_WORKERS, default_jobs, parse_sql_parallel
+from coop_data_doc.parsers.parse_cache import ParseCache
 from coop_data_doc.parsers.pbir import (
     collapse_visuals,
     link_reports_to_models,
@@ -51,10 +54,7 @@ from coop_data_doc.parsers.pbir import (
     parse_pbir,
     parse_pbir_definitions,
 )
-from coop_data_doc.parsers.parallel import _MAX_WORKERS, default_jobs, parse_sql_parallel
-from coop_data_doc.parsers.parse_cache import ParseCache
 from coop_data_doc.parsers.pbix import parse_pbix
-from coop_data_doc.layering import assign_layers, prune_schemas
 from coop_data_doc.parsers.sql_objects import flag_silent_sql_files
 from coop_data_doc.parsers.sql_procs import resolve_stub_references
 from coop_data_doc.parsers.tmdl import link_composite_models, parse_tmdl
@@ -556,7 +556,7 @@ def status(ctx: click.Context, config_path: str | None) -> None:
     review_inputs, envelopes, review_warnings = _load_reviews(config, ())
     try:
         graph, result, warnings = run_pipeline(config, interactive=False, progress=progress)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — status degrades to a message, never crashes
         click.echo(f"status:    could not analyze repos ({exc})")
         return
     warnings += review_warnings
@@ -565,31 +565,30 @@ def status(ctx: click.Context, config_path: str | None) -> None:
         try:
             # the spinner wraps only the silent work; the result line prints
             # after it so the spinner's \r rewrites never garble real output
-            with progress.spinner("Checking docs freshness"):
-                with tempfile.TemporaryDirectory() as tmp:
-                    fresh = Path(tmp) / "docs"
-                    # copy the committed tree first so human-authored Business
-                    # Intent blocks survive, then regenerate the SAME artifacts
-                    # `check` compares (markdown, graph.json, diagnostics.json/.md)
-                    # so the two commands can never disagree about staleness.
-                    shutil.copytree(out_dir, fresh)
-                    review_join = join_reviews(graph, envelopes) if review_inputs is not None else None
-                    render_markdown(graph, fresh, config.project_name, reviews=review_join)
-                    diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
-                    write_diagnostics(fresh, diagnostics, config.project_name)
-                    (fresh / "diagnostics.json").write_text(
-                        json.dumps(diagnostics.to_json(), indent=2, sort_keys=True) + "\n",
-                        encoding="utf-8",
-                        newline="\n",
-                    )
-                    to_json_file(graph, fresh / "graph.json")
-                    stale = _tree_diff(out_dir, fresh)
+            with progress.spinner("Checking docs freshness"), tempfile.TemporaryDirectory() as tmp:
+                fresh = Path(tmp) / "docs"
+                # copy the committed tree first so human-authored Business
+                # Intent blocks survive, then regenerate the SAME artifacts
+                # `check` compares (markdown, graph.json, diagnostics.json/.md)
+                # so the two commands can never disagree about staleness.
+                shutil.copytree(out_dir, fresh)
+                review_join = join_reviews(graph, envelopes) if review_inputs is not None else None
+                render_markdown(graph, fresh, config.project_name, reviews=review_join)
+                diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
+                write_diagnostics(fresh, diagnostics, config.project_name)
+                (fresh / "diagnostics.json").write_text(
+                    json.dumps(diagnostics.to_json(), indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                to_json_file(graph, fresh / "graph.json")
+                stale = _tree_diff(out_dir, fresh)
             if stale:
                 click.echo(f"freshness: stale ({len(stale)} files differ)")
                 click.echo("  Run `coop-data-doc build` to update.")
             else:
                 click.echo("freshness: up to date")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — a failed freshness check degrades to a message
             click.echo(f"freshness: could not check ({exc})")
     else:
         click.echo("freshness: no docs yet — run `coop-data-doc build`")
@@ -617,7 +616,7 @@ def setup(ctx: click.Context, path: str) -> None:
     except KeyboardInterrupt:
         click.echo("\nSetup cancelled — nothing was written.", err=True)
         sys.exit(130)
-    except Exception as exc:  # noqa: BLE001 — re-raised below unless it's a no-terminal error
+    except Exception as exc:
         from coop_data_doc.linker.interactive import _is_no_terminal_error
 
         if not _is_no_terminal_error(exc):
@@ -1660,7 +1659,7 @@ def export(config_path: str | None, out_dir_str: str | None) -> None:
 def findings(config_path: str | None, out_file, no_parse_cache: bool) -> None:
     """Emit data-doc diagnostics as a standard review-findings envelope."""
     config = _load_config(config_path)
-    graph, result, warnings = run_pipeline(config, interactive=False, no_parse_cache=no_parse_cache)
+    _graph, result, warnings = run_pipeline(config, interactive=False, no_parse_cache=no_parse_cache)
     diagnostics = Diagnostics(warnings=warnings, unresolved=list(result.unresolved))
     envelope = diagnostics.to_envelope()
     out_file.write(json.dumps(envelope, indent=2, sort_keys=True) + "\n")
@@ -1692,6 +1691,7 @@ def impact(
 ) -> None:
     """Change-impact diff against a baseline graph.json (e.g., git main)."""
     import subprocess
+
     from coop_data_doc.graph.diff import diff_graphs
 
     config = _load_config(config_path)
@@ -1737,7 +1737,7 @@ def impact(
         if nid not in current_graph.nodes:
             continue
         down = current_graph.downstream(nid)
-        impact_map[nid] = sorted(list(down))
+        impact_map[nid] = sorted(down)
 
     if fmt == "json":
         click.echo(json.dumps(impact_map, indent=2))

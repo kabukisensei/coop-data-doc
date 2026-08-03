@@ -55,7 +55,7 @@ def prompt_resolution(pbi_node: Node, source_desc: str, candidates: list[tuple[s
             f"Map Power BI table '{pbi_node.name}' (source: {source_desc}) to:",
             choices=choices,
         ).ask()
-    except Exception as exc:  # noqa: BLE001 — re-raised below unless it's a no-terminal error
+    except Exception as exc:
         if _is_no_terminal_error(exc):
             raise TerminalUnavailable(str(exc)) from exc
         raise

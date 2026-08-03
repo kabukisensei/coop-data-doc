@@ -26,7 +26,7 @@ class SourceRef(BaseModel):
 # their own commas), so the `,` we stop on is the top-level one before the
 # quoted query — never the comma inside Sql.Database(...). Otherwise the DB name
 # would be mis-extracted as the SQL and all referenced tables dropped.
-_NATIVE_QUERY_RE = re.compile(r'Value\.NativeQuery\s*\((?:[^(),]|\([^()]*\))+,\s*"((?:[^"]|"")*)"', re.S)
+_NATIVE_QUERY_RE = re.compile(r'Value\.NativeQuery\s*\((?:[^(),]|\([^()]*\))+,\s*"((?:[^"]|"")*)"', re.DOTALL)
 # The OTHER standard native-SQL shape (what Desktop's "SQL statement" import box
 # generates): an options record on the connector itself —
 # Sql.Database("srv", "db", [Query="SELECT …", CommandTimeout=…]). The call span
@@ -34,7 +34,7 @@ _NATIVE_QUERY_RE = re.compile(r'Value\.NativeQuery\s*\((?:[^(),]|\([^()]*\))+,\s
 # SQL never truncate it; the Query value may be a quoted literal ("" escapes
 # honored) or a let-bound identifier resolved via _BINDING_RE (issue #36).
 _SQL_DATABASE_CALL_RE = re.compile(r"\bSql\.Databases?\s*\(")
-_QUERY_OPTION_RE = re.compile(r'\bQuery\s*=\s*(?:"((?:[^"]|"")*)"|([A-Za-z_]\w*))', re.S)
+_QUERY_OPTION_RE = re.compile(r'\bQuery\s*=\s*(?:"((?:[^"]|"")*)"|([A-Za-z_]\w*))', re.DOTALL)
 _LAKEHOUSE_RE = re.compile(r"Lakehouse\.Contents\s*\(|Fabric\.|\.Warehouse\s*\(")
 # A composite/DirectQuery reference to another Power BI semantic model:
 # AnalysisServices.Database("powerbi://…", "ModelName", …) — the 2nd arg is the
@@ -50,7 +50,7 @@ _BINDING_RE = re.compile(r'\b([A-Za-z_]\w*)\s*=\s*"([^"]*)"')
 _NAV_SCHEMA_RE = re.compile(r'\bSchema\s*=\s*(?:"([^"]+)"|([A-Za-z_]\w*))')
 _NAV_ITEM_RE = re.compile(r'\bItem\s*=\s*(?:"([^"]+)"|([A-Za-z_]\w*))')
 # a `{[ ... ]}` record-navigation segment (where Schema=/Item= really live)
-_NAV_RECORD_RE = re.compile(r"\{\[(.*?)\]\}", re.S)
+_NAV_RECORD_RE = re.compile(r"\{\[(.*?)\]\}", re.DOTALL)
 # inline/static tables (calculation, parameter, hand-built) have no DB source
 _STATIC_RE = re.compile(r"Table\.FromRows|#table\b|Json\.Document")
 

@@ -24,21 +24,23 @@ if TYPE_CHECKING:  # annotation-only; runtime import stays lazy inside the funct
     from coop_data_doc.linker.resolver import ResolutionResult
 
 from coop_data_doc.config import (
-    Config,
-    ConfigError,
-    output_dirs_conflict,
-    render_config_yaml,
     DEFAULT_ACCENT_COLOR,
     DEFAULT_PBI_INCLUDE,
     DEFAULT_PRIMARY_COLOR,
     DEFAULT_SQL_INCLUDE,
     VALID_LAYERS,
+    Config,
+    ConfigError,
+    output_dirs_conflict,
+    render_config_yaml,
 )
 from coop_data_doc.folders import (
     base_patterns_from_includes,
     folder_scoped_includes,
     includes_for_folders,
     split_excludes,
+)
+from coop_data_doc.folders import (
     top_level_folders as _top_level_folders,
 )
 
@@ -150,7 +152,7 @@ def _existing_config(config_path: Path) -> Config | None:
         try:
             data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             lenient = Config.model_validate(data)
-        except Exception:
+        except Exception:  # noqa: BLE001 — an unreadable existing config means "start fresh"
             print(
                 f"note: existing config could not be read ({exc}); starting fresh",
                 file=sys.stderr,

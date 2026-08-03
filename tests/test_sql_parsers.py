@@ -4,11 +4,11 @@ from coop_data_doc.config import Config, RepoConfig
 from coop_data_doc.crawler import FileEntry, FileKind, crawl
 from coop_data_doc.graph import LineageGraph, to_json_str
 from coop_data_doc.layering import assign_layers
+from coop_data_doc.parsers.sql_objects import parse_sql_objects
 from coop_data_doc.parsers.sql_procs import (
     parse_sql_procs,
     resolve_stub_references,
 )
-from coop_data_doc.parsers.sql_objects import parse_sql_objects
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

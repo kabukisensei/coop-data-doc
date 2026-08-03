@@ -80,7 +80,24 @@ _CTE_NAME = r"(\[[^\]]+\]|[\w]+)\s*(?:\([^)]*\))?"
 _CTE_RX = re.compile(rf"\bWITH\s+{_CTE_NAME}\s+AS\s*\(|,\s*{_CTE_NAME}\s+AS\s*\(", re.IGNORECASE)
 _ALIAS_RX = re.compile(rf"\b(?:FROM|JOIN)\s+({_IDENT})\s+(?:AS\s+)?(\[[^\]]+\]|[\w]+)", re.IGNORECASE)
 _KEYWORDS = frozenset(
-    "on where inner left right full outer cross join group order set when as with select".split()
+    [
+        "on",
+        "where",
+        "inner",
+        "left",
+        "right",
+        "full",
+        "outer",
+        "cross",
+        "join",
+        "group",
+        "order",
+        "set",
+        "when",
+        "as",
+        "with",
+        "select",
+    ]
 )
 
 
@@ -103,9 +120,9 @@ def decode_text(data: bytes) -> str:
     built on Windows read as stale on Linux CI, and vice versa).
     """
     # UTF-32-LE's BOM starts with UTF-16-LE's, so check the wider one first.
-    if data.startswith(codecs.BOM_UTF32_LE) or data.startswith(codecs.BOM_UTF32_BE):
+    if data.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
         text = data.decode("utf-32", errors="replace")
-    elif data.startswith(codecs.BOM_UTF16_LE) or data.startswith(codecs.BOM_UTF16_BE):
+    elif data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         text = data.decode("utf-16", errors="replace")
     else:
         text = data.decode("utf-8-sig", errors="replace")
@@ -133,7 +150,7 @@ def parse_batch(
     """
     try:
         parsed = sqlglot.parse(batch, read=dialect, error_level=error_level)
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort parse: any failure means "no parse"
         return []
     return [expression for expression in parsed if expression is not None]
 
@@ -307,7 +324,7 @@ def split_statements(sql: str) -> list[str]:
 
 def is_temp(name: str) -> bool:
     """True for #temp tables and @table variables (by raw name)."""
-    return name.startswith("#") or name.startswith("@")
+    return name.startswith(("#", "@"))
 
 
 def is_temp_table(table: exp.Table) -> bool:
@@ -319,9 +336,7 @@ def is_temp_table(table: exp.Table) -> bool:
     if is_temp(table.name):
         return True
     ident = table.this
-    if isinstance(ident, exp.Identifier) and ident.args.get("temporary"):
-        return True
-    return False
+    return bool(isinstance(ident, exp.Identifier) and ident.args.get("temporary"))
 
 
 _QUOTE_JUNK = re.compile(r'[\[\]"`]')
@@ -586,7 +601,7 @@ def extract_column_lineage(select: exp.Select, dialect: str) -> dict[str, list[s
             continue
         try:
             node = lineage(name, select, dialect=dialect)
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 — a column whose lineage fails is skipped, never guessed
             continue
 
         sources = set()

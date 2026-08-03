@@ -122,6 +122,7 @@ def _build_subprocess(cwd: Path, extra: list[str]) -> subprocess.CompletedProces
         cwd=cwd,
         capture_output=True,
         text=True,
+        check=False,
         env={**os.environ, "COOP_DATA_DOC_JOBS": "2"},
     )
 
@@ -397,7 +398,7 @@ def test_worker_parse_error_becomes_parse_worker_error_warning(tmp_path: Path, m
         if results is None:
             return None
         # force the first miss (sorted) to look like a worker crash
-        target = sorted(results)[0]
+        target = min(results)
         results[target] = (None, None, "Boom: simulated worker crash")
         return results
 

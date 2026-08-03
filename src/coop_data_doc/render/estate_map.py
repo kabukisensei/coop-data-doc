@@ -1,7 +1,9 @@
 """Estate map SVG generation (Issue #57)."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 from coop_data_doc.graph.model import LineageGraph, NodeType
 
 
@@ -61,7 +63,7 @@ def generate_estate_map_svg(graph: LineageGraph) -> str:
             layer = _layer(node)
             schema = node.schema_name or "dbo"
             group_id = f"sql:{layer or 'none'}:{schema}"
-            title = schema if layer else schema
+            title = schema
             col = _col(layer, node.node_type)
 
         if group_id not in nodes:

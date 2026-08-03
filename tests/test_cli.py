@@ -295,6 +295,7 @@ def test_python_m_invocation_works():
         [sys.executable, "-m", "coop_data_doc", "--version"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "coop-data-doc" in result.stdout
@@ -458,7 +459,7 @@ def test_check_lenient_tolerates_risky_parses(tmp_path: Path):
 
 def test_config_find_in_cwd(tmp_path: Path):
     """Config.find() locates config in current directory."""
-    from coop_data_doc.config import Config, DEFAULT_CONFIG
+    from coop_data_doc.config import DEFAULT_CONFIG, Config
 
     config = tmp_path / DEFAULT_CONFIG
     config.write_text("project_name: Test\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
@@ -470,7 +471,7 @@ def test_config_find_in_cwd(tmp_path: Path):
 
 def test_config_find_walks_up_parents(tmp_path: Path):
     """Config.find() walks up parent directories to find config."""
-    from coop_data_doc.config import Config, DEFAULT_CONFIG
+    from coop_data_doc.config import DEFAULT_CONFIG, Config
 
     config = tmp_path / DEFAULT_CONFIG
     config.write_text("project_name: Test\nrepos:\n  sql:\n    path: ./sql\n  powerbi:\n    path: ./pbi\n")
@@ -733,7 +734,6 @@ def test_interactive_menu_setup_from_subdir_edits_discovered_config(tmp_path: Pa
 
     def fake_run_setup(path):
         captured["path"] = path
-        return None  # setup prints "Saved {path}" and returns cleanly
 
     monkeypatch.setattr(cli_module, "questionary", FakeQuestionary)
     monkeypatch.setattr(cli_module, "_stdio_is_interactive", lambda: True)

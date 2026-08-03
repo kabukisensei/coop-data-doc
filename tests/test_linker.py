@@ -144,7 +144,7 @@ def test_prune_invalid_reprompts(tmp_path: Path, fake_q):
         f"pbi_table:{MODEL_KEY}.dcust",
         CacheEntry(target="view:sales.does_not_exist", method="interactive"),
     )
-    result, warnings = link_graph(build_graph(), make_config(), cache, interactive_mode=True)
+    _result, warnings = link_graph(build_graph(), make_config(), cache, interactive_mode=True)
     assert any(w.category == "cache_pruned" for w in warnings)
     assert fake_q.calls == 1  # re-prompted after the entry is ignored
     assert cache.get(f"pbi_table:{MODEL_KEY}.dcust").target == "view:sales.dim_customer"
@@ -240,7 +240,7 @@ def test_external_choice_cached(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(interactive, "questionary", fake)
     cache = cache_at(tmp_path)
     graph = build_graph()
-    result, _ = link_graph(graph, make_config(), cache, interactive_mode=True)
+    _result, _ = link_graph(graph, make_config(), cache, interactive_mode=True)
     node = graph.nodes[f"pbi_table:{MODEL_KEY}.dcust"]
     assert node.metadata["external_source"] is True
     assert cache.get(f"pbi_table:{MODEL_KEY}.dcust").method == "external"

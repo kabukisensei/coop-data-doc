@@ -29,7 +29,7 @@ import click
 # the item's label (e.g. file path), used only for display.
 Tick = Callable[..., None]
 
-_NOOP: Tick = lambda *_args, **_kwargs: None  # noqa: E731
+_NOOP: Tick = lambda *_args, **_kwargs: None
 
 
 def should_enable(quiet: bool) -> bool:

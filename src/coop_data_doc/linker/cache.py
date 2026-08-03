@@ -40,7 +40,7 @@ class LineageCache:
         self._ignored: set[str] = set()
 
     @classmethod
-    def load(cls, path: Path | str) -> "LineageCache":
+    def load(cls, path: Path | str) -> LineageCache:
         """Load a cache file; missing/invalid/unknown-version -> empty cache
         with warnings (the file itself is never deleted).
         """
@@ -83,7 +83,7 @@ class LineageCache:
         for key, raw in (data.get("mappings") or {}).items():
             try:
                 cache.mappings[key] = CacheEntry.model_validate(raw)
-            except Exception:
+            except Exception:  # noqa: BLE001 — a corrupt cache entry degrades to a warning
                 cache.warnings.append(
                     ParseWarning(
                         file=str(path),

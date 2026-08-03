@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from coop_data_doc.graph.model import LineageGraph, Node, Edge
+
+from coop_data_doc.graph.model import Edge, LineageGraph, Node
 
 
 @dataclass

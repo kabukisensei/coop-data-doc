@@ -13,9 +13,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      # Pin ruff: 0.16 expanded the default rule set and breaks lint on code
-      # that 0.15 passes — CI and the dev extra must stay on the same version.
-      - run: pip install ruff==0.15.18
+      # Pin ruff: new minor versions expand the default rule set and can break
+      # lint on code that previously passed — CI and the dev extra in
+      # pyproject.toml must move together.
+      - run: pip install ruff==0.16.1
       - run: ruff check src tests
       - run: ruff format --check src tests
 
