@@ -79,6 +79,46 @@ def test_definition_pbir_still_respects_excludes():
     assert not any(entry.path == "Sales.Report/definition.pbir" for entry in inventory.entries)
 
 
+def test_definition_pbir_carveout_disabled_in_allowlist_mode():
+    """A repo with folder-scoped include globs has explicitly chosen its folders:
+    a definition.pbir outside them must NOT leak back in via the always-include
+    carve-out."""
+    config = fixture_config()
+    config.repos["powerbi"].include = ["Sales.SemanticModel/**/*.tmdl"]
+    inventory, _ = crawl(config)
+    assert not any(entry.path == "Sales.Report/definition.pbir" for entry in inventory.entries)
+
+
+def test_definition_pbir_scoped_glob_crawls_selected_folder():
+    # in allowlist mode a scoped definition.pbir glob still crawls the file
+    config = fixture_config()
+    config.repos["powerbi"].include = ["Sales.Report/**/definition.pbir"]
+    inventory, _ = crawl(config)
+    kinds = {entry.path: entry.kind for entry in inventory.entries}
+    assert kinds["Sales.Report/definition.pbir"] == FileKind.PBIR_DEFINITION
+
+
+def test_folder_scoped_glob_matches_files_directly_under_folder():
+    """'Foo/**/*.sql' (the folder-scoped shape the wizard and set-folders write)
+    must also match files DIRECTLY under Foo: fnmatch '**' requires at least one
+    slash, so _matches also tries the collapsed 'Foo/*.sql' form."""
+    assert crawler._matches("procs/usp.sql", ["procs/**/*.sql"])
+    assert crawler._matches("procs/sub/deep/usp.sql", ["procs/**/*.sql"])
+    assert not crawler._matches("other/usp.sql", ["procs/**/*.sql"])
+
+
+def test_folder_scoped_include_crawls_shallow_and_deep(tmp_path: Path):
+    repo = tmp_path / "repo"
+    (repo / "procs" / "sub").mkdir(parents=True)
+    (repo / "procs" / "usp.sql").write_text("SELECT 1;", encoding="utf-8")
+    (repo / "procs" / "sub" / "deep.sql").write_text("SELECT 1;", encoding="utf-8")
+    (repo / "archive").mkdir()
+    (repo / "archive" / "old.sql").write_text("SELECT 1;", encoding="utf-8")
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["procs/**/*.sql"])})
+    inventory, _ = crawl(config)
+    assert [entry.path for entry in inventory.entries] == ["procs/sub/deep.sql", "procs/usp.sql"]
+
+
 def test_inventory_sorted_and_posix():
     inventory, _ = crawl(fixture_config())
     keys = [(entry.repo_key, entry.path) for entry in inventory.entries]

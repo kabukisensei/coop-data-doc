@@ -35,7 +35,9 @@ from coop_data_doc.config import (
     VALID_LAYERS,
 )
 from coop_data_doc.folders import (
-    excludes_for_skips,
+    base_patterns_from_includes,
+    folder_scoped_includes,
+    includes_for_folders,
     split_excludes,
     top_level_folders as _top_level_folders,
 )
@@ -69,42 +71,47 @@ def _ask_csv(message: str, default: list[str]) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _ask_folders_to_skip(
+def _ask_folders_to_document(
     repo_label: str,
     repo_rel_path: str,
     base_dir: Path,
-    existing_exclude: list[str],
+    existing_include: list[str] | None,
+    base_patterns: list[str],
     csv_message: str,
 ) -> list[str]:
     """Pick which top-level folders to document via a checkbox, returning the
-    exclude globs for the ones left unchecked.
+    folder-scoped include globs for the checked ones.
 
-    Everything starts checked (= documented); unchecking a folder writes a
-    ``**/Name/**`` skip glob for it. Hand-written excludes that don't map to a
-    detected top-level folder (e.g. nested ``**/BACKUP/**``) are preserved
-    untouched. Falls back to the comma-separated text prompt when the repo
-    isn't on disk yet or has no subfolders, so behavior is unchanged there.
+    Folder selection is an ALLOWLIST: nothing starts checked, and checking a
+    folder writes ``Folder/<base-pattern>`` include globs for it (base patterns
+    are the repo's ``**/``-rooted file-type templates, e.g. ``**/*.sql`` →
+    ``Foo/**/*.sql``). Re-running pre-checks the folders already scoped in the
+    config's include list; a legacy ``**/Name/**`` exclude simply reads as
+    unchecked. An empty selection is rejected and re-asked (an unchecked
+    checkbox silently meaning "document everything" would be surprising — the
+    opposite of what unchecking implies). Falls back to the comma-separated
+    text prompt when the repo isn't on disk yet or has no subfolders.
     """
     repo_abs = (base_dir / Path(repo_rel_path).expanduser()).resolve()
     folders = _top_level_folders(repo_abs)
     if not folders:
-        return _ask_csv(csv_message, existing_exclude)
+        return _ask_csv(csv_message, existing_include or base_patterns)
 
-    # simple folder-globs become unchecked boxes; everything else is a custom pattern
-    excluded_names, custom = split_excludes(folders, existing_exclude)
-
-    choices = [
-        questionary.Choice(title=name, value=name, checked=name not in excluded_names) for name in folders
-    ]
-    selected = _ask(
-        questionary.checkbox(
-            f"{repo_label} — pick the folders to document "
-            "(everything is checked; SPACE to uncheck a folder to skip, ENTER to confirm):",
-            choices=choices,
+    # re-run prefill: only folders already scoped in the include list are
+    # checked — first runs (and legacy denylist configs) start fully unchecked
+    prechecked = folder_scoped_includes(existing_include or [])
+    choices = [questionary.Choice(title=name, value=name, checked=name in prechecked) for name in folders]
+    while True:
+        selected = _ask(
+            questionary.checkbox(
+                f"{repo_label} — pick the folders to document "
+                "(nothing is checked to start; SPACE checks a folder, ENTER confirms):",
+                choices=choices,
+            )
         )
-    )
-    skipped = {name for name in folders if name not in set(selected)}
-    return excludes_for_skips(folders, skipped, custom)
+        if selected:
+            return includes_for_folders(list(selected), base_patterns)
+        print("  Select at least one folder (or press Ctrl-C to cancel).", file=sys.stderr)
 
 
 def _ask_repo_path(label: str, default: str, base_dir: Path) -> str:
@@ -164,6 +171,11 @@ def _repo_default(existing: Config | None, key: str, fallback: str) -> str:
 
 _MODEL_FOLDER_RE = re.compile(r"(?:\*\*/)?(?P<name>[^/*]+\.SemanticModel)/", re.IGNORECASE)
 
+# report/pbix file-type templates the model picker adds on top of the chosen
+# .SemanticModel globs — folder-scoped to the user's folder pick when folder
+# selection is active (mirrors DEFAULT_PBI_INCLUDE minus the model globs)
+_PBI_REPORT_BASES = ["**/report.json", "**/visual.json", "**/page.json", "**/definition.pbir", "**/*.pbix"]
+
 
 def _discover_semantic_models(pbi_abs: Path) -> list[str]:
     """Sorted names of every ``*.SemanticModel`` folder under the PBI repo."""
@@ -172,20 +184,22 @@ def _discover_semantic_models(pbi_abs: Path) -> list[str]:
     return sorted({p.name for p in pbi_abs.rglob("*.SemanticModel") if p.is_dir()}, key=str.lower)
 
 
-def _semantic_model_includes(model_folders: list[str]) -> list[str]:
-    """Include globs scoped to the chosen ``.SemanticModel`` folders, plus all
-    reports (which nest under whichever model they draw from) AND ``.pbix``
-    files — the latter matching the shipped ``DEFAULT_PBI_INCLUDE`` so a
-    wizard-scoped config documents the same pbix-only reports a default ``init``
-    config would (the pbix parser is best-effort/warning-driven, so an
-    unreadable one degrades to a diagnostic, not noise). Only ``.pbip`` and
-    other loose files are left out. fnmatch's ``*`` crosses ``/``, so
-    ``**/<name>.SemanticModel/**/*.tmdl`` matches however deep the folder sits."""
+def _semantic_model_includes(model_folders: list[str], report_globs: list[str] | None = None) -> list[str]:
+    """Include globs scoped to the chosen ``.SemanticModel`` folders, plus the
+    report/pbix globs — ``report_globs`` when given (folder-scoped by the
+    folder pick, so stray ``.Report``/``.pbix`` copies in unselected folders
+    can't leak in), otherwise the global ``_PBI_REPORT_BASES`` (which match the
+    shipped ``DEFAULT_PBI_INCLUDE`` so a wizard-scoped config documents the
+    same pbix-only reports a default ``init`` config would — the pbix parser is
+    best-effort/warning-driven, so an unreadable one degrades to a diagnostic,
+    not noise). Only ``.pbip`` and other loose files are left out. fnmatch's
+    ``*`` crosses ``/``, so ``**/<name>.SemanticModel/**/*.tmdl`` matches
+    however deep the folder sits."""
     globs: list[str] = []
     for folder in model_folders:
         globs.append(f"**/{folder}/**/*.tmdl")
         globs.append(f"**/{folder}/**/*.bim")
-    globs += ["**/report.json", "**/visual.json", "**/page.json", "**/definition.pbir", "**/*.pbix"]
+    globs += report_globs if report_globs is not None else list(_PBI_REPORT_BASES)
     return globs
 
 
@@ -211,7 +225,8 @@ def _ask_semantic_models(pbi_abs: Path, existing_includes: list[str] | None) -> 
     print(
         f"\nFound {len(found)} semantic model folder(s) in the Power BI repo. Pick which to\n"
         "document — only the selected *.SemanticModel folders are crawled (reports and\n"
-        ".pbix files are still included; .pbip / other loose files are left out).",
+        ".pbix files inside the folders you pick next are included; .pbip / other loose\n"
+        "files are left out).",
         file=sys.stderr,
     )
     prev = _previously_selected_models(existing_includes)
@@ -286,10 +301,12 @@ def _scan_estate(
 ) -> LineageGraph | None:
     """Parse the estate ONCE, before the layer and mapping questions, so both
     steps confirm discovered facts instead of asking for typed names (issue
-    #35). The scan runs with no layer/ignore rules — those are exactly what it
-    feeds — and ``_autosuggest_mappings`` applies them to a copy once answered.
-    Returns ``None`` when the repos aren't on disk yet (or the scan fails), so
-    callers fall back to the typed prompts."""
+    #35). The scan runs with no layer/ignore/include-schema rules — those are
+    exactly what it feeds, and discovery must see EVERY schema, including ones
+    the user is about to leave unchecked — and ``_autosuggest_mappings``
+    applies them to a copy once answered. Returns ``None`` when the repos
+    aren't on disk yet (or the scan fails), so callers fall back to the typed
+    prompts."""
     import logging
 
     sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
@@ -359,6 +376,7 @@ def _autosuggest_mappings(
     pbi_exclude: list[str],
     layers: dict[str, dict[str, list[str]]],
     ignore_schemas: list[str],
+    include_schemas: list[str],
     sql_dialect: str,
     mappings: list[tuple[str, str]],
     parsed: LineageGraph | None,
@@ -413,11 +431,11 @@ def _autosuggest_mappings(
         "\nConnecting Power BI tables to their SQL sources (read-only, a few seconds)…",
         file=sys.stderr,
     )
-    # The estate was parsed BEFORE the layer/ignore answers existed (that scan
+    # The estate was parsed BEFORE the layer/include answers existed (that scan
     # feeds them) — apply both post-passes to a copy now for parity with a real
     # build (build_graph runs prune_schemas then assign_layers in this order).
     parsed = parsed.model_copy(deep=True)
-    prune_schemas(parsed, ignore_schemas)
+    prune_schemas(parsed, ignore_schemas, include_schemas)
     assign_layers(parsed, build_config(mappings))
     graph, result = resolve(mappings)
 
@@ -557,52 +575,111 @@ def _layer_csv_prompt(layer: str, prior: list[str]) -> list[str]:
     )
 
 
-def _ask_layer_schemas(existing: Config | None, discovered: list[str]) -> dict[str, list[str]]:
-    """Per-layer schema assignment. With a scanned estate, each layer offers the
-    not-yet-assigned discovered schemas as checkboxes — confirm, don't type
-    (issue #35) — with a typed escape hatch for schemas not in the repos yet.
-    Without a scan (repos absent/empty), the classic free-text prompts remain,
-    prefilled from the existing config exactly as before."""
+def _schema_union(*lists: list[str]) -> list[str]:
+    """Case-insensitive union of schema lists, first-seen order (deterministic)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for items in lists:
+        for item in items:
+            if item.lower() not in seen:
+                seen.add(item.lower())
+                out.append(item)
+    return out
+
+
+def _ask_layer_schemas(
+    existing: Config | None, discovered: list[str]
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Per-layer schema assignment + the schema allowlist, returned as
+    ``(layer_schemas, include_schemas)``.
+
+    Checking a schema under a layer both INCLUDES it in the docs and assigns
+    the layer — an unchecked schema is excluded entirely (``include_schemas``
+    is the union of every checked schema). A final catch-all checkbox offers
+    the schemas no layer claimed, so a schema can be documented without a
+    forced layer (it gets the read/write heuristic at build time). An empty
+    total selection is rejected and re-asked. Without a scan (repos
+    absent/empty), the classic free-text prompts remain, prefilled from the
+    existing config exactly as before, and the typed schemas form the allowlist.
+    """
     layer_schemas: dict[str, list[str]] = {}
     if not discovered:
         for layer in VALID_LAYERS:
             existing_rule = existing.layers.get(layer) if existing else None
             layer_schemas[layer] = _layer_csv_prompt(layer, existing_rule.schemas if existing_rule else [])
-        return layer_schemas
+        return layer_schemas, _schema_union(*(layer_schemas[layer] for layer in VALID_LAYERS))
 
-    remaining = list(discovered)
-    for layer in VALID_LAYERS:  # bronze, silver, gold — each schema offered once
-        existing_rule = existing.layers.get(layer) if existing else None
-        prior = list(existing_rule.schemas) if existing_rule else []
-        prior_keys = {schema.lower() for schema in prior}
-        remaining_keys = {schema.lower() for schema in remaining}
-        # schemas saved in this layer's rule but not (or no longer) discovered
-        # stay offered — checked — so a re-run round-trips the config untouched
-        extras = [schema for schema in prior if schema.lower() not in remaining_keys]
-        names = remaining + extras
-        if not names:
-            layer_schemas[layer] = _layer_csv_prompt(layer, prior)
-            continue
-        choices = [questionary.Choice(name, value=name, checked=name.lower() in prior_keys) for name in names]
-        choices.append(questionary.Choice("(add schemas by typing them next)", value="__manual__"))
-        selected = _ask(
-            questionary.checkbox(
-                f"{layer.capitalize()} layer — pick its schemas "
-                "(SPACE toggles, ENTER confirms; none = skip this layer):",
-                choices=choices,
+    # re-run prefill: a schema saved in a layer rule is checked under that
+    # layer; one saved in include_schemas but not layered is checked in the
+    # catch-all. First runs start fully unchecked.
+    prior_include = {s.lower() for s in existing.include_schemas} if existing else set()
+    layered_prior = (
+        {s.lower() for rule in existing.layers.values() for s in rule.schemas} if existing else set()
+    )
+    while True:
+        layer_schemas = {}
+        remaining = list(discovered)
+        for layer in VALID_LAYERS:  # bronze, silver, gold — each schema offered once
+            existing_rule = existing.layers.get(layer) if existing else None
+            prior = list(existing_rule.schemas) if existing_rule else []
+            prior_keys = {schema.lower() for schema in prior}
+            remaining_keys = {schema.lower() for schema in remaining}
+            # schemas saved in this layer's rule but not (or no longer) discovered
+            # stay offered — checked — so a re-run round-trips the config untouched
+            extras = [schema for schema in prior if schema.lower() not in remaining_keys]
+            names = remaining + extras
+            if not names:
+                layer_schemas[layer] = _layer_csv_prompt(layer, prior)
+                continue
+            choices = [
+                questionary.Choice(name, value=name, checked=name.lower() in prior_keys) for name in names
+            ]
+            choices.append(questionary.Choice("(add schemas by typing them next)", value="__manual__"))
+            selected = _ask(
+                questionary.checkbox(
+                    f"{layer.capitalize()} layer — pick its schemas (a checked schema is "
+                    "documented AND layered here; unchecked ones are left out):",
+                    choices=choices,
+                )
             )
-        )
-        chosen = [schema for schema in selected if schema != "__manual__"]
-        if "__manual__" in selected:
-            taken = {schema.lower() for schema in chosen}
-            for extra in _ask_csv(f"{layer.capitalize()} layer — additional schemas (comma-separated):", []):
-                if extra.lower() not in taken:
-                    chosen.append(extra)
-                    taken.add(extra.lower())
-        layer_schemas[layer] = chosen
-        assigned = {schema.lower() for schema in chosen}
-        remaining = [schema for schema in remaining if schema.lower() not in assigned]
-    return layer_schemas
+            chosen = [schema for schema in selected if schema != "__manual__"]
+            if "__manual__" in selected:
+                taken = {schema.lower() for schema in chosen}
+                for extra in _ask_csv(
+                    f"{layer.capitalize()} layer — additional schemas (comma-separated):", []
+                ):
+                    if extra.lower() not in taken:
+                        chosen.append(extra)
+                        taken.add(extra.lower())
+            layer_schemas[layer] = chosen
+            assigned = {schema.lower() for schema in chosen}
+            remaining = [schema for schema in remaining if schema.lower() not in assigned]
+        # catch-all: document a schema without forcing a layer on it
+        no_layer: list[str] = []
+        if remaining:
+            choices = [
+                questionary.Choice(
+                    name,
+                    value=name,
+                    checked=name.lower() in prior_include and name.lower() not in layered_prior,
+                )
+                for name in remaining
+            ]
+            no_layer = list(
+                _ask(
+                    questionary.checkbox(
+                        "Include WITHOUT a layer — schemas to document with automatic layer "
+                        "detection (SPACE toggles, ENTER confirms; none = leave them out):",
+                        choices=choices,
+                    )
+                )
+            )
+        include_schemas = _schema_union(*(layer_schemas[layer] for layer in VALID_LAYERS), no_layer)
+        if include_schemas:
+            return layer_schemas, include_schemas
+        # An empty selection silently meaning "document everything" is
+        # surprising (the opposite of what unchecking implies) — re-ask instead.
+        print("  Select at least one schema to document (or press Ctrl-C to cancel).", file=sys.stderr)
 
 
 def run_setup(config_path: Path) -> Config | None:
@@ -687,55 +764,61 @@ def run_setup(config_path: Path) -> Config | None:
         )
         site_default = _sibling_site(output_dir)
 
-    # --- what to document (include) and skip (exclude), per repo ---
+    # --- what to document (folder allowlist), per repo ---
     sql_repo = existing.repos.get("sql") if existing else None
     pbi_repo = existing.repos.get("powerbi") if existing else None
     print("\n── What to document ──", file=sys.stderr)
     print(
-        "  INCLUDE = the file types to document (press Enter to keep the sensible default).\n"
-        "  SKIP    = uncheck any top-level folders to leave out (e.g. backups). When the repo\n"
-        "            isn't on disk yet, you type skip globs instead. Keeping everything is fine.",
+        "  FOLDERS = check the top-level folders to document. NOTHING is checked to\n"
+        "            start — only the folders you pick are crawled. When the repo isn't\n"
+        "            on disk yet, you type include globs instead.",
         file=sys.stderr,
     )
-    sql_include = _ask_csv(
-        "SQL — files/patterns to INCLUDE (comma-separated globs):",
-        sql_repo.include if sql_repo else DEFAULT_SQL_INCLUDE,
-    )
-    sql_exclude = _ask_folders_to_skip(
+    sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
+    sql_bases = base_patterns_from_includes(list(sql_repo.include)) if sql_repo else []
+    sql_include = _ask_folders_to_document(
         "SQL",
         sql_path,
         base_dir,
-        sql_repo.exclude if sql_repo else [],
-        "SQL — folders to SKIP (optional, e.g. **/archive/**, **/Deployment/** — blank for none):",
+        sql_repo.include if sql_repo else None,
+        sql_bases or DEFAULT_SQL_INCLUDE,
+        "SQL — files/patterns to INCLUDE (comma-separated globs):",
     )
+    # hand-written (non-folder) excludes are preserved; folder excludes are
+    # superseded by the allowlist
+    _, sql_exclude = split_excludes(_top_level_folders(sql_abs), list(sql_repo.exclude) if sql_repo else [])
     # If the PBI repo is on disk, let the user pick which .SemanticModel folders
-    # to document (scoping the include globs to those + reports); otherwise fall
-    # back to manual include globs.
+    # to document (scoping the model globs to those), then pick the top-level
+    # folders the report/pbix globs scope to; otherwise fall back to the folder
+    # allowlist over the full PBI file-type set.
     pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
+    _, pbi_exclude = split_excludes(_top_level_folders(pbi_abs), list(pbi_repo.exclude) if pbi_repo else [])
     selected_models = _ask_semantic_models(pbi_abs, pbi_repo.include if pbi_repo else None)
     if selected_models is not None:
-        # The model picker IS the "what to document" decision for an on-disk PBI
-        # repo, so DON'T also show the top-level-folder skip checkbox (issue #22):
-        # to a user it reads as the same question asked twice, and because exclude
-        # beats include, unchecking the folder the models live in would silently
-        # drop the models just picked. Preserve any hand-written excludes from a
-        # loaded config untouched.
-        pbi_include = _semantic_model_includes(selected_models)
-        pbi_exclude = list(pbi_repo.exclude) if pbi_repo else []
-    else:
-        # Fallback (repo not cloned yet / no .SemanticModel folders): the folder
-        # checkbox is the only scoping mechanism here, so keep it.
-        pbi_include = _ask_csv(
-            "Power BI — files/patterns to INCLUDE (comma-separated globs):",
-            pbi_repo.include if pbi_repo else DEFAULT_PBI_INCLUDE,
-        )
-        pbi_exclude = _ask_folders_to_skip(
+        # The model picker scopes the models; this folder pick scopes the
+        # report/pbix globs so stray .Report/.pbix copies in unselected folders
+        # (BACKUP, Documentation, data-docs) can't leak in as reports or
+        # pbix-derived junk models.
+        report_globs = _ask_folders_to_document(
             "Power BI",
             pbi_path,
             base_dir,
-            pbi_repo.exclude if pbi_repo else [],
-            "Power BI — folders to SKIP (optional, e.g. **/BACKUP/**, **/Documentation/**, "
-            "**/Editor and Theme Files/** — blank for none):",
+            pbi_repo.include if pbi_repo else None,
+            _PBI_REPORT_BASES,
+            "Power BI — report/pbix files to INCLUDE (comma-separated globs):",
+        )
+        pbi_include = _semantic_model_includes(selected_models, report_globs)
+    else:
+        # Fallback (repo not cloned yet / no .SemanticModel folders): the folder
+        # allowlist is the only scoping mechanism here.
+        pbi_bases = base_patterns_from_includes(list(pbi_repo.include)) if pbi_repo else []
+        pbi_include = _ask_folders_to_document(
+            "Power BI",
+            pbi_path,
+            base_dir,
+            pbi_repo.include if pbi_repo else None,
+            pbi_bases or DEFAULT_PBI_INCLUDE,
+            "Power BI — files/patterns to INCLUDE (comma-separated globs):",
         )
 
     # --- scan once (read-only): the layers step below and the schema-mapping
@@ -757,12 +840,14 @@ def run_setup(config_path: Path) -> Config | None:
     # --- medallion layers: assign by SCHEMA (the common case) ---
     print("\n── Medallion layers ──", file=sys.stderr)
     print(
-        "  Assign each layer by SCHEMA name. In a Fabric/SQL warehouse the schema IS\n"
-        "  the folder, so schemas alone are all you need. Leave a layer blank (or\n"
-        "  unchecked) to skip it.",
+        "  Check the schemas to document, layer by layer: a checked schema is both\n"
+        "  INCLUDED in the docs and assigned that layer — an unchecked schema is left\n"
+        "  out entirely. A final catch-all offers anything left over, to document it\n"
+        "  with automatic layer detection. In a Fabric/SQL warehouse the schema IS\n"
+        "  the folder, so schemas alone are all you need.",
         file=sys.stderr,
     )
-    layer_schemas = _ask_layer_schemas(existing, _sql_schemas(parsed))
+    layer_schemas, include_schemas = _ask_layer_schemas(existing, _sql_schemas(parsed))
 
     # Folder-based layering is an advanced fallback for repos where a layer is
     # a directory rather than a schema. Most repos don't need it, so it's off
@@ -793,9 +878,10 @@ def run_setup(config_path: Path) -> Config | None:
 
     print("\n── Schemas to drop ──", file=sys.stderr)
     print(
-        "  Every object in the included files is documented. The layer schemas above only\n"
-        "  group/colour objects — they don't restrict what's shown — so this is the one place\n"
-        "  to drop schemas you never want (noise like staging/temp). Blank keeps everything.",
+        "  Only the schemas checked above are documented, so most estates need nothing\n"
+        "  here. This drops objects even from a checked schema (noise like staging/temp);\n"
+        "  system schemas (sys, information_schema, …) are always dropped. Blank = drop\n"
+        "  nothing extra.",
         file=sys.stderr,
     )
     ignore_schemas = _ask_csv(
@@ -876,6 +962,7 @@ def run_setup(config_path: Path) -> Config | None:
         pbi_exclude=pbi_exclude,
         layers=layers,
         ignore_schemas=ignore_schemas,
+        include_schemas=include_schemas,
         sql_dialect=sql_dialect,
         mappings=mappings,
         parsed=parsed,
@@ -900,6 +987,7 @@ def run_setup(config_path: Path) -> Config | None:
         mappings=mappings,
         layers=layers,
         ignore_schemas=ignore_schemas,
+        include_schemas=include_schemas,
         branding=branding,
         sql_include=sql_include,
         sql_exclude=sql_exclude,

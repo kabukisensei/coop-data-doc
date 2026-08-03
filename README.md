@@ -148,17 +148,24 @@ Because there's no configuration here yet, it offers to walk you through setup. 
 - **SQL repo path** and **Power BI repo path** — type or paste the folder paths; the
   wizard checks they exist and lets you re-type a typo.
 - **Which folders to document** — once a repo path is set, the wizard lists that repo's
-  top-level folders as a checkbox (everything starts checked). Press **Space** to uncheck
-  any folder you want to skip — backups, deployment scripts, archives — and **Enter** to
-  confirm. No need to type out skip patterns by hand. (If the repo isn't on disk yet, it
-  falls back to asking for skip globs as text.) Each unchecked folder becomes a
-  `**/Name/**` entry under `repos.<key>.exclude`; nested skip patterns you've added by
-  hand are kept as-is on a re-run.
+  top-level folders as a checkbox. **Nothing starts checked** — folder selection is an
+  *allowlist*: only the folders you pick are crawled. Press **Space** to check each folder
+  you want documented and **Enter** to confirm (an empty selection is rejected and
+  re-asked). No need to type patterns by hand. (If the repo isn't on disk yet, it falls
+  back to asking for include globs as text.) Each checked folder becomes file-type-scoped
+  entries under `repos.<key>.include` (e.g. `procs/**/*.sql`); nested exclude patterns
+  you've added by hand are kept as-is on a re-run.
 - **Which semantic models to document** (Power BI repo) — the wizard finds every
   `*.SemanticModel` folder and shows them as a checkbox. Pick the ones you want; only
-  those are crawled (their reports come along automatically, and `.pbix`/`.pbip` and other
-  loose files are left out). You don't need the `.pbip` file — everything is read from the
-  `.SemanticModel/definition/` TMDL.
+  those are crawled (their reports come along automatically, scoped to the folders you
+  picked above, and `.pbip`/other loose files are left out). You don't need the `.pbip`
+  file — everything is read from the `.SemanticModel/definition/` TMDL.
+- **Which schemas to document, layer by layer** — the wizard lists every schema its
+  scan discovered under each medallion layer (bronze/silver/gold). A checked schema is
+  both **included in the docs and assigned that layer**; an unchecked schema is left out
+  entirely. A final *"include without a layer"* checkbox offers whatever is left over, to
+  document it with automatic layer detection. The checked schemas are written to
+  `layers.<layer>.schemas` and their union to `include_schemas`.
 - **Output folders** — press Enter to accept the defaults.
 - **Connecting Power BI tables to their SQL sources** — if both repos are on disk, the
   wizard does a quick **read-only scan** and reports how many Power BI tables already link
@@ -319,6 +326,10 @@ layers:                             # medallion layers (all optional)
     paths: ["**/dim/**", "**/fact/**"]   # gold table folders
 
 ignore_schemas: [staging, scratch]  # schemas to drop entirely (never documented)
+include_schemas: [erp_orders, erp_finance, stg, mart, common]
+                                    # optional: when non-empty, ONLY these schemas
+                                    # are documented (the wizard writes the union of
+                                    # the schemas you check in its layer questions)
 
 # reviews: ["sql-findings.json"]   # optional: coop-sql-review / coop-dax-review
                                     # --format json reports to compose into the
@@ -358,16 +369,24 @@ so **the schema *is* the folder** — listing `schemas` is all you need, and you
 *folder* that isn't its own schema (say a `dim/`/`fact/` convention living under another
 schema). You can mix both — a node is assigned the first layer (gold → silver → bronze) hit
 by **either** its schema or its path — but most estates only ever fill in `schemas`. The
-setup wizard reflects this: it asks for schemas layer-by-layer and only asks about folders
-if you opt into the "advanced" question.
+setup wizard reflects this: it asks for schemas layer-by-layer (a checked schema is both
+included in the docs and assigned that layer — unchecked schemas are excluded) and only
+asks about folders if you opt into the "advanced" question.
 
 Each layer is optional — **omit `bronze` or `silver` entirely to skip it.** Anything no rule
 matches falls back to a read/write heuristic (a table that's only ever read → silver; one
 that's created here → gold), and the scan warns which objects fell back so you can add rules.
 Bronze only ever appears when you declare it.
 
+**Choosing which schemas get documented at all:** when `include_schemas` is non-empty,
+**only** those schemas are documented — every other schema's objects are dropped (the
+wizard writes it as the union of the schemas you check in the layer questions, so
+wizard-produced configs are strictly opt-in). Empty means no restriction, which keeps
+older hand-written configs working unchanged.
+
 **Dropping schemas you don't want documented:** list them in `ignore_schemas` (the wizard
-asks for these too). System schemas — `sys`, `information_schema`, `tempdb`, `guest`, `db_*` — are
+asks for these too; it wins over `include_schemas` on conflict). System schemas — `sys`,
+`information_schema`, `tempdb`, `guest`, `db_*` — are
 **always** dropped automatically, since they're catalog references, not real data. Note
 that ignoring a schema removes it from lineage entirely, so anything downstream loses that
 upstream link.
@@ -378,12 +397,13 @@ upstream link.
 | --- | --- | --- |
 | `project_name` | string | Title shown on the docs site. |
 | `repos.<key>.path` | string | Folder to crawl, relative to the config file. The key (`sql`, `powerbi`, …) is just a label; add as many repos as you like. |
-| `repos.<key>.include` | list of globs | Only files matching these are read. |
+| `repos.<key>.include` | list of globs | Only files matching these are read. Folder-scoped globs (`Foo/**/*.sql` — what the wizard and `set-folders` write) make the list an **allowlist of top-level folders**: only those folders are crawled. |
 | `repos.<key>.exclude` | list of globs | Files matching these are skipped (**exclude wins** over include). |
 | `schema_mappings` | list of `{schema, model}` | Hints linking a SQL view schema to the semantic model it feeds, for cases the names don't match. Often unnecessary — if the Power BI partition's schema equals the SQL schema, it matches automatically. |
 | `layers.<bronze\|silver\|gold>.schemas` | list | Schemas assigned to that layer. |
 | `layers.<bronze\|silver\|gold>.paths` | list of globs | File paths assigned to that layer. A node matches the first layer (gold → silver → bronze) hit by schema **or** path. |
-| `ignore_schemas` | list | Schemas dropped entirely. System schemas are always dropped on top of these. |
+| `ignore_schemas` | list | Schemas dropped entirely. System schemas are always dropped on top of these. Wins over `include_schemas` on conflict. |
+| `include_schemas` | list | When non-empty, **only** these schemas are documented (multi-part schemas match on the full string or the final segment; a cross-database *stub* — a referenced-but-never-crawled object — matches only on its full multi-part schema, so selecting a local schema can't pull in another database's same-named schema). Empty = no restriction. The wizard writes the union of the schemas checked in its layer questions. |
 | `branding.logo` | string (path) | Logo image for the HTML site header; relative paths resolve against the config file. Optional. |
 | `branding.favicon` | string (path) | Favicon for the HTML site; relative paths resolve against the config file. Optional. |
 | `branding.primary_color` | string (CSS color) | Header / nav / link color. Hex (`#rgb`/`#rrggbb`/`#rrggbbaa`), `rgb()`/`rgba()`/`hsl()`, or a CSS color name. Defaults to the Cooptimize theme (`#004060`). |
@@ -397,13 +417,27 @@ upstream link.
 
 Patterns are matched against each file's path **relative to its repo**, forward-slashed:
 `**/Foo/**` = anything under a folder named `Foo`; `**/*.sql` = any `.sql` anywhere;
-`SomeDir/**` = everything under `SomeDir`. Two strategies:
+`SomeDir/**` = everything under `SomeDir`. `Foo/**/*.sql` also matches files directly
+under `Foo`.
+
+**The setup wizard (and `set-folders`) writes allowlists.** Picking a top-level folder
+writes file-type-scoped include globs for it — `**/*.sql` becomes `Foo/**/*.sql` — so
+only the picked folders are crawled. A repo whose include list contains such
+folder-scoped globs is in *allowlist mode*; picking the schemas in the layer questions
+additionally writes `include_schemas`, so only those schemas are documented. The
+`definition.pbir` always-include carve-out is disabled in allowlist mode, so report
+metadata can't leak in from an unpicked folder.
+
+**Hand-written configs can use either strategy**, and older denylist configs keep working
+unchanged:
 
 - **Allowlist (cleanest for big repos):** include only real object folders, e.g.
   `include: ["**/Tables/*.sql", "**/Views/*.sql", "**/StoredProcedures/*.sql", "**/Functions/*.sql"]`
   — everything else (deployment scripts, role grants, notebooks) is ignored automatically.
-- **Denylist:** keep `include: ["**/*.sql"]` and drop noise with
-  `exclude: ["**/logging/**", "**/Deployment/**", "**/BACKUP/**"]`.
+- **Denylist (legacy):** keep `include: ["**/*.sql"]` and drop noise with
+  `exclude: ["**/logging/**", "**/Deployment/**", "**/BACKUP/**"]`. Re-running the wizard
+  over such a config starts with every folder unchecked — pick the folders to keep and it
+  converts the repo to the allowlist form.
 
 Use `coop-data-doc scan` (fast, no rendering) as the feedback loop: watch the object count
 and the diagnostics summary, adjust, repeat. **Reports need to be present in PBIR format**
@@ -540,8 +574,8 @@ Beyond the commands above, the CLI exposes a non-interactive surface for agents 
 
 | Command | What it does |
 | --- | --- |
-| `coop-data-doc folders` | list each repo's top-level folders + whether they're documented (JSON) |
-| `coop-data-doc set-folders --repo KEY --skip A,B` | set which top-level folders a repo documents (the non-interactive twin of the wizard's checkbox) |
+| `coop-data-doc folders` | list each repo's top-level folders + whether they're documented (JSON, with a per-repo `mode` of `allowlist`/`legacy`) |
+| `coop-data-doc set-folders --repo KEY --include A,B` | set which top-level folders a repo documents (writes folder-scoped include globs; the non-interactive twin of the wizard's checkbox) |
 | `coop-data-doc lineage OBJECT [--depth N]` | print one object's lineage from the built `graph.json` (JSON) |
 | `coop-data-doc show-config` | print the current config as JSON (the shape `config-set` accepts) |
 | `coop-data-doc config-set --from-json -` | apply a JSON patch to `coop-data-doc.yml` non-interactively |

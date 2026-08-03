@@ -141,6 +141,10 @@ class Config(BaseModel):
     schema_mappings: list[SchemaMapping] = Field(default_factory=list)
     layers: dict[str, LayerRule] = Field(default_factory=dict)
     ignore_schemas: list[str] = Field(default_factory=list)
+    # if non-empty, ONLY these schemas are documented (the wizard writes the
+    # union of the schemas checked in its layer questions); empty = no
+    # restriction. ignore_schemas still wins on conflict.
+    include_schemas: list[str] = Field(default_factory=list)
     branding: Branding = Field(default_factory=Branding)
     output: OutputConfig = Field(default_factory=OutputConfig)
     sql_dialect: str = "tsql"
@@ -321,7 +325,7 @@ repos:
 # information_schema, tempdb, guest, db_*) are always dropped automatically.
 ignore_schemas: {ignore_schemas}
 
-# Optional company branding for the HTML site (logo/favicon paths relative
+{include_schemas_block}# Optional company branding for the HTML site (logo/favicon paths relative
 # to this file; colors as hex). Leave empty for the default theme.
 {branding_block}
 
@@ -343,6 +347,7 @@ def render_config_yaml(
     mappings: list[tuple[str, str]],
     layers: dict[str, dict[str, list[str]]] | None = None,
     ignore_schemas: list[str] | None = None,
+    include_schemas: list[str] | None = None,
     branding: dict[str, str] | None = None,
     sql_include: list[str] | None = None,
     sql_exclude: list[str] | None = None,
@@ -358,7 +363,8 @@ def render_config_yaml(
     Used by both `init` (defaults) and the `setup` wizard (entered/refreshed
     values). All scalars are JSON-quoted, which is valid YAML. ``reviews``
     renders nothing when empty, so configs without review files are
-    byte-identical to before the key existed.
+    byte-identical to before the key existed; ``include_schemas`` likewise
+    renders only when non-empty.
     """
     if mappings:
         lines = ["schema_mappings:"]
@@ -395,6 +401,15 @@ def render_config_yaml(
     else:
         branding_block = "branding: {}"
 
+    if include_schemas:
+        include_schemas_block = (
+            "# Schemas to document. Non-empty = ONLY these schemas appear in the docs\n"
+            "# (empty = every schema not dropped by ignore_schemas above).\n"
+            f"include_schemas: {json.dumps(include_schemas)}\n\n"
+        )
+    else:
+        include_schemas_block = ""
+
     if reviews:
         lines = [
             "# Review-findings JSON files (coop-sql-review / coop-dax-review",
@@ -418,6 +433,7 @@ def render_config_yaml(
         mappings_block=mappings_block,
         layers_block=layers_block,
         ignore_schemas=json.dumps(ignore_schemas or []),
+        include_schemas_block=include_schemas_block,
         branding_block=branding_block,
         output_dir=json.dumps(output_dir),
         site_dir=json.dumps(site_dir),

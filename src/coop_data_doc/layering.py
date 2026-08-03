@@ -43,17 +43,27 @@ _SQL_NODE_TYPES = (
 SYSTEM_SCHEMAS = frozenset({"sys", "information_schema", "tempdb", "guest"})
 
 
-def prune_schemas(graph: LineageGraph, ignore_schemas: list[str]) -> int:
-    """Remove SQL nodes whose schema is a system schema or in the user's
-    ignore list (and any edges touching them). Returns the count dropped.
+def prune_schemas(
+    graph: LineageGraph, ignore_schemas: list[str], include_schemas: list[str] | None = None
+) -> int:
+    """Remove SQL nodes whose schema is a system schema, in the user's ignore
+    list, or — when ``include_schemas`` is non-empty — NOT in the user's
+    include list (and any edges touching them). Returns the count dropped.
 
     System schemas (sys, information_schema, tempdb, guest, and any db_*
     fixed database role) are phantom nodes from procs that query the catalog —
     never real lineage — so they go automatically (the first four live in
     SYSTEM_SCHEMAS; db_* is matched by a startswith check); ignore_schemas drops
-    client-specific noise on top.
+    client-specific noise on top. include_schemas is the opt-in inverse: when
+    non-empty, only the listed schemas survive (ignore_schemas still wins on
+    conflict); empty means no restriction. One tightening for the allowlist:
+    a cross-database STUB (no source_file, multi-part schema like
+    "lh_db.bronze" — a referenced-but-never-crawled object) survives only when
+    its FULL multi-part schema is listed, so selecting the local "bronze"
+    schema can't leak another database's same-named schema into the docs.
     """
     ignored = SYSTEM_SCHEMAS | {s.lower() for s in ignore_schemas}
+    included = {s.lower() for s in include_schemas or []}
 
     def is_ignored(schema: str) -> bool:
         # Cross-db reads carry multi-part schemas ("otherdb.sys",
@@ -65,10 +75,31 @@ def prune_schemas(graph: LineageGraph, ignore_schemas: list[str]) -> int:
         segment = schema.rsplit(".", 1)[-1]
         return schema in ignored or segment in ignored or segment.startswith("db_")
 
+    def is_not_included(schema: str, source_file: str) -> bool:
+        # same matching rule as is_ignored: the full multi-part schema OR its
+        # final segment must be listed for the node to survive the allowlist —
+        # with one tightening for STUB nodes (no source_file). A stub is only
+        # ever a reference target, and a multi-part stub schema denotes ANOTHER
+        # database ("lh_db.bronze.x"): selecting the local schema "bronze"
+        # must not pull that foreign schema into the docs as a definition-less
+        # stub page, so a cross-db stub matches only on its FULL multi-part
+        # schema. A single-part stub (a same-db reference to an uncrawled
+        # object in a selected schema) still matches by segment, and real
+        # parsed nodes (source_file set) keep the full rule — their schemas
+        # are single-part in practice (T-SQL can't create cross-db objects).
+        schema = (schema or "").lower()
+        if schema in included:
+            return False
+        segment = schema.rsplit(".", 1)[-1]
+        return segment not in included or (not source_file and "." in schema)
+
     drop = {
         node_id
         for node_id, node in graph.nodes.items()
-        if node.node_type in _SQL_NODE_TYPES and is_ignored(node.schema_name)
+        if node.node_type in _SQL_NODE_TYPES
+        and (
+            is_ignored(node.schema_name) or (included and is_not_included(node.schema_name, node.source_file))
+        )
     }
     for node_id in drop:
         del graph.nodes[node_id]

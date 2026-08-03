@@ -8,6 +8,7 @@ from click.testing import CliRunner
 from coop_data_doc import folders as F
 from coop_data_doc.cli import cli
 from coop_data_doc.config import Config
+from coop_data_doc.crawler import crawl
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -68,28 +69,77 @@ def test_glob_roundtrip_preserves_custom_and_order():
     assert custom == ["**/data*/**"]  # real wildcard stays a hand-written pattern
 
 
-def test_folder_states(tmp_path: Path):
+def test_folder_states_legacy_mode(tmp_path: Path):
+    # no folder-scoped includes → the legacy absence-of-exclude rule applies
     for name in ("archive", "procs", "views"):
         (tmp_path / name).mkdir()
-    states, custom = F.folder_states(tmp_path, ["**/archive/**", "**/x*/**"])
+    states, custom_excludes, custom_includes = F.folder_states(
+        tmp_path, ["**/archive/**", "**/x*/**"], ["**/*.sql"]
+    )
     assert states == [
         {"name": "archive", "documented": False},
         {"name": "procs", "documented": True},
         {"name": "views", "documented": True},
     ]
-    assert custom == ["**/x*/**"]
+    assert custom_excludes == ["**/x*/**"]
+    assert custom_includes == ["**/*.sql"]  # no folder toggles: every glob is custom
+
+
+def test_folder_states_allowlist_mode(tmp_path: Path):
+    # any folder-scoped include glob switches the repo to allowlist mode: a
+    # folder is documented iff it has scoped globs (excludes are irrelevant)
+    for name in ("archive", "procs", "views"):
+        (tmp_path / name).mkdir()
+    states, custom_excludes, custom_includes = F.folder_states(
+        tmp_path, [], ["procs/**/*.sql", "views/**/*.sql", "**/report.json", "gone/**/*.sql"]
+    )
+    assert states == [
+        {"name": "archive", "documented": False},
+        {"name": "procs", "documented": True},
+        {"name": "views", "documented": True},
+    ]
+    assert custom_excludes == []
+    # global globs and globs scoped to folders not on disk aren't folder toggles
+    assert custom_includes == ["**/report.json", "gone/**/*.sql"]
+
+
+def test_folder_scoped_includes_groups_by_folder():
+    scoped = F.folder_scoped_includes(
+        ["Foo/**/*.sql", "foo bar/**/*.sql", "**/*.sql", "back[[]up]/**/*.sql", "noslash"]
+    )
+    assert scoped == {
+        "Foo": ["Foo/**/*.sql"],
+        "foo bar": ["foo bar/**/*.sql"],
+        "back[up]": ["back[[]up]/**/*.sql"],  # escaped metachars map back
+    }
+
+
+def test_base_patterns_from_includes():
+    assert F.base_patterns_from_includes(["Foo/**/*.sql", "Bar/**/*.sql", "**/report.json"]) == [
+        "**/*.sql",
+        "**/report.json",
+    ]
+    assert F.base_patterns_from_includes([]) == []
+
+
+def test_includes_for_folders_sorted_and_escaped():
+    globs = F.includes_for_folders(["back[up]", "procs"], ["**/*.sql"])
+    assert globs == ["back[[]up]/**/*.sql", "procs/**/*.sql"]
+    # round-trip: the written globs read back as the same folder selection
+    assert sorted(F.folder_scoped_includes(globs)) == ["back[up]", "procs"]
 
 
 # --- commands ---------------------------------------------------------------
 
 
-def test_folders_command_json(tmp_path: Path):
-    _workspace(tmp_path)
+def test_folders_command_json_legacy_mode(tmp_path: Path):
+    _workspace(tmp_path)  # exclude-based config: no folder-scoped includes
     res = _run(["folders"], tmp_path)
     assert res.exit_code == 0, res.output
     data = json.loads(res.output)
     sql = next(r for r in data["repos"] if r["repo"] == "sql")
     assert sql["exists"] is True
+    assert sql["mode"] == "legacy"
     assert {f["name"]: f["documented"] for f in sql["folders"]} == {
         "archive": False,
         "functions": True,
@@ -97,14 +147,37 @@ def test_folders_command_json(tmp_path: Path):
         "tables": True,
         "views": True,
     }
+    assert sql["custom_includes"] == ["**/*.sql"]
 
 
-def test_set_folders_writes_excludes_and_preserves_config(tmp_path: Path):
+def test_folders_command_json_allowlist_mode(tmp_path: Path):
     config = _workspace(tmp_path)
-    res = _run(["set-folders", "--repo", "sql", "--skip", "archive,tables"], tmp_path)
+    res = _run(["set-folders", "--repo", "sql", "--include", "procs,tables"], tmp_path)
+    assert res.exit_code == 0, res.output
+    res = _run(["folders"], tmp_path)
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    sql = next(r for r in data["repos"] if r["repo"] == "sql")
+    assert sql["mode"] == "allowlist"
+    assert sql["include"] == ["procs/**/*.sql", "tables/**/*.sql"]
+    assert {f["name"]: f["documented"] for f in sql["folders"]} == {
+        "archive": False,
+        "functions": False,
+        "procs": True,
+        "tables": True,
+        "views": False,
+    }
+    assert Config.load(config).repos["sql"].include == ["procs/**/*.sql", "tables/**/*.sql"]
+
+
+def test_set_folders_writes_scoped_includes_and_preserves_config(tmp_path: Path):
+    config = _workspace(tmp_path)
+    res = _run(["set-folders", "--repo", "sql", "--include", "procs,views"], tmp_path)
     assert res.exit_code == 0, res.output
     loaded = Config.load(config)
-    assert sorted(loaded.repos["sql"].exclude) == ["**/archive/**", "**/tables/**"]
+    assert loaded.repos["sql"].include == ["procs/**/*.sql", "views/**/*.sql"]
+    # the legacy **/archive/** folder exclude is superseded by the allowlist
+    assert loaded.repos["sql"].exclude == []
     # everything else survives the round-trip
     assert loaded.project_name == "Test Estate"
     assert [m.schema_name for m in loaded.schema_mappings] == ["sales"]
@@ -112,16 +185,33 @@ def test_set_folders_writes_excludes_and_preserves_config(tmp_path: Path):
     assert loaded.repos["powerbi"].include[0] == "**/*.tmdl"  # untouched repo preserved
 
 
-def test_set_folders_empty_skip_documents_everything(tmp_path: Path):
-    config = _workspace(tmp_path)  # starts with archive excluded
-    res = _run(["set-folders", "--repo", "sql", "--skip", ""], tmp_path)
+def test_set_folders_preserves_custom_excludes(tmp_path: Path):
+    config = _workspace(tmp_path)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'exclude: ["**/archive/**"]', 'exclude: ["**/archive/**", "**/x*/**"]'
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    res = _run(["set-folders", "--repo", "sql", "--include", "procs"], tmp_path)
     assert res.exit_code == 0, res.output
-    assert Config.load(config).repos["sql"].exclude == []
+    assert Config.load(config).repos["sql"].exclude == ["**/x*/**"]  # custom kept, folder dropped
+
+
+def test_set_folders_empty_include_documents_nothing(tmp_path: Path):
+    config = _workspace(tmp_path)
+    res = _run(["set-folders", "--repo", "sql", "--include", ""], tmp_path)
+    assert res.exit_code == 0, res.output
+    loaded = Config.load(config)
+    assert loaded.repos["sql"].include == []
+    inventory, _ = crawl(loaded)
+    assert not any(entry.repo_key == "sql" for entry in inventory.entries)
 
 
 def test_set_folders_rejects_unknown_folder(tmp_path: Path):
     _workspace(tmp_path)
-    res = _run(["set-folders", "--repo", "sql", "--skip", "nope"], tmp_path)
+    res = _run(["set-folders", "--repo", "sql", "--include", "nope"], tmp_path)
     assert res.exit_code != 0
     assert "not top-level folders" in res.output
 

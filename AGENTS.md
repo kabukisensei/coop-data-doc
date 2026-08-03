@@ -98,7 +98,44 @@ All commands exit with these codes:
 | `coop-data-doc scan` | Crawl + parse + link only; writes `graph.json` | `--non-interactive`, `--strict`, `--no-parse-cache`, `--jobs N`, `--config` |
 | `coop-data-doc check` | CI gate — exits 1 if stale, 2 if problems | `--lenient`, `--no-parse-cache`, `--reviews PATH` (must match the build's), `--config` |
 | `coop-data-doc folders` | List each repo's top-level folders + documented state (JSON) | `--config` |
-| `coop-data-doc set-folders` | Set which top-level folders a repo documents (non-interactive) | `--repo` (required), `--skip` (comma-separated), `--config` |
+| `coop-data-doc set-folders` | Set which top-level folders a repo documents (non-interactive) | `--repo` (required), `--include` (comma-separated), `--config` |
+
+**Folder selection is an allowlist.** `set-folders --repo sql --include A,B` writes
+file-type-scoped include globs for exactly those folders (`A/**/*.sql`, … — base patterns
+taken from the repo's current include list, falling back to the built-in defaults),
+drops any `**/Name/**` folder excludes the selection supersedes, and preserves
+hand-written (non-folder) excludes. `--include ""` documents nothing for that repo.
+`folders` reports per repo:
+
+```json
+{
+  "repo": "sql",
+  "path": "../sql-repo",
+  "exists": true,
+  "mode": "allowlist",
+  "include": ["procs/**/*.sql", "tables/**/*.sql"],
+  "folders": [{"name": "procs", "documented": true}, {"name": "archive", "documented": false}],
+  "custom_excludes": [],
+  "custom_includes": []
+}
+```
+
+`mode` is `"allowlist"` when the include list contains folder-scoped globs (a folder is
+documented iff it has scoped globs), else `"legacy"` (a folder is documented iff no
+`**/Name/**` exclude matches it). `custom_includes` are include globs that aren't folder
+toggles (global `**/` patterns and globs scoped to folders not on disk).
+
+**Schema allowlist:** the config key `include_schemas` (list of strings, top level) —
+when non-empty, ONLY those schemas are documented; empty = no restriction.
+Matching is case-insensitive on the full multi-part schema or its final segment,
+with one tightening: a cross-database **stub** (no `source_file`, e.g. a
+three-part `[qe_lh].[bronze].t` read target that was never crawled) survives
+only when its FULL multi-part schema (`qe_lh.bronze`) is listed — selecting the
+local `bronze` never documents another database's schema. `ignore_schemas` and
+the always-dropped system schemas (`sys`, `information_schema`, `tempdb`,
+`guest`, `db_*`) still win. The setup wizard writes it as the union of the
+schemas checked in its layer questions, so wizard-produced configs are strictly
+opt-in. `config-set` accepts it like any other key.
 | `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON) | `--depth`, `--config` |
 | `coop-data-doc show-config` | Print the current config as JSON (the `config-set` shape) | `--config` |
 | `coop-data-doc config-set` | Apply a JSON patch to the config, non-interactively | `--from-json` (file or `-`), `--config` |

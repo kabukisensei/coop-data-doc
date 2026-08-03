@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from coop_data_doc.config import Config, LayerRule, RepoConfig
 from coop_data_doc.crawler import FileKind, crawl
 from coop_data_doc.graph import Edge, EdgeType, LineageGraph, Node, NodeType
@@ -201,6 +203,143 @@ def test_prune_full_multipart_schema_in_ignore_list():
     dropped = prune_schemas(g, ["otherdb.audit"])
     assert dropped == 1
     assert set(g.nodes) == {"gold_table:audit.log"}
+
+
+def test_prune_include_schemas_restricts_to_listed():
+    # non-empty include_schemas: ONLY the listed schemas survive
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "mart", "fact_sales")  # included → kept
+    node(g, NodeType.SILVER_TABLE, "stg", "raw")  # not included → dropped
+    node(g, NodeType.VIEW, "common", "v_shared")  # not included → dropped
+    g.add_edge(
+        Edge(
+            source_id="view:common.v_shared", target_id="gold_table:mart.fact_sales", edge_type=EdgeType.READS
+        )
+    )
+    dropped = prune_schemas(g, [], ["mart"])
+    assert dropped == 2
+    assert set(g.nodes) == {"gold_table:mart.fact_sales"}
+    assert all("common" not in e.source_id for e in g.edges)  # edges to dropped nodes go too
+
+
+def test_prune_include_schemas_empty_is_noop():
+    # empty = no restriction (back-compat for hand-written configs)
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "mart", "t")
+    node(g, NodeType.SILVER_TABLE, "stg", "raw")
+    assert prune_schemas(g, [], []) == 0
+    assert prune_schemas(g, []) == 0  # default argument: also no restriction
+    assert len(g.nodes) == 2
+
+
+def test_prune_include_schemas_ignore_wins_on_conflict():
+    # a schema in BOTH lists is dropped — ignore beats include
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "mart", "t")
+    node(g, NodeType.GOLD_TABLE, "common", "c")
+    dropped = prune_schemas(g, ["mart"], ["mart", "common"])
+    assert dropped == 1
+    assert set(g.nodes) == {"gold_table:common.c"}
+
+
+def test_prune_include_schemas_matches_multipart_schemas():
+    # same rule as ignore_schemas for REAL parsed nodes: the full multi-part
+    # schema OR its final segment must be listed for the node to survive
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "otherdb.mart", "t", source_file="x.sql")  # segment listed → kept
+    node(g, NodeType.GOLD_TABLE, "linkedsrv.otherdb.mart", "y", source_file="x.sql")  # full form → kept
+    node(g, NodeType.GOLD_TABLE, "otherdb.stg", "x", source_file="x.sql")  # neither → dropped
+    dropped = prune_schemas(g, [], ["mart", "linkedsrv.otherdb.mart"])
+    assert dropped == 1
+    assert set(g.nodes) == {"gold_table:otherdb.mart.t", "gold_table:linkedsrv.otherdb.mart.y"}
+
+
+def test_prune_include_schemas_drops_crossdb_stub_on_segment_match():
+    # the live-estate leak: a view reads [lh_db].[bronze].t, creating a stub in
+    # ANOTHER database's schema. Selecting the local "bronze" must NOT keep
+    # that definition-less stub (and its edges) in the docs.
+    g = LineageGraph()
+    node(g, NodeType.VIEW, "resource", "v_sales", source_file="v.sql")
+    node(g, NodeType.GOLD_TABLE, "lh_db.bronze", "t")  # cross-db stub (no source_file)
+    g.add_edge(
+        Edge(
+            source_id="view:resource.v_sales", target_id="gold_table:lh_db.bronze.t", edge_type=EdgeType.READS
+        )
+    )
+    dropped = prune_schemas(g, [], ["resource", "bronze"])
+    assert dropped == 1
+    assert set(g.nodes) == {"view:resource.v_sales"}
+    assert g.edges == []  # the reference is simply absent, like ignore_schemas
+
+
+def test_prune_include_schemas_keeps_crossdb_stub_when_full_schema_listed():
+    # a user can include one specific database's schema exactly (mirrors the
+    # ignore_schemas multipart rule)
+    g = LineageGraph()
+    node(g, NodeType.GOLD_TABLE, "lh_db.bronze", "t")  # full multi-part form listed → kept
+    node(g, NodeType.GOLD_TABLE, "otherdb.bronze", "u")  # only the segment matches → dropped
+    dropped = prune_schemas(g, [], ["lh_db.bronze"])
+    assert dropped == 1
+    assert set(g.nodes) == {"gold_table:lh_db.bronze.t"}
+
+
+def test_prune_include_schemas_keeps_same_db_stub():
+    # a same-db reference to an uncrawled object in a SELECTED schema keeps its
+    # stub (single-part schema, final-segment match) — unchanged behavior
+    g = LineageGraph()
+    node(g, NodeType.VIEW, "resource", "v_sales", source_file="v.sql")
+    node(g, NodeType.GOLD_TABLE, "bronze", "not_crawled")  # stub in a selected schema → kept
+    dropped = prune_schemas(g, [], ["resource", "bronze"])
+    assert dropped == 0
+    assert "gold_table:bronze.not_crawled" in g.nodes
+
+
+def _crossdb_read_estate(tmp_path: Path, include_schemas: list[str]) -> Config:
+    """A view doing a three-part cross-warehouse read, with a schema allowlist."""
+    sql = tmp_path / "sql-repo"
+    sql.mkdir()
+    (tmp_path / "pbi-repo").mkdir()
+    (sql / "v.sql").write_text(
+        "CREATE VIEW resource.v_sales AS SELECT a FROM [lh_db].[bronze].erp_projperiodempl;\nGO\n",
+        encoding="utf-8",
+    )
+    return Config(
+        repos={
+            "sql": RepoConfig(path=str(sql), include=["**/*.sql"]),
+            "powerbi": RepoConfig(path=str(tmp_path / "pbi-repo")),
+        },
+        include_schemas=include_schemas,
+    )
+
+
+def test_include_schemas_crossdb_stub_never_reaches_graph(tmp_path):
+    # end-to-end regression for the live-estate leak: with include_schemas set,
+    # the three-part read's target is in a schema the user did NOT select
+    # (lh_db.bronze ≠ the local bronze) — no stub node, no edge, no page
+    from coop_data_doc.cli import run_pipeline
+
+    config = _crossdb_read_estate(tmp_path, ["resource", "bronze"])
+    graph, _, _ = run_pipeline(config, interactive=False)
+    assert set(graph.nodes) == {"view:resource.v_sales"}
+    assert graph.edges == []  # the reference is simply absent
+
+
+def test_include_schemas_empty_keeps_crossdb_stub(tmp_path):
+    # with no allowlist the stub is created exactly as before
+    from coop_data_doc.cli import run_pipeline
+
+    config = _crossdb_read_estate(tmp_path, [])
+    graph, _, _ = run_pipeline(config, interactive=False)
+    assert "silver_table:lh_db.bronze.erp_projperiodempl" in graph.nodes
+    assert any(e.target_id == "silver_table:lh_db.bronze.erp_projperiodempl" for e in graph.edges)
+
+
+def test_prune_include_schemas_leaves_pbi_nodes_alone():
+    g = LineageGraph()
+    node(g, NodeType.PBI_TABLE, "sales", "metrics")  # schema_name == model name
+    dropped = prune_schemas(g, [], ["mart"])
+    assert dropped == 0
+    assert "pbi_table:sales.metrics" in g.nodes
 
 
 def test_layer_path_glob_case_insensitive_all_platforms():

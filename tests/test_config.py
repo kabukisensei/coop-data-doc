@@ -131,3 +131,33 @@ def test_scaffold_refuses_overwrite(tmp_path: Path):
     with pytest.raises(FileExistsError):
         Config.scaffold(target)
     assert target.read_text(encoding="utf-8") == "project_name: keep me\n"
+
+
+def test_include_schemas_render_round_trip(tmp_path: Path):
+    # render_config_yaml emits include_schemas when non-empty (and omits it when
+    # empty); what it writes parses back to the same value
+    from coop_data_doc.config import render_config_yaml
+
+    (tmp_path / "sql-repo").mkdir()
+    (tmp_path / "pbi-repo").mkdir()
+
+    def render(include_schemas):
+        return render_config_yaml(
+            project_name="Estate",
+            sql_path="./sql-repo",
+            pbi_path="./pbi-repo",
+            mappings=[],
+            include_schemas=include_schemas,
+            output_dir="./docs",
+            site_dir="./site",
+        )
+
+    path = write_config(tmp_path, render(["bronze", "silver", "erp_fo"]))
+    config = Config.load(path)
+    assert config.include_schemas == ["bronze", "silver", "erp_fo"]
+    assert 'include_schemas: ["bronze", "silver", "erp_fo"]' in path.read_text(encoding="utf-8")
+
+    path = write_config(tmp_path, render([]))
+    config = Config.load(path)
+    assert config.include_schemas == []  # empty = no restriction
+    assert "include_schemas" not in path.read_text(encoding="utf-8")  # key omitted entirely

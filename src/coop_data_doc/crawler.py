@@ -17,6 +17,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from coop_data_doc.config import Config, ParseWarning
+from coop_data_doc.folders import folder_scoped_includes
 
 MAX_FILE_BYTES = 10 * 1024 * 1024  # files above this are skipped, except .pbix
 
@@ -73,13 +74,18 @@ def _matches(rel_posix: str, patterns: list[str]) -> bool:
     #
     # fnmatch's '*' crosses '/', but '**/*.sql' still requires at least one
     # slash — also try the pattern with a leading '**/' stripped so
-    # top-level files match the way users expect from glob syntax.
+    # top-level files match the way users expect from glob syntax. The same
+    # zero-or-more-dirs expectation applies mid-pattern: 'Foo/**/*.sql' (the
+    # folder-scoped shape the wizard and set-folders write) must also match
+    # files DIRECTLY under Foo, so try collapsing '/**/' to '/' too.
     name = rel_posix.casefold()
     for pattern in patterns:
         folded = pattern.casefold()
         if fnmatch.fnmatchcase(name, folded):
             return True
         if folded.startswith("**/") and fnmatch.fnmatchcase(name, folded[3:]):
+            return True
+        if "/**/" in folded and fnmatch.fnmatchcase(name, folded.replace("/**/", "/")):
             return True
     return False
 
@@ -175,8 +181,11 @@ def crawl(config: Config) -> tuple[FileInventory, list[ParseWarning]]:
                     # definition.pbir is pure report→model metadata (never a
                     # documented object), and configs written before it was in
                     # DEFAULT_PBI_INCLUDE would silently never crawl it — so it
-                    # is always included, subject only to excludes.
-                    always = name == "definition.pbir"
+                    # is always included, subject only to excludes. Exception:
+                    # a repo in allowlist mode (folder-scoped include globs)
+                    # has explicitly chosen its folders, so a definition.pbir
+                    # outside them must NOT leak back in.
+                    always = name == "definition.pbir" and not folder_scoped_includes(repo.include)
                     if (not always and not _matches(rel, repo.include)) or _matches(rel, repo.exclude):
                         continue
                     kind = _classify(rel)

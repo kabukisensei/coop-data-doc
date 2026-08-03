@@ -20,10 +20,19 @@ import click
 import questionary
 
 from coop_data_doc import __version__
-from coop_data_doc.config import Config, ConfigError, ParseWarning, render_config_yaml
+from coop_data_doc.config import (
+    DEFAULT_PBI_INCLUDE,
+    DEFAULT_SQL_INCLUDE,
+    Config,
+    ConfigError,
+    ParseWarning,
+    render_config_yaml,
+)
 from coop_data_doc.folders import (
-    excludes_for_skips,
+    base_patterns_from_includes,
+    folder_scoped_includes,
     folder_states,
+    includes_for_folders,
     split_excludes,
     top_level_folders,
 )
@@ -163,7 +172,7 @@ def build_graph(
     warnings += link_visual_bindings(graph)
     warnings += link_composite_models(graph)
 
-    dropped = prune_schemas(graph, config.ignore_schemas)
+    dropped = prune_schemas(graph, config.ignore_schemas, config.include_schemas)
     if dropped:
         progress.line(f"Dropped {dropped} objects in ignored/system schemas")
         _log.debug("pruned %d nodes in system/ignored schemas", dropped)
@@ -718,6 +727,7 @@ def _render_kwargs_from_config(config: Config) -> dict:
         "mappings": [(m.schema_name, m.model) for m in config.schema_mappings],
         "layers": {k: {"schemas": list(v.schemas), "paths": list(v.paths)} for k, v in config.layers.items()},
         "ignore_schemas": list(config.ignore_schemas),
+        "include_schemas": list(config.include_schemas),
         "branding": branding,
         "sql_include": list(sql.include) if sql else None,
         "sql_exclude": list(sql.exclude) if sql else None,
@@ -743,15 +753,19 @@ def folders(config_path: str | None) -> None:
     for key in sorted(config.repos):
         repo = config.repos[key]
         repo_abs = (config.base_dir / Path(repo.path).expanduser()).resolve()
-        states, custom = folder_states(repo_abs, list(repo.exclude))
+        states, custom_excludes, custom_includes = folder_states(
+            repo_abs, list(repo.exclude), list(repo.include)
+        )
         repos.append(
             {
                 "repo": key,
                 "path": repo.path,
                 "exists": repo_abs.is_dir(),
+                "mode": "allowlist" if folder_scoped_includes(list(repo.include)) else "legacy",
                 "include": list(repo.include),
                 "folders": states,
-                "custom_excludes": custom,
+                "custom_excludes": custom_excludes,
+                "custom_includes": custom_includes,
             }
         )
     click.echo(json.dumps({"repos": repos}, indent=2, sort_keys=True))
@@ -761,17 +775,19 @@ def folders(config_path: str | None) -> None:
 @click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
 @click.option("--repo", required=True, help="Repo key to update: 'sql' or 'powerbi'.")
 @click.option(
-    "--skip",
-    "skip_csv",
+    "--include",
+    "include_csv",
     default="",
-    help="Comma-separated top-level folder names to SKIP; every other folder is documented.",
+    help="Comma-separated top-level folder names to DOCUMENT; every other folder is left out. "
+    "Empty (the default) documents nothing for this repo.",
 )
-def set_folders(config_path: str | None, repo: str, skip_csv: str) -> None:
+def set_folders(config_path: str | None, repo: str, include_csv: str) -> None:
     """Set which top-level folders a repo documents, non-interactively (agent/CI).
 
-    Writes a ``**/Name/**`` exclude for each skipped folder, preserving any hand-
-    written exclude patterns, then re-validates. The non-interactive twin of the
-    setup wizard's folder checkbox.
+    Writes folder-scoped include globs for each selected folder (derived from the
+    repo's current file-type patterns), drops any ``**/Name/**`` folder excludes
+    the selection supersedes, preserves hand-written exclude patterns, then
+    re-validates. The non-interactive twin of the setup wizard's folder checkbox.
     """
     path = Path(config_path) if config_path else Config.find()
     if path is None:
@@ -795,29 +811,34 @@ def set_folders(config_path: str | None, repo: str, skip_csv: str) -> None:
     if not available:
         raise click.ClickException(
             f"'{repo}' path {repo_abs} has no top-level folders on disk — nothing to pick. "
-            "Clone the repo there, or edit the exclude globs by hand."
+            "Clone the repo there, or edit the include globs by hand."
         )
-    skip = {s.strip() for s in skip_csv.split(",") if s.strip()}
-    unknown = sorted(skip - set(available))
+    selected = {s.strip() for s in include_csv.split(",") if s.strip()}
+    unknown = sorted(selected - set(available))
     if unknown:
         raise click.ClickException(
             f"not top-level folders of '{repo}': {', '.join(unknown)} (available: {', '.join(available)})."
         )
 
-    _, custom = split_excludes(available, list(repo_cfg.exclude))
-    new_exclude = excludes_for_skips(available, skip, custom)
+    base_patterns = base_patterns_from_includes(list(repo_cfg.include)) or (
+        DEFAULT_SQL_INCLUDE if repo == "sql" else DEFAULT_PBI_INCLUDE
+    )
+    new_include = includes_for_folders(sorted(selected), base_patterns)
+    # folder excludes the allowlist supersedes are dropped; hand-written
+    # (non-folder) excludes are preserved
+    _, custom_excludes = split_excludes(available, list(repo_cfg.exclude))
     kwargs = _render_kwargs_from_config(config)
-    kwargs["sql_exclude" if repo == "sql" else "pbi_exclude"] = new_exclude
+    kwargs["sql_include" if repo == "sql" else "pbi_include"] = new_include
+    kwargs["sql_exclude" if repo == "sql" else "pbi_exclude"] = custom_excludes
     rendered = render_config_yaml(**kwargs)
     try:
         path.write_text(rendered, encoding="utf-8", newline="\n")
     except OSError as exc:
         raise click.ClickException(f"could not write {path}: {exc}") from exc
     Config.load(path)  # re-validate what we wrote
-    documented = [f for f in available if f not in skip]
     click.echo(
-        f"{repo}: documenting {len(documented)} folder(s), skipping {len(skip)} "
-        f"({', '.join(sorted(skip)) or 'none'}). Wrote {path}."
+        f"{repo}: documenting {len(selected)} folder(s) "
+        f"({', '.join(sorted(selected)) or 'none'}). Wrote {path}."
     )
 
 
@@ -985,6 +1006,7 @@ _DEFAULT_CONFIG_DICT = {
     "layers": {},
     "schema_mappings": [],
     "ignore_schemas": [],
+    "include_schemas": [],
     "branding": {},
     "sql_dialect": "tsql",
     "reviews": [],
@@ -1000,6 +1022,7 @@ def _default_render_kwargs() -> dict:
         "mappings": [],
         "layers": {},
         "ignore_schemas": [],
+        "include_schemas": [],
         "branding": {},
         "sql_include": None,
         "sql_exclude": None,
@@ -1035,6 +1058,7 @@ def _config_to_dict(config: Config) -> dict:
         "layers": {k: {"schemas": list(v.schemas), "paths": list(v.paths)} for k, v in config.layers.items()},
         "schema_mappings": [{"schema": m.schema_name, "model": m.model} for m in config.schema_mappings],
         "ignore_schemas": list(config.ignore_schemas),
+        "include_schemas": list(config.include_schemas),
         "branding": branding,
         "sql_dialect": config.sql_dialect,
         "reviews": list(config.reviews),
@@ -1080,6 +1104,8 @@ def _apply_config_patch(kwargs: dict, patch: dict) -> None:
         kwargs["mappings"] = [(m["schema"], m["model"]) for m in patch["schema_mappings"]]
     if "ignore_schemas" in patch:
         kwargs["ignore_schemas"] = list(patch["ignore_schemas"])
+    if "include_schemas" in patch:
+        kwargs["include_schemas"] = list(patch["include_schemas"])
     if "branding" in patch:
         kwargs["branding"] = dict(patch["branding"])
     if "sql_dialect" in patch:

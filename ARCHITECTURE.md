@@ -23,7 +23,8 @@ coop-data-doc.yml ──► [crawler] ──► FileInventory (classified files)
              ▼                             ▼
    resolve_stub_references()      link_visual_bindings()
              └──────────────┬───────────────┘
-                 prune_schemas() — drop system/ignored schemas
+                 prune_schemas() — drop system/ignored schemas (+ any schema
+                                   not in a non-empty include_schemas)
                  assign_layers() — bronze/silver/gold (rules + heuristic)
                             │
                      [linker (M4)]
@@ -112,7 +113,9 @@ ever read → silver source; one created here → gold). `display_name` carries
 the original-case name for rendering while ids stay normalized.
 `prune_schemas` first drops system schemas (`sys`/`information_schema`/
 `tempdb`/`guest`/`db_*`) and any `ignore_schemas`, which would otherwise appear
-as phantom nodes from catalog references.
+as phantom nodes from catalog references. A non-empty `include_schemas` makes
+pruning opt-in: only the listed schemas survive (`ignore_schemas` still wins on
+conflict).
 
 **Name gaps are a first-class problem.** View schemas and semantic-model
 names are similar but not identical (e.g. schema `sales` feeds the
@@ -183,12 +186,12 @@ re-rendering for the same reason.
 ```
 src/coop_data_doc/
 ├── cli.py            entrypoints + run_pipeline (the orchestration) + interactive menu
-├── config.py         coop-data-doc.yml model (repos/layers/ignore_schemas) + ParseWarning
+├── config.py         coop-data-doc.yml model (repos/layers/ignore+include_schemas) + ParseWarning
 ├── crawler.py        repo walk + FileKind classification
-├── folders.py        top-level folder selection backing the `folders`/`set-folders` commands
+├── folders.py        top-level folder allowlist backing the `folders`/`set-folders` commands
 ├── graph/            model.py (Node/Edge/LineageGraph, display_name), serialize.py
 ├── parsers/          sql_common/sql_objects/sql_procs, tmdl/bim/mcode/dax/pbir/pbix
-├── layering.py       medallion layer assignment + system/ignored-schema pruning
+├── layering.py       medallion layer assignment + system/ignored/include-schema pruning
 ├── linker/           resolver.py (ladder), cache.py, interactive.py
 ├── reviews.py        coop-*-review JSON loading + render-time findings join (issue #38)
 ├── diagnostics.py    severity-classified warnings → console / JSON / HTML page
