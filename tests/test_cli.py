@@ -732,7 +732,7 @@ def test_interactive_menu_setup_from_subdir_edits_discovered_config(tmp_path: Pa
 
     captured = {}
 
-    def fake_run_setup(path):
+    def fake_run_setup(path, io=None):
         captured["path"] = path
 
     monkeypatch.setattr(cli_module, "questionary", FakeQuestionary)
@@ -811,7 +811,7 @@ def test_setup_build_now_prints_first_run_tour(tmp_path: Path, monkeypatch):
     from coop_data_doc.config import Config
 
     setup_workspace(tmp_path)
-    monkeypatch.setattr(wizard_module, "run_setup", lambda p: Config.load(Path(p)))
+    monkeypatch.setattr(wizard_module, "run_setup", lambda p, io=None: Config.load(Path(p)))
     monkeypatch.setattr(cli_module, "questionary", _fake_confirm_questionary(True))
     _fake_site_builder(cli_module, monkeypatch)
     result = run(["setup"], tmp_path)
@@ -830,7 +830,7 @@ def test_setup_build_later_prints_no_tour(tmp_path: Path, monkeypatch):
     from coop_data_doc.config import Config
 
     setup_workspace(tmp_path)
-    monkeypatch.setattr(wizard_module, "run_setup", lambda p: Config.load(Path(p)))
+    monkeypatch.setattr(wizard_module, "run_setup", lambda p, io=None: Config.load(Path(p)))
     monkeypatch.setattr(cli_module, "questionary", _fake_confirm_questionary(False))
     result = run(["setup"], tmp_path)
     assert result.exit_code == 0, result.output

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import questionary as _questionary
 
-from coop_data_doc import wizard
+from coop_data_doc import wizard, wizard_io
 from coop_data_doc.config import Config, render_config_yaml
 
 
@@ -90,7 +90,7 @@ def test_fresh_setup_with_layers(tmp_path: Path, monkeypatch):
         "Gold layer — folder": "**/dim/**, **/fact/**",
     }
     fake = RoutedQuestionary(default_router(answers))
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config_path = tmp_path / "coop-data-doc.yml"
 
     config = wizard.run_setup(config_path)
@@ -120,7 +120,7 @@ def test_folder_layering_skipped_by_default(tmp_path: Path, monkeypatch):
         "HTML site": "./site",
         "Gold layer — schemas": "mart, common, silver",
     }
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(default_router(answers)))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert config.layers["gold"].schemas == ["mart", "common", "silver"]
@@ -148,7 +148,7 @@ def test_wizard_reprompts_when_site_dir_nested(tmp_path: Path, monkeypatch):
         return kwargs.get("default", "")
 
     fake = RoutedQuestionary(router)
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert config.site_dir() == (tmp_path / "docs-site").resolve()
@@ -175,7 +175,7 @@ def test_wizard_scopes_to_selected_semantic_models(tmp_path: Path, monkeypatch):
         "Gold layer — schemas": "mart",
     }
     fake = RoutedQuestionary(default_router(answers))
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     inc = config.repos["powerbi"].include
@@ -212,7 +212,7 @@ def test_wizard_scoped_config_documents_pbix_only_report(tmp_path: Path, monkeyp
         "HTML site": "./site",
         "Semantic models to include": ["Sales.SemanticModel"],
     }
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(default_router(answers)))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert "Sales.SemanticModel/**/*.pbix" in config.repos["powerbi"].include  # wizard scoped the pbix in
@@ -272,7 +272,7 @@ def test_wizard_rerun_preserves_pbix_glob_and_prechecks_models(tmp_path: Path, m
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(config_path)
     assert config is not None
     # the global pbix glob is re-scoped to the picked folders (both were checked)
@@ -302,7 +302,7 @@ def test_wizard_pbi_folder_checkbox_scopes_only_reports_when_models_found(tmp_pa
         "Power BI — pick the folders": ["Documentation"],  # reports live here, not beside the model
     }
     fake = RoutedQuestionary(default_router(answers))
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     # the PBI folder checkbox WAS shown (as the report-scope question)
@@ -345,7 +345,7 @@ def test_wizard_preserves_custom_pbi_excludes_when_models_found(tmp_path: Path, 
         "HTML site": "./site",
         "Semantic models to include": ["Sales.SemanticModel"],
     }
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(default_router(answers)))
     config = wizard.run_setup(config_path)
     assert config is not None
     assert config.repos["powerbi"].exclude == ["**/BACKUP/**"]  # custom exclude preserved
@@ -378,7 +378,7 @@ def test_wizard_reprompts_when_no_model_selected(tmp_path: Path, monkeypatch):
         return kwargs.get("default", "")
 
     fake = RoutedQuestionary(router)
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     # the model picker was shown twice: the empty selection re-prompted
@@ -433,7 +433,7 @@ def test_wizard_autosuggests_schema_mapping_from_dry_run(tmp_path: Path, monkeyp
             return [c.value for c in kwargs.get("choices", [])]
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     rules = {(m.schema_name, m.model) for m in config.schema_mappings}
@@ -497,7 +497,7 @@ def test_wizard_dry_run_leaves_lineage_cache_untouched(tmp_path: Path, monkeypat
             return [c.value for c in kwargs.get("choices", [])]
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert cache_file.read_bytes() == before
@@ -514,7 +514,7 @@ def test_skip_bronze_and_silver(tmp_path: Path, monkeypatch):
         "Gold layer — schemas": "mart",
     }
     fake = RoutedQuestionary(default_router(answers))
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config_path = tmp_path / "coop-data-doc.yml"
 
     config = wizard.run_setup(config_path)
@@ -535,11 +535,11 @@ def test_rerun_prefills_layers(tmp_path: Path, monkeypatch):
         "Bronze layer — schemas": "erp_orders",
         "Gold layer — schemas": "mart",
     }
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(default_router(answers)))
     assert wizard.run_setup(config_path) is not None
 
     second = RoutedQuestionary(default_router(answers))
-    monkeypatch.setattr(wizard, "questionary", second)
+    monkeypatch.setattr(wizard_io, "questionary", second)
     wizard.run_setup(config_path)
     defaults = {msg: kw.get("default") for _, msg, kw in second.calls}
     bronze_default = next(v for m, v in defaults.items() if "Bronze layer — schemas" in m)
@@ -570,7 +570,7 @@ def test_rerun_preserves_reviews(tmp_path: Path, monkeypatch):
         "HTML site": "./site",
         "Gold layer — schemas": "mart",
     }
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(default_router(answers)))
     config = wizard.run_setup(config_path)
     assert config is not None
     assert config.reviews == ["reviews/sql.json", "reviews/dax.json"]
@@ -589,7 +589,7 @@ def test_fresh_setup_emits_no_reviews_key(tmp_path: Path, monkeypatch):
         "HTML site": "./site",
         "Gold layer — schemas": "mart",
     }
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(default_router(answers)))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(default_router(answers)))
     config_path = tmp_path / "coop-data-doc.yml"
     config = wizard.run_setup(config_path)
     assert config is not None
@@ -637,7 +637,7 @@ def test_folder_checkbox_checked_become_include_globs(tmp_path: Path, monkeypatc
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert config.repos["sql"].include == ["procs/**/*.sql", "tables/**/*.sql"]
@@ -673,7 +673,7 @@ def test_folder_checkbox_first_run_nothing_prechecked(tmp_path: Path, monkeypatc
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert all(not c.checked for c in captured["sql_choices"])  # opt-in: nothing pre-checked
@@ -707,7 +707,7 @@ def test_folder_checkbox_empty_selection_rejected(tmp_path: Path, monkeypatch):
         return kwargs.get("default", "")
 
     fake = RoutedQuestionary(router)
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     # the SQL folder checkbox was shown twice: the empty selection re-prompted
@@ -755,7 +755,7 @@ def test_folder_checkbox_rerun_prefills_from_scoped_includes(tmp_path: Path, mon
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(config_path)
     assert config is not None
     # procs/tables came in pre-checked; archive unchecked
@@ -807,7 +807,7 @@ def test_folder_checkbox_legacy_excludes_read_as_unchecked(tmp_path: Path, monke
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(config_path)
     assert config is not None
     assert all(not c.checked for c in captured["sql_choices"])  # legacy config: nothing pre-checked
@@ -841,7 +841,7 @@ def test_folder_include_falls_back_to_text_when_repo_absent(tmp_path: Path, monk
         return kwargs.get("default", "")
 
     fake = RoutedQuestionary(router)
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config_path = tmp_path / "coop-data-doc.yml"
     config = wizard.run_setup(config_path)
     assert config is None  # saved but not runnable (repo missing) — still wrote the file
@@ -894,7 +894,7 @@ def test_folder_checkbox_escapes_metachar_names_so_crawler_includes_correctly(tm
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert config.repos["sql"].include == ["back[[]up]/**/*.sql"]  # escaped, not raw
@@ -942,7 +942,7 @@ def test_folder_checkbox_rerun_preserves_nested_custom_glob(tmp_path: Path, monk
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(config_path)
     assert config is not None
     # **/a/b/** kept verbatim; procs still the only documented folder
@@ -985,7 +985,7 @@ def test_folder_checkbox_unchecking_drops_its_scoped_globs(tmp_path: Path, monke
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(config_path)
     assert config is not None
     assert config.repos["sql"].include == ["procs/**/*.sql"]  # tables unchecked → globs dropped
@@ -1038,7 +1038,7 @@ def test_layer_checkboxes_from_scanned_schemas(tmp_path: Path, monkeypatch):
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     # checkbox picks land in the config exactly like typed answers did
@@ -1084,7 +1084,7 @@ def test_layer_checkbox_manual_escape_hatch(tmp_path: Path, monkeypatch):
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert config.layers["gold"].schemas == ["mart", "future_gold"]
@@ -1121,7 +1121,7 @@ def test_layer_checkbox_no_layer_catchall_includes_without_layer(tmp_path: Path,
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     assert config.layers["gold"].schemas == ["mart"]
@@ -1157,7 +1157,7 @@ def test_layer_checkbox_empty_total_selection_rejected(tmp_path: Path, monkeypat
         return kwargs.get("default", "")
 
     fake = RoutedQuestionary(router)
-    monkeypatch.setattr(wizard, "questionary", fake)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
     config = wizard.run_setup(tmp_path / "coop-data-doc.yml")
     assert config is not None
     # the gold layer checkbox was shown twice: the empty total re-prompted
@@ -1214,7 +1214,7 @@ def test_layer_checkbox_rerun_prechecks_saved_schemas(tmp_path: Path, monkeypatc
             return False
         return kwargs.get("default", "")
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config = wizard.run_setup(config_path)
     assert config is not None
     checked = {c.value: c.checked for c in captured["gold"] if c.value != "__manual__"}
@@ -1235,7 +1235,7 @@ def test_ctrl_c_writes_nothing(tmp_path: Path, monkeypatch):
             return None  # user hits Ctrl-C at the first prompt
         return ""
 
-    monkeypatch.setattr(wizard, "questionary", RoutedQuestionary(router))
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
     config_path = tmp_path / "coop-data-doc.yml"
     with pytest.raises(KeyboardInterrupt):
         wizard.run_setup(config_path)

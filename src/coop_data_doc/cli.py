@@ -602,24 +602,37 @@ def status(ctx: click.Context, config_path: str | None) -> None:
 
 @cli.command()
 @click.argument("path", default=DEFAULT_CONFIG)
+@click.option(
+    "--transport",
+    type=click.Choice(["terminal", "jsonl"], case_sensitive=False),
+    default="terminal",
+    help="How to interact with the wizard: terminal (questionary) or jsonl (one prompt per line).",
+)
 @click.pass_context
-def setup(ctx: click.Context, path: str) -> None:
+def setup(ctx: click.Context, path: str, transport: str) -> None:
     """Interactively create or update coop-data-doc.yml.
 
     Prompts for every value, prefilled from the existing config when present,
     then saves and re-validates. Ctrl-C before the end writes nothing.
     """
     from coop_data_doc.wizard import run_setup
+    from coop_data_doc.wizard_io import JsonlWizardIO, QuestionaryWizardIO
+
+    transport = transport.lower()
+    if transport == "jsonl":
+        io = JsonlWizardIO(sys.stdin, sys.stdout)
+    else:
+        io = QuestionaryWizardIO()
 
     try:
-        config = run_setup(Path(path))
+        config = run_setup(Path(path), io=io)
     except KeyboardInterrupt:
         click.echo("\nSetup cancelled — nothing was written.", err=True)
         sys.exit(130)
     except Exception as exc:
         from coop_data_doc.linker.interactive import _is_no_terminal_error
 
-        if not _is_no_terminal_error(exc):
+        if transport == "jsonl" or not _is_no_terminal_error(exc):
             raise
         click.echo(
             "setup needs an interactive terminal (no console available here). Run "
@@ -630,12 +643,22 @@ def setup(ctx: click.Context, path: str) -> None:
         sys.exit(1)
     build_cmd = "coop-data-doc build" if path == DEFAULT_CONFIG else f"coop-data-doc build --config {path}"
     if config is None:
-        click.echo(f"Saved {path}. Fix the noted problem, then run `{build_cmd}`.")
+        if transport == "jsonl":
+            io.notice(f"Saved {path}. Fix the noted problem, then run `{build_cmd}`.")
+        else:
+            click.echo(f"Saved {path}. Fix the noted problem, then run `{build_cmd}`.")
         return
-    click.echo(
+    saved = (
         f"Saved {path} — project '{config.project_name}', "
         f"{len(config.repos)} repos, {len(config.schema_mappings)} schema mapping(s)."
     )
+    if transport == "jsonl":
+        # JSONL stdout must stay line-delimited JSON — the summary goes out as a
+        # notice event, never raw text, or the bridge's parser would choke.
+        io.notice(saved)
+        io.notice("Setup complete.")
+        return
+    click.echo(saved)
     # offer to build right away; either way show the command to run it later
     try:
         build_now = questionary.confirm("Build the docs now?", default=True, auto_enter=False).ask()

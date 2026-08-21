@@ -12,11 +12,9 @@ everything else in the codebase stays pure.
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import questionary
 import yaml
 
 if TYPE_CHECKING:  # annotation-only; runtime import stays lazy inside the function
@@ -43,37 +41,25 @@ from coop_data_doc.folders import (
 from coop_data_doc.folders import (
     top_level_folders as _top_level_folders,
 )
+from coop_data_doc.wizard_io import Choice as WizardChoice
+from coop_data_doc.wizard_io import WizardIO
 
 
 def _sibling_site(output_dir: str) -> str:
-    """A sensible HTML-site default that sits NEXT TO the markdown dir, never
+    """A sensible HTML-site default that sits NEXT to the markdown dir, never
     inside it (mkdocs refuses a site_dir nested in docs_dir)."""
     trimmed = output_dir.rstrip("/\\") or "./data-docs"
     return f"{trimmed}-site"
 
 
-def _ask(prompt) -> object:
-    """Run a questionary prompt; Ctrl-C/EOF becomes KeyboardInterrupt.
-
-    questionary returns None on EOF and may also raise; normalize both to
-    KeyboardInterrupt so the CLI shows the correct 'cancelled' message.
-    """
-    try:
-        answer = prompt.ask()
-    except EOFError as exc:
-        raise KeyboardInterrupt from exc
-    if answer is None:
-        raise KeyboardInterrupt
-    return answer
-
-
-def _ask_csv(message: str, default: list[str]) -> list[str]:
+def _ask_csv(io: WizardIO, message: str, default: list[str]) -> list[str]:
     """Prompt for a comma-separated list; blank returns []."""
-    raw = str(_ask(questionary.text(message, default=", ".join(default)))).strip()
+    raw = io.text("csv", message, default=", ".join(default)).strip()
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def _ask_folders_to_document(
+    io: WizardIO,
     repo_label: str,
     repo_rel_path: str,
     base_dir: Path,
@@ -97,46 +83,43 @@ def _ask_folders_to_document(
     repo_abs = (base_dir / Path(repo_rel_path).expanduser()).resolve()
     folders = _top_level_folders(repo_abs)
     if not folders:
-        return _ask_csv(csv_message, existing_include or base_patterns)
+        return _ask_csv(io, csv_message, existing_include or base_patterns)
 
     # re-run prefill: only folders already scoped in the include list are
     # checked — first runs (and legacy denylist configs) start fully unchecked
     prechecked = folder_scoped_includes(existing_include or [])
-    choices = [questionary.Choice(title=name, value=name, checked=name in prechecked) for name in folders]
+    choices = [WizardChoice(label=name, value=name, checked=name in prechecked) for name in folders]
     while True:
-        selected = _ask(
-            questionary.checkbox(
-                f"{repo_label} — pick the folders to document "
-                "(nothing is checked to start; SPACE checks a folder, ENTER confirms):",
-                choices=choices,
-            )
+        selected = io.checkbox(
+            f"{repo_label}_folders",
+            f"{repo_label} — pick the folders to document "
+            "(nothing is checked to start; SPACE checks a folder, ENTER confirms):",
+            choices,
         )
         if selected:
             return includes_for_folders(list(selected), base_patterns)
-        print("  Select at least one folder (or press Ctrl-C to cancel).", file=sys.stderr)
+        io.notice("  Select at least one folder (or press Ctrl-C to cancel).")
 
 
-def _ask_repo_path(label: str, default: str, base_dir: Path) -> str:
+def _ask_repo_path(io: WizardIO, label: str, default: str, base_dir: Path) -> str:
     """Prompt for a repo path until it exists (or the user opts to keep it)."""
     while True:
-        raw = str(_ask(questionary.path(f"{label}:", default=default, only_directories=True))).strip()
+        raw = io.path(f"{label}_path", f"{label}:", default)
         if not raw:
             continue
         resolved = (base_dir / Path(raw).expanduser()).resolve()
         if resolved.is_dir():
             return raw
-        keep = _ask(
-            questionary.confirm(
-                f"'{resolved}' doesn't exist (yet). Use it anyway?",
-                default=False,
-                auto_enter=False,
-            )
+        keep = io.confirm(
+            f"{label}_missing",
+            f"'{resolved}' doesn't exist (yet). Use it anyway?",
+            default=False,
         )
         if keep:
             return raw
 
 
-def _existing_config(config_path: Path) -> Config | None:
+def _existing_config(config_path: Path, io: WizardIO) -> Config | None:
     """Previous config for prefilling, loaded leniently.
 
     Strict loading fails when a repo path doesn't exist — which is exactly
@@ -153,14 +136,12 @@ def _existing_config(config_path: Path) -> Config | None:
             data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             lenient = Config.model_validate(data)
         except Exception:  # noqa: BLE001 — an unreadable existing config means "start fresh"
-            print(
+            io.notice(
                 f"note: existing config could not be read ({exc}); starting fresh",
-                file=sys.stderr,
             )
             return None
-        print(
+        io.notice(
             f"note: existing config isn't runnable yet ({exc}) — your saved values are prefilled anyway",
-            file=sys.stderr,
         )
         return lenient
 
@@ -216,7 +197,9 @@ def _previously_selected_models(includes: list[str] | None) -> set[str]:
     return found
 
 
-def _ask_semantic_models(pbi_abs: Path, existing_includes: list[str] | None) -> list[str] | None:
+def _ask_semantic_models(
+    io: WizardIO, pbi_abs: Path, existing_includes: list[str] | None
+) -> list[str] | None:
     """Let the user pick which ``.SemanticModel`` folders to document. Returns the
     selected folder names, or None when none are found on disk (the repo isn't
     cloned yet, or it has no TMDL models) so the caller falls back to manual
@@ -224,32 +207,29 @@ def _ask_semantic_models(pbi_abs: Path, existing_includes: list[str] | None) -> 
     found = _discover_semantic_models(pbi_abs)
     if not found:
         return None
-    print(
+    io.notice(
         f"\nFound {len(found)} semantic model folder(s) in the Power BI repo. Pick which to\n"
         "document — only the selected *.SemanticModel folders are crawled (reports and\n"
         ".pbix files inside the folders you pick next are included; .pbip / other loose\n"
-        "files are left out).",
-        file=sys.stderr,
+        "files are left out)."
     )
     prev = _previously_selected_models(existing_includes)
     while True:
-        choices = [questionary.Choice(name, checked=(name in prev) if prev else True) for name in found]
-        selected = _ask(
-            questionary.checkbox(
-                "Semantic models to include (Space toggles, Enter confirms):",
-                choices=choices,
-            )
+        choices = [
+            WizardChoice(label=name, value=name, checked=(name in prev) if prev else True) for name in found
+        ]
+        selected = io.checkbox(
+            "semantic_models",
+            "Semantic models to include (Space toggles, Enter confirms):",
+            choices,
         )
         if selected:
             return list(selected)
-        # An empty selection silently meaning "document everything" is
-        # surprising (the opposite of what unchecking implies) — re-ask instead.
-        # _ask still raises KeyboardInterrupt on Ctrl-C, so this stays escapable.
-        print("  Select at least one semantic model (or press Ctrl-C to cancel).", file=sys.stderr)
+        io.notice("  Select at least one semantic model (or press Ctrl-C to cancel).")
 
 
-def _ask_manual_schema(default: str) -> str | None:
-    raw = str(_ask(questionary.text("SQL schema this model reads from:", default=default))).strip()
+def _ask_manual_schema(io: WizardIO, default: str) -> str | None:
+    raw = io.text("manual_schema", "SQL schema this model reads from:", default)
     return raw or None
 
 
@@ -291,6 +271,7 @@ def _candidate_config(
 
 def _scan_estate(
     *,
+    io: WizardIO,
     base_dir: Path,
     project_name: str,
     sql_path: str,
@@ -320,7 +301,7 @@ def _scan_estate(
     from coop_data_doc.progress import Progress, should_enable
 
     logging.getLogger("sqlglot").setLevel(logging.ERROR)  # the dry-run shouldn't spam parse notes
-    print("\nScanning your repos (read-only, a few seconds)…", file=sys.stderr)
+    io.notice("\nScanning your repos (read-only, a few seconds)…")
     config = _candidate_config(
         base_dir=base_dir,
         project_name=project_name,
@@ -338,7 +319,7 @@ def _scan_estate(
     try:
         parsed, _ = build_graph(config, progress=Progress(should_enable(quiet=False)))
     except Exception as exc:  # noqa: BLE001 — a failed dry-run degrades to typed prompts
-        print(f"  note: could not scan the repos ({exc}); falling back to typed prompts", file=sys.stderr)
+        io.notice(f"  note: could not scan the repos ({exc}); falling back to typed prompts")
         return None
     return parsed
 
@@ -368,6 +349,7 @@ def _sql_schemas(parsed: LineageGraph | None) -> list[str]:
 
 def _autosuggest_mappings(
     *,
+    io: WizardIO,
     base_dir: Path,
     project_name: str,
     sql_path: str,
@@ -429,10 +411,7 @@ def _autosuggest_mappings(
             ignore_schemas=ignore_schemas,
         )
 
-    print(
-        "\nConnecting Power BI tables to their SQL sources (read-only, a few seconds)…",
-        file=sys.stderr,
-    )
+    io.notice("\nConnecting Power BI tables to their SQL sources (read-only, a few seconds)…")
     # The estate was parsed BEFORE the layer/include answers existed (that scan
     # feeds them) — apply both post-passes to a copy now for parity with a real
     # build (build_graph runs prune_schemas then assign_layers in this order).
@@ -466,15 +445,14 @@ def _autosuggest_mappings(
                 by_model.setdefault(node.schema_name, []).append(normalize_identifier(obj))
 
     linked = sum(result.methods.get(m, 0) for m in ("exact", "config_rule", "cache", "fuzzy"))
-    print(f"  ✓ {linked} Power BI table(s) linked to SQL automatically.", file=sys.stderr)
+    io.notice(f"  ✓ {linked} Power BI table(s) linked to SQL automatically.")
     if not by_model:
-        print("  Nothing else needs a schema mapping.", file=sys.stderr)
+        io.notice("  Nothing else needs a schema mapping.")
         return list(mappings)
 
     pending = sum(len(set(v)) for v in by_model.values())
-    print(
-        f"  {pending} table(s) in {len(by_model)} model(s) didn't match a SQL object — let's connect them:",
-        file=sys.stderr,
+    io.notice(
+        f"  {pending} table(s) in {len(by_model)} model(s) didn't match a SQL object — let's connect them:"
     )
 
     def candidates(objects: list[str]) -> list[tuple[str, int]]:
@@ -490,10 +468,9 @@ def _autosuggest_mappings(
         while remaining:
             ranked = candidates(remaining)
             if not ranked:
-                print(
+                io.notice(
                     f"  • {label}: {len(remaining)} table(s) match no SQL object by name "
-                    "— likely external or renamed; left unresolved.",
-                    file=sys.stderr,
+                    "— likely external or renamed; left unresolved."
                 )
                 break
             total = len(remaining)
@@ -501,34 +478,28 @@ def _autosuggest_mappings(
             single = len(ranked) == 1 or ranked[0][1] > ranked[1][1]
             chosen: str | None
             if single:
-                if _ask(
-                    questionary.confirm(
-                        f"Model '{label}' has {total} unresolved table(s); their names live in "
-                        f"SQL schema '{top_schema}'. Map {label} → {top_schema}?",
-                        default=True,
-                        auto_enter=False,
-                    )
+                if io.confirm(
+                    f"map_{label}_to_{top_schema}",
+                    f"Model '{label}' has {total} unresolved table(s); their names live in "
+                    f"SQL schema '{top_schema}'. Map {label} → {top_schema}?",
+                    default=True,
                 ):
                     chosen = top_schema
                 else:
-                    chosen = _ask_manual_schema(top_schema)
+                    chosen = _ask_manual_schema(io, top_schema)
             else:
-                options = [questionary.Choice(f"{s} — covers {c}/{total}", value=s) for s, c in ranked]
-                options.append(questionary.Choice("Type a schema name myself", value="__manual__"))
-                options.append(questionary.Choice("Skip this model", value="__skip__"))
-                picked = str(
-                    _ask(
-                        questionary.select(
-                            f"Model '{label}' has {total} unresolved tables across schemas — "
-                            "pick which to map:",
-                            choices=options,
-                        )
-                    )
+                options = [WizardChoice(label=f"{s} — covers {c}/{total}", value=s) for s, c in ranked]
+                options.append(WizardChoice(label="Type a schema name myself", value="__manual__"))
+                options.append(WizardChoice(label="Skip this model", value="__skip__"))
+                picked = io.select(
+                    f"map_{label}",
+                    f"Model '{label}' has {total} unresolved tables across schemas — pick which to map:",
+                    options,
                 )
                 chosen = (
                     None
                     if picked == "__skip__"
-                    else _ask_manual_schema(top_schema)
+                    else _ask_manual_schema(io, top_schema)
                     if picked == "__manual__"
                     else picked
                 )
@@ -540,10 +511,9 @@ def _autosuggest_mappings(
                 # tables makes no progress: re-prompting would loop forever and
                 # appending it would pollute the config with a bogus mapping.
                 # Warn and stop rather than spin.
-                print(
+                io.notice(
                     f"  • {label}: schema '{chosen}' covers none of the remaining "
-                    f"{len(remaining)} table(s); left unresolved.",
-                    file=sys.stderr,
+                    f"{len(remaining)} table(s); left unresolved."
                 )
                 break
             mappings.append((chosen, label))
@@ -551,16 +521,15 @@ def _autosuggest_mappings(
 
     # verify re-scan: re-link (no re-parse) with the new mappings so the user
     # knows they took — reuses the graph parsed once at the top.
-    print("\n  Re-checking with your mappings…", file=sys.stderr)
+    io.notice("\n  Re-checking with your mappings…")
     _, verified = resolve(mappings)
     left = len(verified.unresolved)
     if left == 0:
-        print("  ✓ All Power BI tables now link to a SQL object.", file=sys.stderr)
+        io.notice("  ✓ All Power BI tables now link to a SQL object.")
     else:
-        print(
+        io.notice(
             f"  {left} table(s) still unresolved (external/renamed, or no schema rule fits) — "
-            "map them per-table on build, or mark them external.",
-            file=sys.stderr,
+            "map them per-table on build, or mark them external."
         )
     return list(mappings)
 
@@ -568,9 +537,10 @@ def _autosuggest_mappings(
 _LAYER_EXAMPLES = {"bronze": "erp_orders, erp_finance", "silver": "stg", "gold": "mart, common, silver"}
 
 
-def _layer_csv_prompt(layer: str, prior: list[str]) -> list[str]:
+def _layer_csv_prompt(io: WizardIO, layer: str, prior: list[str]) -> list[str]:
     """The classic free-text layer prompt (repos not scanned / nothing found)."""
     return _ask_csv(
+        io,
         f"{layer.capitalize()} layer — schemas (comma-separated, e.g. "
         f"{_LAYER_EXAMPLES[layer]}, or blank to skip):",
         prior,
@@ -590,7 +560,9 @@ def _schema_union(*lists: list[str]) -> list[str]:
 
 
 def _ask_layer_schemas(
-    existing: Config | None, discovered: list[str]
+    io: WizardIO,
+    existing: Config | None,
+    discovered: list[str],
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Per-layer schema assignment + the schema allowlist, returned as
     ``(layer_schemas, include_schemas)``.
@@ -608,7 +580,9 @@ def _ask_layer_schemas(
     if not discovered:
         for layer in VALID_LAYERS:
             existing_rule = existing.layers.get(layer) if existing else None
-            layer_schemas[layer] = _layer_csv_prompt(layer, existing_rule.schemas if existing_rule else [])
+            layer_schemas[layer] = _layer_csv_prompt(
+                io, layer, existing_rule.schemas if existing_rule else []
+            )
         return layer_schemas, _schema_union(*(layer_schemas[layer] for layer in VALID_LAYERS))
 
     # re-run prefill: a schema saved in a layer rule is checked under that
@@ -631,24 +605,21 @@ def _ask_layer_schemas(
             extras = [schema for schema in prior if schema.lower() not in remaining_keys]
             names = remaining + extras
             if not names:
-                layer_schemas[layer] = _layer_csv_prompt(layer, prior)
+                layer_schemas[layer] = _layer_csv_prompt(io, layer, prior)
                 continue
-            choices = [
-                questionary.Choice(name, value=name, checked=name.lower() in prior_keys) for name in names
-            ]
-            choices.append(questionary.Choice("(add schemas by typing them next)", value="__manual__"))
-            selected = _ask(
-                questionary.checkbox(
-                    f"{layer.capitalize()} layer — pick its schemas (a checked schema is "
-                    "documented AND layered here; unchecked ones are left out):",
-                    choices=choices,
-                )
+            choices = [WizardChoice(name, value=name, checked=name.lower() in prior_keys) for name in names]
+            choices.append(WizardChoice("(add schemas by typing them next)", value="__manual__"))
+            selected = io.checkbox(
+                f"{layer}_layer",
+                f"{layer.capitalize()} layer — pick its schemas (a checked schema is "
+                "documented AND layered here; unchecked ones are left out):",
+                choices,
             )
             chosen = [schema for schema in selected if schema != "__manual__"]
             if "__manual__" in selected:
                 taken = {schema.lower() for schema in chosen}
                 for extra in _ask_csv(
-                    f"{layer.capitalize()} layer — additional schemas (comma-separated):", []
+                    io, f"{layer.capitalize()} layer — additional schemas (comma-separated):", []
                 ):
                     if extra.lower() not in taken:
                         chosen.append(extra)
@@ -660,82 +631,78 @@ def _ask_layer_schemas(
         no_layer: list[str] = []
         if remaining:
             choices = [
-                questionary.Choice(
+                WizardChoice(
                     name,
                     value=name,
                     checked=name.lower() in prior_include and name.lower() not in layered_prior,
                 )
                 for name in remaining
             ]
-            no_layer = list(
-                _ask(
-                    questionary.checkbox(
-                        "Include WITHOUT a layer — schemas to document with automatic layer "
-                        "detection (SPACE toggles, ENTER confirms; none = leave them out):",
-                        choices=choices,
-                    )
-                )
+            no_layer = io.checkbox(
+                "no_layer",
+                "Include WITHOUT a layer — schemas to document with automatic layer "
+                "detection (SPACE toggles, ENTER confirms; none = leave them out):",
+                choices,
             )
         include_schemas = _schema_union(*(layer_schemas[layer] for layer in VALID_LAYERS), no_layer)
         if include_schemas:
             return layer_schemas, include_schemas
         # An empty selection silently meaning "document everything" is
         # surprising (the opposite of what unchecking implies) — re-ask instead.
-        print("  Select at least one schema to document (or press Ctrl-C to cancel).", file=sys.stderr)
+        io.notice("  Select at least one schema to document (or press Ctrl-C to cancel).")
 
 
-def run_setup(config_path: Path) -> Config | None:
+def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
     """Run the wizard, write the config, and return the validated result.
 
+    ``io`` is the UI/transport abstraction; defaults to terminal questionary.
     Returns None when the file was saved but doesn't validate yet (e.g. the
     user pointed at a repo they haven't cloned and chose 'use it anyway').
     """
+    from coop_data_doc.wizard_io import QuestionaryWizardIO
+
+    io = io or QuestionaryWizardIO()
     config_path = Path(config_path).resolve()
     base_dir = config_path.parent
-    existing = _existing_config(config_path)
+    existing = _existing_config(config_path, io)
     if existing is not None:
-        print(f"Updating {config_path} (current values shown as defaults)", file=sys.stderr)
+        io.notice(f"Updating {config_path} (current values shown as defaults)")
 
     project_name = (
-        str(
-            _ask(
-                questionary.text(
-                    "Project name (shown as the docs site title):",
-                    default=existing.project_name if existing else "Coop BI Estate",
-                )
-            )
+        io.text(
+            "project_name",
+            "Project name (shown as the docs site title):",
+            default=existing.project_name if existing else "Coop BI Estate",
         ).strip()
         or "Coop BI Estate"
     )
 
     # These two prompts are the step users most often click past without
     # understanding — spell out that a *folder path* is expected, with examples.
-    print(
+    io.notice(
         "\nNext, point the tool at your two source folders (the repos cloned on\n"
         "this computer). For each, enter the path to the folder — for example\n"
         "  /Users/you/code/sql-warehouse   or   C:\\Users\\you\\code\\PowerBI\n"
-        "Relative paths are resolved against the config file's folder.\n",
-        file=sys.stderr,
+        "Relative paths are resolved against the config file's folder.\n"
     )
     sql_path = _ask_repo_path(
+        io,
         "SQL repo path — the folder with your procs, tables, views",
         _repo_default(existing, "sql", "../sql-repo"),
         base_dir,
     )
     pbi_path = _ask_repo_path(
+        io,
         "Power BI repo path — the folder with your semantic models and reports",
         _repo_default(existing, "powerbi", "../pbi-repo"),
         base_dir,
     )
 
     output_dir = (
-        str(
-            _ask(
-                questionary.text(
-                    "Markdown output folder:",
-                    default=existing.output.dir if existing else "./data-docs",
-                )
-            )
+        io.text(
+            "output_dir",
+            "Markdown output folder:",
+            default=existing.output.dir if existing else "./data-docs",
         ).strip()
         or "./data-docs"
     )
@@ -744,13 +711,10 @@ def run_setup(config_path: Path) -> Config | None:
     site_default = existing.output.site_dir if existing else _sibling_site(output_dir)
     while True:
         site_dir = (
-            str(
-                _ask(
-                    questionary.text(
-                        "HTML site output folder (must be separate from the markdown folder):",
-                        default=site_default,
-                    )
-                )
+            io.text(
+                "site_dir",
+                "HTML site output folder (must be separate from the markdown folder):",
+                default=site_default,
             ).strip()
             or site_default
         )
@@ -758,27 +722,26 @@ def run_setup(config_path: Path) -> Config | None:
         site_abs = (base_dir / Path(site_dir).expanduser()).resolve()
         if not output_dirs_conflict(out_abs, site_abs):
             break
-        print(
+        io.notice(
             "  ✗ The HTML site folder can't be the same as — or inside — the markdown\n"
             "    folder. Each build wipes the site folder, which would clobber your\n"
-            f"    markdown. Try a sibling like '{_sibling_site(output_dir)}'.",
-            file=sys.stderr,
+            f"    markdown. Try a sibling like '{_sibling_site(output_dir)}'."
         )
         site_default = _sibling_site(output_dir)
 
     # --- what to document (folder allowlist), per repo ---
     sql_repo = existing.repos.get("sql") if existing else None
     pbi_repo = existing.repos.get("powerbi") if existing else None
-    print("\n── What to document ──", file=sys.stderr)
-    print(
+    io.notice("\n── What to document ──")
+    io.notice(
         "  FOLDERS = check the top-level folders to document. NOTHING is checked to\n"
         "            start — only the folders you pick are crawled. When the repo isn't\n"
-        "            on disk yet, you type include globs instead.",
-        file=sys.stderr,
+        "            on disk yet, you type include globs instead."
     )
     sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
     sql_bases = base_patterns_from_includes(list(sql_repo.include)) if sql_repo else []
     sql_include = _ask_folders_to_document(
+        io,
         "SQL",
         sql_path,
         base_dir,
@@ -795,13 +758,14 @@ def run_setup(config_path: Path) -> Config | None:
     # allowlist over the full PBI file-type set.
     pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
     _, pbi_exclude = split_excludes(_top_level_folders(pbi_abs), list(pbi_repo.exclude) if pbi_repo else [])
-    selected_models = _ask_semantic_models(pbi_abs, pbi_repo.include if pbi_repo else None)
+    selected_models = _ask_semantic_models(io, pbi_abs, pbi_repo.include if pbi_repo else None)
     if selected_models is not None:
         # The model picker scopes the models; this folder pick scopes the
         # report/pbix globs so stray .Report/.pbix copies in unselected folders
         # (BACKUP, Documentation, data-docs) can't leak in as reports or
         # pbix-derived junk models.
         report_globs = _ask_folders_to_document(
+            io,
             "Power BI",
             pbi_path,
             base_dir,
@@ -815,6 +779,7 @@ def run_setup(config_path: Path) -> Config | None:
         # allowlist is the only scoping mechanism here.
         pbi_bases = base_patterns_from_includes(list(pbi_repo.include)) if pbi_repo else []
         pbi_include = _ask_folders_to_document(
+            io,
             "Power BI",
             pbi_path,
             base_dir,
@@ -828,6 +793,7 @@ def run_setup(config_path: Path) -> Config | None:
     #     to type schema names from memory (issue #35) ---
     sql_dialect = existing.sql_dialect if existing else "tsql"
     parsed = _scan_estate(
+        io=io,
         base_dir=base_dir,
         project_name=project_name,
         sql_path=sql_path,
@@ -840,32 +806,30 @@ def run_setup(config_path: Path) -> Config | None:
     )
 
     # --- medallion layers: assign by SCHEMA (the common case) ---
-    print("\n── Medallion layers ──", file=sys.stderr)
-    print(
+    io.notice("\n── Medallion layers ──")
+    io.notice(
         "  Check the schemas to document, layer by layer: a checked schema is both\n"
         "  INCLUDED in the docs and assigned that layer — an unchecked schema is left\n"
         "  out entirely. A final catch-all offers anything left over, to document it\n"
         "  with automatic layer detection. In a Fabric/SQL warehouse the schema IS\n"
-        "  the folder, so schemas alone are all you need.",
-        file=sys.stderr,
+        "  the folder, so schemas alone are all you need."
     )
-    layer_schemas, include_schemas = _ask_layer_schemas(existing, _sql_schemas(parsed))
+    layer_schemas, include_schemas = _ask_layer_schemas(io, existing, _sql_schemas(parsed))
 
     # Folder-based layering is an advanced fallback for repos where a layer is
     # a directory rather than a schema. Most repos don't need it, so it's off
     # by default — but re-running setup keeps any folder rules you already had.
     had_paths = bool(existing and any(rule.paths for rule in existing.layers.values()))
     layer_paths: dict[str, list[str]] = {}
-    if _ask(
-        questionary.confirm(
-            "Advanced: does any layer map to a FOLDER instead of a schema?",
-            default=had_paths,
-            auto_enter=False,
-        )
+    if io.confirm(
+        "layer_paths",
+        "Advanced: does any layer map to a FOLDER instead of a schema?",
+        default=had_paths,
     ):
         for layer in VALID_LAYERS:
             existing_rule = existing.layers.get(layer) if existing else None
             layer_paths[layer] = _ask_csv(
+                io,
                 f"{layer.capitalize()} layer — folder globs (comma-separated, e.g. "
                 + ("**/dim/**, **/fact/**" if layer == "gold" else "**/Bronze/**")
                 + ", or blank):",
@@ -878,15 +842,15 @@ def run_setup(config_path: Path) -> Config | None:
         if schemas or paths:
             layers[layer] = {"schemas": schemas, "paths": paths}
 
-    print("\n── Schemas to drop ──", file=sys.stderr)
-    print(
+    io.notice("\n── Schemas to drop ──")
+    io.notice(
         "  Only the schemas checked above are documented, so most estates need nothing\n"
         "  here. This drops objects even from a checked schema (noise like staging/temp);\n"
         "  system schemas (sys, information_schema, …) are always dropped. Blank = drop\n"
-        "  nothing extra.",
-        file=sys.stderr,
+        "  nothing extra."
     )
     ignore_schemas = _ask_csv(
+        io,
         "Schemas to DROP from the docs (comma-separated, e.g. staging, tmp — blank "
         "for none; system schemas like sys/information_schema are always dropped):",
         existing.ignore_schemas if existing else [],
@@ -894,44 +858,35 @@ def run_setup(config_path: Path) -> Config | None:
 
     # --- optional company branding for the HTML site ---
     existing_brand = existing.branding if existing else None
-    print("\n── Branding (optional — blank to skip) ──", file=sys.stderr)
+    io.notice("\n── Branding (optional — blank to skip) ──")
     branding: dict[str, str] = {}
-    logo = str(
-        _ask(
-            questionary.text(
-                "Logo image path (shown in the site header; relative to this config):",
-                default=(existing_brand.logo if existing_brand and existing_brand.logo else ""),
-            )
-        )
+    logo = io.text(
+        "logo",
+        "Logo image path (shown in the site header; relative to this config):",
+        default=(existing_brand.logo if existing_brand and existing_brand.logo else ""),
     ).strip()
     if logo:
         branding["logo"] = logo
     # colors default to the Cooptimize brand theme; press Enter to keep it
-    primary = str(
-        _ask(
-            questionary.text(
-                "Primary brand color (hex; default = Cooptimize navy):",
-                default=(
-                    existing_brand.primary_color
-                    if existing_brand and existing_brand.primary_color
-                    else DEFAULT_PRIMARY_COLOR
-                ),
-            )
-        )
+    primary = io.text(
+        "primary_color",
+        "Primary brand color (hex; default = Cooptimize navy):",
+        default=(
+            existing_brand.primary_color
+            if existing_brand and existing_brand.primary_color
+            else DEFAULT_PRIMARY_COLOR
+        ),
     ).strip()
     if primary:
         branding["primary_color"] = primary
-    accent = str(
-        _ask(
-            questionary.text(
-                "Accent color (hex; default = Cooptimize red-orange):",
-                default=(
-                    existing_brand.accent_color
-                    if existing_brand and existing_brand.accent_color
-                    else DEFAULT_ACCENT_COLOR
-                ),
-            )
-        )
+    accent = io.text(
+        "accent_color",
+        "Accent color (hex; default = Cooptimize red-orange):",
+        default=(
+            existing_brand.accent_color
+            if existing_brand and existing_brand.accent_color
+            else DEFAULT_ACCENT_COLOR
+        ),
     ).strip()
     if accent:
         branding["accent_color"] = accent
@@ -940,12 +895,14 @@ def run_setup(config_path: Path) -> Config | None:
         branding["favicon"] = existing_brand.favicon
 
     # --- schema → semantic-model hints ---
-    print("\n── Power BI: connecting tables to their SQL sources ──", file=sys.stderr)
+    io.notice("\n── Power BI: connecting tables to their SQL sources ──")
     mappings: list[tuple[str, str]] = []
     if existing is not None and existing.schema_mappings:
         current = ", ".join(f"{m.schema_name} → {m.model}" for m in existing.schema_mappings)
-        keep = _ask(
-            questionary.confirm(f"Keep existing schema mappings ({current})?", default=True, auto_enter=False)
+        keep = io.confirm(
+            "keep_mappings",
+            f"Keep existing schema mappings ({current})?",
+            default=True,
         )
         if keep:
             mappings = [(m.schema_name, m.model) for m in existing.schema_mappings]
@@ -954,6 +911,7 @@ def run_setup(config_path: Path) -> Config | None:
     # the schema mappings that are actually needed (confirm, don't type).
     # Falls back to manual entry when the repos aren't cloned yet.
     auto = _autosuggest_mappings(
+        io=io,
         base_dir=base_dir,
         project_name=project_name,
         sql_path=sql_path,
@@ -972,13 +930,13 @@ def run_setup(config_path: Path) -> Config | None:
     if auto is not None:
         mappings = auto
     else:
-        while _ask(
-            questionary.confirm(
-                "Add a view-schema → semantic-model mapping?", default=not mappings, auto_enter=False
-            )
+        while io.confirm(
+            "add_mapping",
+            "Add a view-schema → semantic-model mapping?",
+            default=not mappings,
         ):
-            schema = str(_ask(questionary.text("SQL schema (e.g. mart):"))).strip()
-            model = str(_ask(questionary.text("Semantic model it feeds (e.g. Sales Analytics):"))).strip()
+            schema = io.text("mapping_schema", "SQL schema (e.g. mart):").strip()
+            model = io.text("mapping_model", "Semantic model it feeds (e.g. Sales Analytics):").strip()
             if schema and model:
                 mappings.append((schema, model))
 
@@ -1010,5 +968,5 @@ def run_setup(config_path: Path) -> Config | None:
     try:
         return Config.load(config_path)  # refresh: reload + validate what was written
     except ConfigError as exc:
-        print(f"Saved, but not runnable yet: {exc}", file=sys.stderr)
+        io.notice(f"Saved, but not runnable yet: {exc}")
         return None
