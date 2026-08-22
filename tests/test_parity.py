@@ -166,9 +166,7 @@ def test_jsonl_transport_emits_prompt_json(tmp_path: Path):
 
 
 def test_cli_jsonl_transport_emits_only_json(tmp_path: Path, monkeypatch):
-    """The CLI's `--transport jsonl` path must keep stdout line-delimited JSON —
-    the success summary and 'Setup complete' go out as notice events, never raw
-    text that would break a bridge parser (regression guard)."""
+    """JSONL success emits a single complete terminal event and exit 0."""
     import os
 
     from click.testing import CliRunner
@@ -203,7 +201,10 @@ def test_cli_jsonl_transport_emits_only_json(tmp_path: Path, monkeypatch):
     assert events[0]["type"] == "prompt"
     notices = [e.get("message", "") for e in events if e["type"] == "notice"]
     assert any(m.startswith("Saved ") for m in notices)
-    assert any("Setup complete." in m for m in notices)
+    terminal = [e for e in events if e["type"] in {"complete", "cancelled", "error"}]
+    assert terminal == [
+        {"type": "complete", "message": "Setup complete.", "data": {"config": "coop-data-doc.yml"}}
+    ]
 
 
 # --- minimal questionary stand-in (mirrors tests/test_wizard.py) -------------

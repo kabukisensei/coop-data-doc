@@ -92,7 +92,7 @@ All commands exit with these codes:
 | `coop-data-doc` | Interactive menu (bare, TTY only) | — |
 | `coop-data-doc status` | **Check project state** — config exists? docs built? stale? | `--config` |
 | `coop-data-doc init [PATH]` | Scaffold a starter config | `--force` |
-| `coop-data-doc setup [PATH]` | Interactive wizard (human) | — |
+| `coop-data-doc setup [PATH]` | Interactive wizard (human); `--transport jsonl` for bridges (see `docs/jsonl-setup-protocol.md`) | `--transport` |
 | `coop-data-doc build` | Full pipeline + render | `--non-interactive`, `--strict`, `--skip-html`, `--no-parse-cache`, `--jobs N`, `--reviews PATH` (repeatable), `--config` |
 | `coop-data-doc update` | Alias for `build` — prefer `build` in scripts/CI (prints a notice: in the sibling review tools `update` means self-update; the self-update command here is `upgrade`) | Same as `build` |
 | `coop-data-doc scan` | Crawl + parse + link only; writes `graph.json` | `--non-interactive`, `--strict`, `--no-parse-cache`, `--jobs N`, `--config` |

@@ -20,6 +20,12 @@ from typing import Literal, TextIO
 
 import questionary
 
+MAX_JSONL_LINE = 1024 * 1024
+
+
+class WizardProtocolError(ValueError):
+    """Malformed or contradictory bridge input (not a user cancellation)."""
+
 
 @dataclass
 class Choice:
@@ -164,22 +170,20 @@ class JsonlWizardIO(WizardIO):
         self._out.flush()
 
     def _read_answer(self, prompt_id: str) -> dict:
-        line = self._in.readline()
+        line = self._in.readline(MAX_JSONL_LINE + 1)
         if not line:
             raise KeyboardInterrupt
+        if len(line) > MAX_JSONL_LINE:
+            raise WizardProtocolError("JSONL answer exceeds 1 MiB")
         try:
             answer = json.loads(line)
         except json.JSONDecodeError as exc:
-            self._emit(Event("error", prompt_id, f"Invalid JSON answer: {exc}").to_json())
-            raise KeyboardInterrupt from exc
+            raise WizardProtocolError(f"Invalid JSON answer: {exc}") from exc
+        if not isinstance(answer, dict):
+            raise WizardProtocolError("JSONL answer must be an object")
         if answer.get("id") != prompt_id:
-            self._emit(
-                Event(
-                    "error",
-                    prompt_id,
-                    f"Answer id mismatch: expected {prompt_id!r}, got {answer.get('id')!r}",
-                ).to_json()
-            )
+            raise WizardProtocolError(f"Answer id mismatch: expected {prompt_id!r}, got {answer.get('id')!r}")
+        if answer.get("cancelled") is True:
             raise KeyboardInterrupt
         return answer
 
@@ -228,3 +232,15 @@ class JsonlWizardIO(WizardIO):
 
     def notice(self, message: str) -> None:
         self._emit(Event("notice", message=message).to_json())
+
+    def progress(self, message: str) -> None:
+        self._emit(Event("progress", message=message).to_json())
+
+    def complete(self, message: str, data: dict | None = None) -> None:
+        self._emit(Event("complete", message=message, data=data).to_json())
+
+    def error(self, message: str) -> None:
+        self._emit(Event("error", message=message).to_json())
+
+    def cancelled(self) -> None:
+        self._emit(Event("cancelled").to_json())

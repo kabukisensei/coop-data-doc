@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from coop_data_doc.wizard_io import Choice, JsonlWizardIO
+from coop_data_doc.wizard_io import Choice, JsonlWizardIO, WizardProtocolError
 
 
 def _answer(prompt_id: str, answer: Any) -> str:
@@ -79,3 +79,34 @@ def test_jsonl_eof_raises_keyboard_interrupt():
     io_obj = JsonlWizardIO(stdin, stdout)
     with pytest.raises(KeyboardInterrupt):
         io_obj.text("q7", "Project name:")
+
+
+@pytest.mark.parametrize("line", ["not-json\n", "[]\n", '{"id":"wrong","answer":"x"}\n'])
+def test_jsonl_invalid_answer_is_protocol_error(line):
+    io_obj = JsonlWizardIO(io.StringIO(line), io.StringIO())
+    with pytest.raises(WizardProtocolError):
+        io_obj.text("expected", "Project name:")
+
+
+def test_jsonl_accepts_crlf_and_preserves_unicode_separators():
+    value = "A\u2028B\u2029C"
+    line = json.dumps({"id": "q", "answer": value}, ensure_ascii=False) + "\r\n"
+    assert JsonlWizardIO(io.StringIO(line), io.StringIO()).text("q", "Name") == value
+
+
+def test_jsonl_cancel_answer_raises_keyboard_interrupt():
+    line = json.dumps({"id": "q", "cancelled": True}) + "\n"
+    with pytest.raises(KeyboardInterrupt):
+        JsonlWizardIO(io.StringIO(line), io.StringIO()).text("q", "Name")
+
+
+def test_jsonl_terminal_events_have_explicit_shapes():
+    stdout = io.StringIO()
+    io_obj = JsonlWizardIO(io.StringIO(), stdout)
+    io_obj.progress("Scanning")
+    io_obj.complete("Done", {"config": "x.yml"})
+    events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert events == [
+        {"type": "progress", "message": "Scanning"},
+        {"type": "complete", "message": "Done", "data": {"config": "x.yml"}},
+    ]
