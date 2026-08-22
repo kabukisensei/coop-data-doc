@@ -154,12 +154,18 @@ class JsonlWizardIO(WizardIO):
 
     Emits one prompt or event per line on ``out_stream``; reads answers as JSONL
     from ``in_stream``. The process stays alive for the whole wizard session.
+    The first line on ``out_stream`` is always a ``hello`` event carrying the
+    wire-protocol version, so a bridge can verify compatibility before the first
+    prompt.
     """
+
+    PROTOCOL_VERSION = "1.1"
 
     def __init__(self, in_stream: TextIO, out_stream: TextIO) -> None:
         self._in = in_stream
         self._out = out_stream
         self._counter = 0
+        self._emit({"type": "hello", "protocol_version": self.PROTOCOL_VERSION})
 
     def _next_id(self, kind: str) -> str:
         self._counter += 1
@@ -170,9 +176,12 @@ class JsonlWizardIO(WizardIO):
         self._out.flush()
 
     def _read_answer(self, prompt_id: str) -> dict:
-        line = self._in.readline(MAX_JSONL_LINE + 1)
+        # +2 so a full MAX-length line plus its LF fits in one read; the LF is
+        # then stripped before the length check (the limit covers content only).
+        line = self._in.readline(MAX_JSONL_LINE + 2)
         if not line:
             raise KeyboardInterrupt
+        line = line.removesuffix("\n")
         if len(line) > MAX_JSONL_LINE:
             raise WizardProtocolError("JSONL answer exceeds 1 MiB")
         try:
@@ -212,23 +221,21 @@ class JsonlWizardIO(WizardIO):
         value = answer.get("answer")
         if isinstance(value, bool):
             return value
-        if isinstance(value, str):
-            return value.strip().lower() in ("y", "yes", "true", "1")
-        return default
+        raise WizardProtocolError(f"confirm answer must be a boolean, got {type(value).__name__}")
 
     def select(self, prompt_id: str, message: str, choices: list[Choice], default: str | None = None) -> str:
         answer = self._prompt(Prompt(prompt_id, "select", message, choices=choices, default=default))
         value = answer.get("answer")
         if isinstance(value, str):
             return value
-        return default if default is not None else ""
+        raise WizardProtocolError(f"select answer must be a string, got {type(value).__name__}")
 
     def checkbox(self, prompt_id: str, message: str, choices: list[Choice]) -> list[str]:
         answer = self._prompt(Prompt(prompt_id, "checkbox", message, choices=choices))
         value = answer.get("answer")
         if isinstance(value, list):
             return [str(v) for v in value]
-        return []
+        raise WizardProtocolError(f"checkbox answer must be a list, got {type(value).__name__}")
 
     def notice(self, message: str) -> None:
         self._emit(Event("notice", message=message).to_json())

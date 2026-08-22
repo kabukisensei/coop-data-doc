@@ -154,6 +154,10 @@ def test_jsonl_transport_emits_prompt_json(tmp_path: Path):
     stdout.seek(0)
     emitted = [json.loads(line) for line in stdout if line.strip()]
     assert emitted[0] == {
+        "type": "hello",
+        "protocol_version": JsonlWizardIO.PROTOCOL_VERSION,
+    }
+    assert emitted[1] == {
         "type": "prompt",
         "id": "project_name",
         "kind": "text",
@@ -161,8 +165,8 @@ def test_jsonl_transport_emits_prompt_json(tmp_path: Path):
         "default": "Coop BI Estate",
         "choices": [],
     }
-    assert emitted[1]["kind"] == "path"
-    assert emitted[1]["id"] == "sql_repo_path_path"
+    assert emitted[2]["kind"] == "path"
+    assert emitted[2]["id"] == "sql_repo_path_path"
 
 
 def test_cli_jsonl_transport_emits_only_json(tmp_path: Path, monkeypatch):
@@ -198,7 +202,8 @@ def test_cli_jsonl_transport_emits_only_json(tmp_path: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     lines = [line for line in result.output.splitlines() if line.strip()]
     events = [json.loads(line) for line in lines]  # every line must be valid JSON
-    assert events[0]["type"] == "prompt"
+    assert events[0] == {"type": "hello", "protocol_version": JsonlWizardIO.PROTOCOL_VERSION}
+    assert events[1]["type"] == "prompt"
     notices = [e.get("message", "") for e in events if e["type"] == "notice"]
     assert any(m.startswith("Saved ") for m in notices)
     terminal = [e for e in events if e["type"] in {"complete", "cancelled", "error"}]
@@ -259,3 +264,49 @@ class _RoutedQuestionary:
 
     def checkbox(self, message, **kwargs):
         return self._q("checkbox", message, **kwargs)
+
+
+# --- CLI-level terminal-event / exit-code agreement (1.1.1 regression) ----------
+
+
+def _invoke_jsonl(tmp_path, monkeypatch, stdin_text):
+    """Run `setup --transport jsonl` with a stubbed run_setup; return the result."""
+    import os
+
+    from click.testing import CliRunner
+
+    from coop_data_doc import cli as cli_module
+    from coop_data_doc import wizard as wizard_module
+
+    (tmp_path / "coop-data-doc.yml").write_text("project_name: J\nrepos: {}\n", encoding="utf-8")
+
+    def fake_run_setup(path, io=None):
+        assert io is not None
+        io.text("q1", "Project name?", "J")
+        from coop_data_doc.config import Config
+
+        return Config.load(Path(path))
+
+    monkeypatch.setattr(wizard_module, "run_setup", fake_run_setup)
+    old = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        return CliRunner().invoke(cli_module.cli, ["setup", "--transport", "jsonl"], input=stdin_text)
+    finally:
+        os.chdir(old)
+
+
+def test_cli_jsonl_eof_emits_cancelled_and_exits_130(tmp_path, monkeypatch):
+    result = _invoke_jsonl(tmp_path, monkeypatch, "")
+    assert result.exit_code == 130
+    events = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+    assert events[0]["type"] == "hello"
+    assert {"type": "cancelled"} in events
+
+
+def test_cli_jsonl_malformed_answer_emits_error_and_exits_2(tmp_path, monkeypatch):
+    result = _invoke_jsonl(tmp_path, monkeypatch, "{not json}\n")
+    assert result.exit_code == 2  # an error, NOT a cancellation (130)
+    events = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1 and "Invalid JSON" in errors[0]["message"]
