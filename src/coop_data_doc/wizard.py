@@ -11,6 +11,7 @@ everything else in the codebase stays pure.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -961,7 +962,11 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
     )
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(rendered, encoding="utf-8", newline="\n")
+        # Atomic write: a kill landing mid-write must never truncate an existing
+        # valid config (the bridge kills the child on protocol errors).
+        tmp_path = config_path.with_name(config_path.name + ".tmp")
+        tmp_path.write_text(rendered, encoding="utf-8", newline="\n")
+        os.replace(tmp_path, config_path)
     except OSError as exc:
         # distinct from questionary's no-TTY OSError: report as a config problem
         raise ConfigError(f"could not write {config_path}: {exc}") from exc

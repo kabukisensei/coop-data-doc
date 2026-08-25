@@ -616,7 +616,7 @@ def setup(ctx: click.Context, path: str, transport: str) -> None:
     then saves and re-validates. Ctrl-C before the end writes nothing.
     """
     from coop_data_doc.wizard import run_setup
-    from coop_data_doc.wizard_io import JsonlWizardIO, QuestionaryWizardIO
+    from coop_data_doc.wizard_io import JsonlWizardIO, QuestionaryWizardIO, WizardProtocolError
 
     transport = transport.lower()
     if transport == "jsonl":
@@ -627,12 +627,22 @@ def setup(ctx: click.Context, path: str, transport: str) -> None:
     try:
         config = run_setup(Path(path), io=io)
     except KeyboardInterrupt:
-        click.echo("\nSetup cancelled — nothing was written.", err=True)
+        if transport == "jsonl":
+            io.cancelled()
+        else:
+            click.echo("\nSetup cancelled — nothing was written.", err=True)
         sys.exit(130)
+    except WizardProtocolError as exc:
+        if transport == "jsonl":
+            io.error(str(exc))
+        sys.exit(2)
     except Exception as exc:
         from coop_data_doc.linker.interactive import _is_no_terminal_error
 
-        if transport == "jsonl" or not _is_no_terminal_error(exc):
+        if transport == "jsonl":
+            io.error(str(exc))
+            sys.exit(2)
+        if not _is_no_terminal_error(exc):
             raise
         click.echo(
             "setup needs an interactive terminal (no console available here). Run "
@@ -645,6 +655,7 @@ def setup(ctx: click.Context, path: str, transport: str) -> None:
     if config is None:
         if transport == "jsonl":
             io.notice(f"Saved {path}. Fix the noted problem, then run `{build_cmd}`.")
+            io.complete("Setup saved with validation notices.", {"config": path})
         else:
             click.echo(f"Saved {path}. Fix the noted problem, then run `{build_cmd}`.")
         return
@@ -656,7 +667,7 @@ def setup(ctx: click.Context, path: str, transport: str) -> None:
         # JSONL stdout must stay line-delimited JSON — the summary goes out as a
         # notice event, never raw text, or the bridge's parser would choke.
         io.notice(saved)
-        io.notice("Setup complete.")
+        io.complete("Setup complete.", {"config": path})
         return
     click.echo(saved)
     # offer to build right away; either way show the command to run it later
