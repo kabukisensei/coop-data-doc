@@ -184,7 +184,8 @@ class Config(BaseModel):
     @staticmethod
     def resolve_path(path: Path | str) -> Path:
         """Resolve a config path, converting path-expansion failures to ConfigError."""
-        raw = Path(path)
+        raw_text = os.fspath(path)
+        raw = Path(raw_text)
         try:
             # ``Path.expanduser()`` does not validate named users on Windows:
             # ``~missing-user`` is guessed as a sibling of the current user's
@@ -197,7 +198,7 @@ class Config(BaseModel):
                     raise RuntimeError(f"Could not determine home directory for {first_part}")
             return raw.expanduser().resolve()
         except (OSError, RuntimeError, ValueError) as exc:
-            raise ConfigError(f"Could not resolve config path {raw}: {exc}") from exc
+            raise ConfigError(f"Could not resolve config path {raw_text}: {exc}") from exc
 
     @classmethod
     def find(cls, start_dir: Path | str | None = None) -> Path | None:
