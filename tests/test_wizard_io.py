@@ -136,6 +136,113 @@ def test_jsonl_answer_type_validation():
         io_obj.checkbox("cb1", "Pick:", [Choice("a", "A")])
 
 
+def test_jsonl_select_rejects_unknown_value():
+    choices = [Choice("Schema A", "schema_a"), Choice("Schema B", "schema_b")]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("select_unknown", "missing")), io.StringIO())
+
+    with pytest.raises(WizardProtocolError) as exc_info:
+        io_obj.select("select_unknown", "Pick schema:", choices)
+
+    message = str(exc_info.value)
+    assert "select_unknown" in message
+    assert "allowed values" in message
+    assert '"schema_a"' in message and '"schema_b"' in message
+
+
+@pytest.mark.parametrize("answer", ["Schema A", "SCHEMA_A"], ids=["label", "case-mismatch"])
+def test_jsonl_select_rejects_label_and_case_mismatch(answer: str):
+    choices = [Choice("Schema A", "schema_a"), Choice("Schema B", "schema_b")]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("select_exact", answer)), io.StringIO())
+
+    with pytest.raises(WizardProtocolError, match="select_exact"):
+        io_obj.select("select_exact", "Pick schema:", choices)
+
+
+@pytest.mark.parametrize(
+    "answer", [["missing"], [1], [True], [None]], ids=["unknown", "integer", "boolean", "null"]
+)
+def test_jsonl_checkbox_rejects_invalid_item_values(answer):
+    choices = [Choice("A", "a"), Choice("B", "b")]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("checkbox_item", answer)), io.StringIO())
+
+    with pytest.raises(WizardProtocolError) as exc_info:
+        io_obj.checkbox("checkbox_item", "Pick:", choices)
+
+    message = str(exc_info.value)
+    assert "checkbox_item" in message
+    assert "allowed values" in message
+    assert '"a"' in message and '"b"' in message
+
+
+def test_jsonl_checkbox_rejects_mixed_valid_and_invalid_values():
+    choices = [Choice("A", "a"), Choice("B", "b")]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("checkbox_mixed", ["a", "missing", "b"])), io.StringIO())
+
+    with pytest.raises(WizardProtocolError, match="checkbox_mixed"):
+        io_obj.checkbox("checkbox_mixed", "Pick:", choices)
+
+
+def test_jsonl_checkbox_rejects_duplicate_values():
+    choices = [Choice("A", "a"), Choice("B", "b")]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("checkbox_duplicate", ["a", "a"])), io.StringIO())
+
+    with pytest.raises(WizardProtocolError, match="checkbox_duplicate"):
+        io_obj.checkbox("checkbox_duplicate", "Pick:", choices)
+
+
+def test_jsonl_checkbox_empty_list_is_valid():
+    choices = [Choice("A", "a"), Choice("B", "b")]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("checkbox_empty", [])), io.StringIO())
+
+    assert io_obj.checkbox("checkbox_empty", "Pick:", choices) == []
+
+
+def test_jsonl_checkbox_preserves_answer_order():
+    choices = [Choice("A", "a"), Choice("B", "b"), Choice("C", "c")]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("checkbox_order", ["c", "a", "b"])), io.StringIO())
+
+    assert io_obj.checkbox("checkbox_order", "Pick:", choices) == ["c", "a", "b"]
+
+
+def test_jsonl_unicode_choice_values_are_preserved():
+    choices = [Choice("Cafe", "café.表"), Choice("Path", "путь")]
+    select_io = JsonlWizardIO(io.StringIO(_answer("unicode_select", "café.表")), io.StringIO())
+    checkbox_io = JsonlWizardIO(io.StringIO(_answer("unicode_checkbox", ["путь", "café.表"])), io.StringIO())
+
+    assert select_io.select("unicode_select", "Pick:", choices) == "café.表"
+    assert checkbox_io.checkbox("unicode_checkbox", "Pick:", choices) == ["путь", "café.表"]
+
+
+def test_jsonl_choice_error_preview_is_bounded_and_deterministic():
+    choices = [Choice(f"Choice {index}", f"value-{index}") for index in range(12)]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("many_choices", "unknown")), io.StringIO())
+
+    with pytest.raises(WizardProtocolError) as exc_info:
+        io_obj.select("many_choices", "Pick:", choices)
+
+    message = str(exc_info.value)
+    assert "many_choices" in message
+    assert '"value-0"' in message and '"value-7"' in message
+    assert '"value-8"' not in message
+    assert "... (+4 more)" in message
+
+
+def test_jsonl_choice_error_truncates_long_submitted_and_allowed_values():
+    long_allowed = "a" * 500
+    long_answer = "z" * 500
+    choices = [Choice("Long", long_allowed)]
+    io_obj = JsonlWizardIO(io.StringIO(_answer("long_choice", long_answer)), io.StringIO())
+
+    with pytest.raises(WizardProtocolError) as exc_info:
+        io_obj.select("long_choice", "Pick:", choices)
+
+    message = str(exc_info.value)
+    assert len(message) < 400
+    assert "z" * 80 in message and "z" * 81 not in message
+    assert "a" * 80 in message and "a" * 81 not in message
+    assert "(+420 chars)" in message
+
+
 def test_jsonl_wrong_id_cancel_is_error_not_cancel():
     """id is validated before cancelled — a mismatched cancel is a protocol error."""
     io_obj = JsonlWizardIO(io.StringIO('{"id":"wrong","cancelled":true}\n'), io.StringIO())

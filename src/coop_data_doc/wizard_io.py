@@ -21,6 +21,8 @@ from typing import Literal, TextIO
 import questionary
 
 MAX_JSONL_LINE = 1024 * 1024
+_CHOICE_PREVIEW_LIMIT = 8
+_CHOICE_VALUE_PREVIEW_LIMIT = 80
 
 
 class WizardProtocolError(ValueError):
@@ -223,19 +225,73 @@ class JsonlWizardIO(WizardIO):
             return value
         raise WizardProtocolError(f"confirm answer must be a boolean, got {type(value).__name__}")
 
+    @staticmethod
+    def _value_preview(value: str) -> str:
+        """Render one value without allowing an error event to echo huge input."""
+        if len(value) <= _CHOICE_VALUE_PREVIEW_LIMIT:
+            return json.dumps(value, ensure_ascii=False)
+        omitted = len(value) - _CHOICE_VALUE_PREVIEW_LIMIT
+        prefix = json.dumps(value[:_CHOICE_VALUE_PREVIEW_LIMIT], ensure_ascii=False)
+        return f"{prefix}... (+{omitted} chars)"
+
+    @classmethod
+    def _allowed_values(cls, values: list[str]) -> str:
+        """Render a deterministic, bounded preview of offered values."""
+        preview = ", ".join(cls._value_preview(value) for value in values[:_CHOICE_PREVIEW_LIMIT])
+        remaining = len(values) - _CHOICE_PREVIEW_LIMIT
+        if remaining > 0:
+            preview = f"{preview}, " if preview else preview
+            preview += f"... (+{remaining} more)"
+        return f"[{preview}]"
+
     def select(self, prompt_id: str, message: str, choices: list[Choice], default: str | None = None) -> str:
         answer = self._prompt(Prompt(prompt_id, "select", message, choices=choices, default=default))
         value = answer.get("answer")
-        if isinstance(value, str):
-            return value
-        raise WizardProtocolError(f"select answer must be a string, got {type(value).__name__}")
+        allowed_values = [choice.value for choice in choices]
+        allowed = self._allowed_values(allowed_values)
+        if not isinstance(value, str):
+            raise WizardProtocolError(
+                f"select prompt {prompt_id!r}: answer must be a string, got {type(value).__name__}; "
+                f"allowed values: {allowed}"
+            )
+        if value not in set(allowed_values):
+            raise WizardProtocolError(
+                f"select prompt {prompt_id!r}: answer value {self._value_preview(value)} "
+                f"is not an offered choice value; allowed values: {allowed}"
+            )
+        return value
 
     def checkbox(self, prompt_id: str, message: str, choices: list[Choice]) -> list[str]:
         answer = self._prompt(Prompt(prompt_id, "checkbox", message, choices=choices))
         value = answer.get("answer")
-        if isinstance(value, list):
-            return [str(v) for v in value]
-        raise WizardProtocolError(f"checkbox answer must be a list, got {type(value).__name__}")
+        allowed_values = [choice.value for choice in choices]
+        allowed_set = set(allowed_values)
+        allowed = self._allowed_values(allowed_values)
+        if not isinstance(value, list):
+            raise WizardProtocolError(
+                f"checkbox prompt {prompt_id!r}: answer must be a list, got {type(value).__name__}; "
+                f"allowed values: {allowed}"
+            )
+
+        seen: set[str] = set()
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                raise WizardProtocolError(
+                    f"checkbox prompt {prompt_id!r}: item at index {index} must be a string, "
+                    f"got {type(item).__name__}; allowed values: {allowed}"
+                )
+            if item not in allowed_set:
+                raise WizardProtocolError(
+                    f"checkbox prompt {prompt_id!r}: item at index {index} value "
+                    f"{self._value_preview(item)} is not an offered choice value; allowed values: {allowed}"
+                )
+            if item in seen:
+                raise WizardProtocolError(
+                    f"checkbox prompt {prompt_id!r}: duplicate value {self._value_preview(item)} "
+                    f"at index {index}; allowed values: {allowed}"
+                )
+            seen.add(item)
+        return list(value)
 
     def notice(self, message: str) -> None:
         self._emit(Event("notice", message=message).to_json())

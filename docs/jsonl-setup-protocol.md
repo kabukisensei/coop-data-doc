@@ -28,8 +28,8 @@ answers with `{"id":"<same id>","answer":...}` where `answer` is typed by kind:
 | `text`   | string      | empty/missing answer falls back to the prompt default |
 | `path`   | string      | same default fallback as text |
 | `confirm`| boolean     | any non-boolean is a protocol error (exit 2) |
-| `select` | string      | a choice value; non-string is a protocol error |
-| `checkbox`| list       | list of choice values; non-list is a protocol error |
+| `select` | string      | exactly one offered `Choice.value`; labels, case changes, and whitespace changes are invalid |
+| `checkbox`| list       | every item is a string exactly matching an offered value; duplicates are invalid; an empty list is valid |
 
 To cancel portably, send `{"id":"<same id>","cancelled":true}`; the producer emits
 `cancelled` and exits 130. IDs must match — `id` is validated BEFORE `cancelled`,

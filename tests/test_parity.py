@@ -296,6 +296,74 @@ def _invoke_jsonl(tmp_path, monkeypatch, stdin_text):
         os.chdir(old)
 
 
+@pytest.mark.parametrize(
+    ("kind", "answer", "choices", "existing"),
+    [
+        (
+            "select",
+            "missing",
+            [Choice("Schema A", "schema_a"), Choice("Schema B", "schema_b")],
+            False,
+        ),
+        (
+            "checkbox",
+            ["a", "missing"],
+            [Choice("A", "a"), Choice("B", "b")],
+            True,
+        ),
+    ],
+    ids=["invalid-select", "invalid-checkbox"],
+)
+def test_cli_jsonl_invalid_choice_emits_error_without_writing(
+    tmp_path: Path, monkeypatch, kind: str, answer: Any, choices: list[Choice], existing: bool
+):
+    import os
+
+    from click.testing import CliRunner
+
+    from coop_data_doc import cli as cli_module
+    from coop_data_doc import wizard as wizard_module
+
+    config_path = tmp_path / "coop-data-doc.yml"
+    if existing:
+        config_path.write_bytes(b"project_name: Existing\\nrepos: {}\\n")
+    before = config_path.read_bytes() if existing else None
+    prompt_id = f"{kind}_choice"
+
+    def fake_run_setup(path, io=None):
+        assert io is not None
+        if kind == "select":
+            io.select(prompt_id, "Pick a schema:", choices)
+        else:
+            io.checkbox(prompt_id, "Pick schemas:", choices)
+        raise AssertionError("invalid choice should stop setup before it can return")
+
+    monkeypatch.setattr(wizard_module, "run_setup", fake_run_setup)
+    old = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        result = CliRunner().invoke(
+            cli_module.cli,
+            ["setup", "--transport", "jsonl"],
+            input=json.dumps({"id": prompt_id, "answer": answer}, ensure_ascii=False) + "\n",
+        )
+    finally:
+        os.chdir(old)
+
+    assert result.exit_code == 2, result.output
+    events = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+    terminal = [event for event in events if event["type"] in {"complete", "cancelled", "error"}]
+    assert len(terminal) == 1
+    assert terminal[0]["type"] == "error"
+    assert prompt_id in terminal[0]["message"]
+    assert "allowed values" in terminal[0]["message"]
+    assert not any(event["type"] in {"complete", "cancelled"} for event in events)
+    if existing:
+        assert config_path.read_bytes() == before
+    else:
+        assert not config_path.exists()
+
+
 def test_cli_jsonl_eof_emits_cancelled_and_exits_130(tmp_path, monkeypatch):
     result = _invoke_jsonl(tmp_path, monkeypatch, "")
     assert result.exit_code == 130
