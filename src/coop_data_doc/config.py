@@ -181,24 +181,37 @@ class Config(BaseModel):
         """Absolute HTML site output directory."""
         return (self._base_dir / self.output.site_dir).resolve()
 
+    @staticmethod
+    def resolve_path(path: Path | str) -> Path:
+        """Resolve a config path, converting path-expansion failures to ConfigError."""
+        raw = Path(path)
+        try:
+            return raw.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ConfigError(f"Could not resolve config path {raw}: {exc}") from exc
+
     @classmethod
     def find(cls, start_dir: Path | str | None = None) -> Path | None:
-        """Search for coop-data-doc.yml in start_dir and parent directories.
+        """Find the configured path, preserving an environment override.
 
         Checks (in order):
-        1. Environment variable COOP_DATA_DOC_CONFIG
+        1. A non-empty ``COOP_DATA_DOC_CONFIG`` value, which is authoritative.
+           Relative values resolve against the process current working directory.
+           The returned path is preserved even when it is missing or not a file;
+           callers decide whether to read or create it.
         2. start_dir / DEFAULT_CONFIG (or cwd if start_dir is None)
         3. Walk up parent directories until found or filesystem root
 
-        Returns the absolute path if found, None otherwise.
+        Returns the absolute selected path, or None when normal discovery finds
+        no config. An unset or empty environment variable permits normal
+        discovery. Raises ConfigError when an authoritative path cannot be
+        resolved.
         """
         env_path = os.environ.get("COOP_DATA_DOC_CONFIG")
         if env_path:
-            p = Path(env_path).resolve()
-            if p.is_file():
-                return p
+            return cls.resolve_path(env_path)
 
-        start = Path(start_dir or ".").resolve()
+        start = cls.resolve_path(start_dir or ".")
         if start.is_file():
             start = start.parent
 
@@ -213,11 +226,15 @@ class Config(BaseModel):
         """Load and validate a config file; raises ConfigError with a
         user-printable message naming the offending key or path.
         """
-        path = Path(path)
+        path = cls.resolve_path(path)
+        if path.is_dir():
+            raise ConfigError(f"Config path is a directory: {path}. Select a YAML config file instead.")
         if not path.is_file():
             raise ConfigError(f"Config file not found: {path}. Run `coop-data-doc init` to create one.")
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ConfigError(f"Could not read config {path}: {exc}") from exc
         except UnicodeDecodeError as exc:
             # e.g. PowerShell 5.1's `>` redirect writes UTF-16LE; keep the
             # contract of a user-printable ConfigError, never a raw traceback

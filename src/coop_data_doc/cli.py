@@ -358,18 +358,31 @@ def _scan(
     return graph, diagnostics
 
 
+def _selected_config_path(config_path: str | None = None) -> Path | None:
+    """Select and normalize an explicit or discovered config path."""
+    try:
+        return Config.resolve_path(config_path) if config_path is not None else Config.find()
+    except ConfigError as exc:
+        # An invalid path expansion is still an authoritative selection; keep
+        # it user-facing and never let Path/expanduser leak a traceback.
+        raise click.ClickException(str(exc)) from exc
+
+
 def _load_config(config_path: str | None = None) -> Config:
     """Load config, with discovery if no explicit path given."""
-    if config_path is None:
-        found = Config.find()
-        if found is None:
-            raise ConfigError(
-                f"No {DEFAULT_CONFIG} found in this folder or any parent. "
-                f"Run `coop-data-doc init` to scaffold one, or `coop-data-doc setup` "
-                f"for the interactive wizard."
-            )
-        config_path = str(found)
-    return Config.load(Path(config_path))
+    selected = _selected_config_path(config_path)
+    if selected is None:
+        raise ConfigError(
+            f"No {DEFAULT_CONFIG} found in this folder or any parent. "
+            f"Run `coop-data-doc init` to scaffold one, or `coop-data-doc setup` "
+            f"for the interactive wizard."
+        )
+    try:
+        return Config.load(selected)
+    except ConfigError as exc:
+        # Commands should report one actionable line, including for an
+        # authoritative environment path, instead of leaking a traceback.
+        raise click.ClickException(str(exc)) from exc
 
 
 def _stdio_is_interactive() -> bool:
@@ -426,9 +439,10 @@ def cli(ctx: click.Context, verbose: bool, quiet: bool, log_file: str | None) ->
 def _interactive_home(ctx: click.Context) -> None:
     """The menu shown when `coop-data-doc` is run bare in a terminal."""
     click.echo(f"coop-data-doc {__version__} — offline lineage docs for SQL + Power BI\n")
-    # Use discovery to find config, not just cwd
-    config_path = Config.find()
-    config_exists = config_path is not None
+    # Preserve an authoritative environment candidate even when it does not
+    # exist; never let the menu advertise or use a discovered fallback.
+    config_path = _selected_config_path()
+    config_exists = config_path is not None and config_path.is_file()
     if config_exists:
         message = f"Found {config_path.name} at {config_path.parent}. What would you like to do?"
         choices = [
@@ -442,7 +456,11 @@ def _interactive_home(ctx: click.Context) -> None:
             questionary.Choice("Exit", "exit"),
         ]
     else:
-        message = "No coop-data-doc.yml found in this folder or any parent. What would you like to do?"
+        message = (
+            f"Configured path is not a config file: {config_path}. What would you like to do?"
+            if config_path is not None
+            else "No coop-data-doc.yml found in this folder or any parent. What would you like to do?"
+        )
         choices = [
             questionary.Choice("Set up interactively (recommended)", "setup"),
             questionary.Choice("Write a starter config to edit by hand", "init"),
@@ -466,7 +484,11 @@ def _interactive_home(ctx: click.Context) -> None:
     if action == "setup":
         ctx.invoke(setup, path=discovered)
     elif action == "init":
-        ctx.invoke(init, path=DEFAULT_CONFIG, force=False)
+        # With an authoritative environment candidate, even the scaffold
+        # action must target that candidate rather than creating a local
+        # fallback config. In the ordinary no-config case `discovered` is the
+        # default filename in cwd.
+        ctx.invoke(init, path=discovered, force=False)
     elif action == "scan":
         ctx.invoke(scan, config_path=discovered, non_interactive=False, strict=False)
     elif action == "status":
@@ -517,19 +539,18 @@ def status(ctx: click.Context, config_path: str | None) -> None:
     """Show project status: config found? docs built? stale?"""
     # offline by design — to check PyPI for a newer release, run `upgrade`
     click.echo(f"version:   {__version__} (run `coop-data-doc upgrade` to check for updates)")
-    # honor an explicit --config; otherwise discover in cwd and parents
-    if config_path is not None:
-        found = Path(config_path)
-        if not found.is_file():
-            click.echo(f"status: config not found at {found}")
-            sys.exit(1)
-    else:
-        found = Config.find()
-        if found is None:
-            click.echo("status: no config found")
-            click.echo("  Run `coop-data-doc init` to scaffold a starter config.")
-            click.echo("  Or `coop-data-doc setup` for the interactive wizard.")
-            sys.exit(1)
+    # honor an explicit --config; otherwise discover in cwd and parents. An
+    # environment-selected missing/directory path is still authoritative, so
+    # report it rather than treating it as a normal discovery miss.
+    found = _selected_config_path(config_path)
+    if found is None:
+        click.echo("status: no config found")
+        click.echo("  Run `coop-data-doc init` to scaffold a starter config.")
+        click.echo("  Or `coop-data-doc setup` for the interactive wizard.")
+        sys.exit(1)
+    if not found.exists():
+        click.echo(f"status: config not found at {found}")
+        sys.exit(1)
 
     click.echo(f"config:    {found}")
     try:
@@ -601,7 +622,7 @@ def status(ctx: click.Context, config_path: str | None) -> None:
 
 
 @cli.command()
-@click.argument("path", default=DEFAULT_CONFIG)
+@click.argument("path", default=None)
 @click.option(
     "--transport",
     type=click.Choice(["terminal", "jsonl"], case_sensitive=False),
@@ -609,7 +630,7 @@ def status(ctx: click.Context, config_path: str | None) -> None:
     help="How to interact with the wizard: terminal (questionary) or jsonl (one prompt per line).",
 )
 @click.pass_context
-def setup(ctx: click.Context, path: str, transport: str) -> None:
+def setup(ctx: click.Context, path: str | None, transport: str) -> None:
     """Interactively create or update coop-data-doc.yml.
 
     Prompts for every value, prefilled from the existing config when present,
@@ -617,6 +638,19 @@ def setup(ctx: click.Context, path: str, transport: str) -> None:
     """
     from coop_data_doc.wizard import run_setup
     from coop_data_doc.wizard_io import JsonlWizardIO, QuestionaryWizardIO, WizardProtocolError
+
+    # An omitted setup path follows the same discovery policy as every other
+    # command. In particular, an environment-selected missing path is the
+    # authoring target rather than a local fallback.
+    if path is None:
+        found = _selected_config_path()
+        # Keep the historical relative name for a config in cwd (the JSONL
+        # protocol and displayed commands use it), while retaining discovered
+        # parent paths and authoritative environment paths exactly.
+        cwd_config = (Path.cwd() / DEFAULT_CONFIG).resolve()
+        path = DEFAULT_CONFIG if found == cwd_config else str(found or Path(DEFAULT_CONFIG))
+    elif path != DEFAULT_CONFIG:
+        path = str(_selected_config_path(path))
 
     transport = transport.lower()
     if transport == "jsonl":
@@ -636,6 +670,11 @@ def setup(ctx: click.Context, path: str, transport: str) -> None:
         if transport == "jsonl":
             io.error(str(exc))
         sys.exit(2)
+    except ConfigError as exc:
+        if transport == "jsonl":
+            io.error(str(exc))
+            sys.exit(2)
+        raise click.ClickException(str(exc)) from exc
     except Exception as exc:
         from coop_data_doc.linker.interactive import _is_no_terminal_error
 
@@ -707,11 +746,20 @@ def _first_run_tour(config: Config, path: str) -> None:
 
 
 @cli.command()
-@click.argument("path", default=DEFAULT_CONFIG)
+@click.argument("path", required=False, default=None)
 @click.option("--force", is_flag=True, help="Overwrite an existing config.")
-def init(path: str, force: bool) -> None:
+def init(path: str | None, force: bool) -> None:
     """Write a starter coop-data-doc.yml to edit by hand (see also: setup)."""
-    target = Path(path)
+    if path is None:
+        # An environment-selected target is authoritative even for the
+        # authoring command that has historically defaulted to cwd.
+        target = _selected_config_path() if os.environ.get("COOP_DATA_DOC_CONFIG") else Path(DEFAULT_CONFIG)
+        if target is None:  # defensive: the env branch always returns a path
+            target = Path(DEFAULT_CONFIG)
+    else:
+        target = _selected_config_path(path)
+        if target is None:  # defensive: an explicit path always resolves
+            raise click.ClickException(f"could not resolve config path {path}")
     if target.exists() and not force:
         # Check if it's a valid config — if so, suggest setup instead
         try:
@@ -822,7 +870,7 @@ def set_folders(config_path: str | None, repo: str, include_csv: str) -> None:
     the selection supersedes, preserves hand-written exclude patterns, then
     re-validates. The non-interactive twin of the setup wizard's folder checkbox.
     """
-    path = Path(config_path) if config_path else Config.find()
+    path = _selected_config_path(config_path)
     if path is None:
         raise click.ClickException(
             f"no {DEFAULT_CONFIG} found here or above — run `coop-data-doc init` or `setup` first."
@@ -1100,13 +1148,24 @@ def _config_to_dict(config: Config) -> dict:
 
 def _load_config_lenient(path: Path) -> Config:
     """Load a config without the repo-path-existence check (so we can read/patch a
-    config whose repos aren't cloned yet — the 'saved but not runnable' state)."""
+    config whose repos aren't cloned yet — the 'saved but not runnable' state).
+
+    Syntax, decoding, and schema errors remain user-facing ConfigErrors naming
+    this path; only missing configured repo directories are tolerated.
+    """
     try:
         return Config.load(path)
-    except ConfigError:
+    except ConfigError as original:
+        # Config.load's only intentionally lenient failure is a configured repo
+        # directory that has not been cloned yet. Preserve all other errors.
+        if not str(original).startswith("Repo '"):
+            raise
         import yaml
 
-        return Config.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        try:
+            return Config.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        except Exception as exc:  # noqa: BLE001 - normalize all read/validation failures
+            raise ConfigError(f"Invalid config in {path}: {exc}") from original
 
 
 def _apply_config_patch(kwargs: dict, patch: dict) -> None:
@@ -1151,9 +1210,14 @@ def _apply_config_patch(kwargs: dict, patch: dict) -> None:
 @click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
 def show_config(config_path: str | None) -> None:
     """Print the current config as JSON (defaults if none) — the shape `config-set` takes."""
-    path = Path(config_path) if config_path else Config.find()
+    path = _selected_config_path(config_path)
+    if path and path.exists() and not path.is_file():
+        raise click.ClickException(f"Config path is not a file: {path}")
     if path and path.is_file():
-        out = _config_to_dict(_load_config_lenient(path))
+        try:
+            out = _config_to_dict(_load_config_lenient(path))
+        except ConfigError as exc:
+            raise click.ClickException(str(exc)) from exc
         out["exists"] = True
         out["path"] = str(path)
     else:
@@ -1186,10 +1250,17 @@ def config_set(config_path: str | None, json_src) -> None:
         raise click.ClickException(f"invalid JSON: {exc}") from exc
     if not isinstance(patch, dict):
         raise click.ClickException("config-set expects a JSON object.")
-    path = Path(config_path) if config_path else (Config.find() or Path(DEFAULT_CONFIG))
-    kwargs = (
-        _render_kwargs_from_config(_load_config_lenient(path)) if path.is_file() else _default_render_kwargs()
-    )
+    path = _selected_config_path(config_path) or Path(DEFAULT_CONFIG)
+    if path.is_dir():
+        raise click.ClickException(f"Config path is not a file: {path}")
+    try:
+        kwargs = (
+            _render_kwargs_from_config(_load_config_lenient(path))
+            if path.is_file()
+            else _default_render_kwargs()
+        )
+    except ConfigError as exc:
+        raise click.ClickException(f"could not read {path}: {exc}") from exc
     try:
         _apply_config_patch(kwargs, patch)
         rendered = render_config_yaml(**kwargs)

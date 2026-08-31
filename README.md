@@ -531,7 +531,7 @@ markers is regenerated, so put your notes inside them.
 | `coop-data-doc upgrade` | check for a newer release and print the exact upgrade command (does **not** self-update) |
 | `coop-data-doc help [command]` | show help (same as `--help`) |
 
-**Config discovery:** `coop-data-doc` searches for `coop-data-doc.yml` in the current directory and walks up parent directories (like `git` finding `.git`). You can override with `--config PATH` or the `COOP_DATA_DOC_CONFIG` environment variable.
+**Config discovery:** `coop-data-doc` searches for `coop-data-doc.yml` in the current directory and walks up parent directories (like `git` finding `.git`). You can override with `--config PATH` (which takes precedence) or the `COOP_DATA_DOC_CONFIG` environment variable. A non-empty environment value is authoritative: missing, directory, unreadable, or invalid paths fail rather than falling back to another config. Relative environment paths resolve against the process current working directory. Leave the variable unset or empty to use normal upward discovery. `config-set`, `setup`, and `init` may create an authoritative missing target; `show-config` reports it as `exists: false`.
 
 Options for `build`/`update`: `--skip-html` (markdown only), `--serve` (live-preview
  the site). `scan`/`build`/`update` all accept `--non-interactive` (never prompt; for

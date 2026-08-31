@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 
@@ -43,14 +44,14 @@ output:
     return config
 
 
-def run(args, cwd: Path):
+def run(args, cwd: Path, input: str | None = None):
     runner = CliRunner()
     import os
 
     old = os.getcwd()
     os.chdir(cwd)
     try:
-        return runner.invoke(cli, args, obj={}, catch_exceptions=False)
+        return runner.invoke(cli, args, input=input, obj={}, catch_exceptions=False)
     finally:
         os.chdir(old)
 
@@ -62,6 +63,18 @@ def test_init_and_refuse_overwrite(tmp_path: Path):
     result = run(["init"], tmp_path)
     assert result.exit_code != 0
     assert "already exists" in result.output
+
+
+def test_init_without_path_targets_authoritative_env_candidate(tmp_path: Path, monkeypatch):
+    local = setup_workspace(tmp_path)
+    selected = tmp_path / "created" / "selected.yml"
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+
+    result = run(["init"], tmp_path)
+
+    assert result.exit_code == 0, result.output
+    assert selected.is_file()
+    assert local.read_text(encoding="utf-8").startswith("project_name: Test Estate")
 
 
 def test_scan_non_interactive(tmp_path: Path):
@@ -370,6 +383,36 @@ def test_interactive_menu_no_config_offers_init(tmp_path: Path, monkeypatch):
     assert (tmp_path / "coop-data-doc.yml").is_file()
 
 
+def test_interactive_menu_names_invalid_authoritative_env_target(tmp_path: Path, monkeypatch):
+    from coop_data_doc import cli as cli_module
+
+    selected = tmp_path / "configured" / "missing.yml"
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+
+    class FakeQuestionary:
+        class Choice:
+            def __init__(self, title, value):
+                self.title = title
+                self.value = value
+
+        @staticmethod
+        def select(message, choices):
+            assert str(selected) in message
+            assert "not a config file" in message
+
+            class _Result:
+                @staticmethod
+                def unsafe_ask():
+                    return "exit"
+
+            return _Result()
+
+    monkeypatch.setattr(cli_module, "questionary", FakeQuestionary)
+    monkeypatch.setattr(cli_module, "_stdio_is_interactive", lambda: True)
+    result = run([], tmp_path)
+    assert result.exit_code == 0, result.output
+
+
 def test_interactive_menu_exit(tmp_path: Path, monkeypatch):
     from coop_data_doc import cli as cli_module
 
@@ -495,6 +538,50 @@ def test_config_find_prefers_env_var(tmp_path: Path, monkeypatch):
     assert found == env_config
 
 
+def test_config_find_env_missing_is_authoritative(tmp_path: Path, monkeypatch):
+    """A missing environment target is returned as-is, never replaced by discovery."""
+    from coop_data_doc.config import Config
+
+    local = tmp_path / "coop-data-doc.yml"
+    local.write_text("project_name: fallback\nrepos: {}\n", encoding="utf-8")
+    missing = tmp_path / "missing.yml"
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(missing))
+    assert Config.find(start_dir=tmp_path) == missing.resolve()
+
+
+def test_config_find_empty_env_allows_normal_discovery(tmp_path: Path, monkeypatch):
+    from coop_data_doc.config import Config
+
+    config = tmp_path / "coop-data-doc.yml"
+    config.write_text("project_name: Test\nrepos: {}\n", encoding="utf-8")
+    for value in (None, ""):
+        if value is None:
+            monkeypatch.delenv("COOP_DATA_DOC_CONFIG", raising=False)
+        else:
+            monkeypatch.setenv("COOP_DATA_DOC_CONFIG", value)
+        assert Config.find(start_dir=tmp_path) == config
+
+
+def test_config_find_relative_env_resolves_from_cwd(tmp_path: Path, monkeypatch):
+    from coop_data_doc.config import Config
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", "nested/custom.yml")
+    assert Config.find() == (tmp_path / "nested/custom.yml").resolve()
+
+
+def test_unresolvable_env_path_is_a_friendly_error(tmp_path: Path, monkeypatch):
+    selected = "~__coop_data_doc_missing_user__/selected.yml"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", selected)
+
+    result = run(["status"], tmp_path)
+
+    assert result.exit_code == 1
+    assert selected in result.output
+    assert "Traceback" not in result.output
+
+
 def test_status_shows_version(tmp_path: Path):
     """status prints the installed version (offline) with an upgrade hint."""
     result = run(["status"], tmp_path)  # no config -> exit 1, but version prints first
@@ -509,6 +596,248 @@ def test_status_no_config(tmp_path: Path):
     assert "no config found" in result.output
     assert "coop-data-doc init" in result.output
     assert "coop-data-doc setup" in result.output
+
+
+def test_authoritative_env_missing_rejects_all_read_commands(tmp_path: Path, monkeypatch):
+    """Read commands fail on the selected env path instead of using local config."""
+    setup_workspace(tmp_path)
+    selected = tmp_path / "missing" / "selected.yml"
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    for args in (
+        ["build", "--non-interactive", "--skip-html"],
+        ["scan", "--non-interactive"],
+        ["check"],
+        ["impact", "--baseline", str(baseline)],
+    ):
+        result = run(args, tmp_path)
+        assert result.exit_code == 1, (args, result.output)
+        assert str(selected) in result.output
+        assert "Traceback" not in result.output
+    # The valid local config was never used to create output.
+    assert not (tmp_path / "data-docs").exists()
+
+
+def test_authoritative_env_missing_status_and_parent_do_not_fallback(tmp_path: Path, monkeypatch):
+    """A missing env path wins over both a local and an ancestor config."""
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    (parent / "coop-data-doc.yml").write_text("project_name: parent\nrepos: {}\n", encoding="utf-8")
+    (child / "coop-data-doc.yml").write_text("project_name: local\nrepos: {}\n", encoding="utf-8")
+    selected = parent / "selected.yml"
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    result = run(["status"], child)
+    assert result.exit_code == 1
+    assert f"config not found at {selected}" in result.output
+    assert "config:" not in result.output
+
+
+def test_authoritative_env_directory_rejects_all_read_commands(tmp_path: Path, monkeypatch):
+    setup_workspace(tmp_path)
+    selected = tmp_path / "selected-dir"
+    selected.mkdir()
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+
+    for args in (
+        ["build", "--non-interactive", "--skip-html"],
+        ["scan", "--non-interactive"],
+        ["check"],
+        ["impact", "--baseline", str(baseline)],
+        ["status"],
+    ):
+        result = run(args, tmp_path)
+        assert result.exit_code == 1, (args, result.output)
+        assert str(selected) in result.output
+        assert "Traceback" not in result.output
+        if args == ["status"]:
+            assert "directory" in result.output
+
+
+def test_valid_env_config_wins_over_local_and_parent(tmp_path: Path, monkeypatch):
+    local = setup_workspace(tmp_path)
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    (parent / "coop-data-doc.yml").write_text("project_name: Parent Estate\nrepos: {}\n", encoding="utf-8")
+    selected = tmp_path / "config" / "selected.yml"
+    selected.parent.mkdir()
+    selected.write_text(
+        local.read_text(encoding="utf-8")
+        .replace("Test Estate", "Environment Estate")
+        .replace("./sql-repo", "../sql-repo")
+        .replace("./pbi-repo", "../pbi-repo"),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    result = run(["show-config"], tmp_path)
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["project_name"] == "Environment Estate"
+    assert data["path"] == str(selected)
+
+
+def test_explicit_config_path_beats_environment_override(tmp_path: Path, monkeypatch):
+    selected = tmp_path / "selected.yml"
+    explicit = tmp_path / "nested" / "explicit.yml"
+    selected.write_text("project_name: Environment Estate\nrepos: {}\n", encoding="utf-8")
+    explicit.parent.mkdir()
+    explicit.write_text("project_name: Explicit Estate\nrepos: {}\n", encoding="utf-8")
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+
+    result = run(["show-config", "--config", "nested/explicit.yml"], tmp_path)
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["project_name"] == "Explicit Estate"
+    assert data["path"] == str(explicit.resolve())
+
+
+def test_setup_without_path_targets_authoritative_env_candidate(tmp_path: Path, monkeypatch):
+    from coop_data_doc import wizard as wizard_module
+
+    setup_workspace(tmp_path)
+    selected = tmp_path / "setup" / "selected.yml"
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    captured = {}
+
+    def fake_run_setup(path, io=None):
+        captured["path"] = Path(path)
+
+    monkeypatch.setattr(wizard_module, "run_setup", fake_run_setup)
+    result = run(["setup", "--transport", "jsonl"], tmp_path, input="")
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == selected.resolve()
+    assert not selected.exists()
+    assert "project_name: Test Estate" in (tmp_path / "coop-data-doc.yml").read_text(encoding="utf-8")
+
+
+def test_setup_explicit_unresolvable_path_is_friendly(tmp_path: Path):
+    selected = "~__coop_data_doc_missing_user__/selected.yml"
+
+    result = run(["setup", selected], tmp_path)
+
+    assert result.exit_code == 1
+    assert selected in result.output
+    assert "Traceback" not in result.output
+
+
+def test_show_config_reports_missing_authoritative_env_path(tmp_path: Path, monkeypatch):
+    setup_workspace(tmp_path)
+    selected = tmp_path / "new" / "selected.yml"
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    result = run(["show-config"], tmp_path)
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["exists"] is False
+    assert data["path"] == str(selected)
+    assert data["project_name"] == "Data Estate"  # no local fallback
+
+
+def test_show_config_rejects_authoritative_directory(tmp_path: Path, monkeypatch):
+    setup_workspace(tmp_path)
+    selected = tmp_path / "selected-dir"
+    selected.mkdir()
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+
+    result = run(["show-config"], tmp_path)
+
+    assert result.exit_code == 1
+    assert str(selected) in result.output
+    assert "Data Estate" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_config_set_creates_missing_authoritative_env_path(tmp_path: Path, monkeypatch):
+    from coop_data_doc.config import Config
+
+    local = setup_workspace(tmp_path)
+    selected = tmp_path / "created" / "selected.yml"
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    result = run(["config-set"], tmp_path, input=json.dumps({"project_name": "Created"}))
+    assert result.exit_code == 0, result.output
+    assert selected.is_file()
+    assert Config.load(selected).project_name == "Created"
+    assert local.read_text(encoding="utf-8").startswith("project_name: Test Estate")
+
+
+def test_authoritative_env_directory_fails_cleanly_for_authoring(tmp_path: Path, monkeypatch):
+    setup_workspace(tmp_path)
+    selected = tmp_path / "selected-dir"
+    selected.mkdir()
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    for args in (
+        ["config-set"],
+        ["set-folders", "--repo", "sql", "--include", "procs"],
+    ):
+        result = run(args, tmp_path, input="{}" if args[0] == "config-set" else None)
+        assert result.exit_code == 1
+        assert str(selected) in result.output
+        assert "Traceback" not in result.output
+
+
+def test_authoritative_env_missing_rejects_set_folders(tmp_path: Path, monkeypatch):
+    setup_workspace(tmp_path)
+    selected = tmp_path / "missing" / "selected.yml"
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+
+    result = run(["set-folders", "--repo", "sql", "--include", "procs"], tmp_path)
+
+    assert result.exit_code == 1
+    assert str(selected) in result.output
+    assert "Traceback" not in result.output
+
+
+def test_setup_directory_error_is_friendly(tmp_path: Path, monkeypatch):
+    from coop_data_doc import wizard as wizard_module
+    from coop_data_doc.config import ConfigError
+
+    selected = tmp_path / "selected-dir"
+    selected.mkdir()
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+
+    def fail_setup(path, io=None):
+        raise ConfigError(f"Config path is a directory: {path}")
+
+    monkeypatch.setattr(wizard_module, "run_setup", fail_setup)
+    result = run(["setup"], tmp_path)
+
+    assert result.exit_code == 1
+    assert str(selected) in result.output
+    assert "Traceback" not in result.output
+
+
+def test_status_invalid_authoritative_env_names_path(tmp_path: Path, monkeypatch):
+    setup_workspace(tmp_path)
+    selected = tmp_path / "invalid.yml"
+    selected.write_text("not: [valid", encoding="utf-8")
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    result = run(["status"], tmp_path)
+    assert result.exit_code == 1
+    assert str(selected) in result.output
+    assert "Traceback" not in result.output
+
+
+def test_status_unreadable_authoritative_env_names_path(tmp_path: Path, monkeypatch):
+    setup_workspace(tmp_path)
+    selected = tmp_path / "unreadable.yml"
+    selected.write_text("project_name: selected\nrepos: {}\n", encoding="utf-8")
+    monkeypatch.setenv("COOP_DATA_DOC_CONFIG", str(selected))
+    original_read_text = Path.read_text
+
+    def deny_selected(path, *args, **kwargs):
+        if path == selected:
+            raise PermissionError("permission denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", deny_selected)
+    result = run(["status"], tmp_path)
+
+    assert result.exit_code == 1
+    assert str(selected) in result.output
+    assert "Traceback" not in result.output
 
 
 def test_status_with_valid_config(tmp_path: Path):

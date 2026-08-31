@@ -146,12 +146,20 @@ opt-in. `config-set` accepts it like any other key.
 
 ## Config File Discovery
 
-`coop-data-doc` searches for `coop-data-doc.yml` in this order:
+`coop-data-doc` selects a config in this order:
 
 1. `--config` argument (explicit)
-2. `./coop-data-doc.yml` (current directory)
-3. Walk up parent directories until found (like `git` finding `.git`)
-4. If not found, exit 1 with a message suggesting `coop-data-doc init`
+2. A non-empty `COOP_DATA_DOC_CONFIG` environment value (authoritative)
+3. `./coop-data-doc.yml` (current directory)
+4. Walk up parent directories until found (like `git` finding `.git`)
+5. If not found, exit 1 with a message suggesting `coop-data-doc init`
+
+An environment-selected path is never replaced by upward discovery, even when it
+is missing, a directory, unreadable, or invalid. Relative environment paths resolve
+against the process current working directory. Unset and empty environment values
+permit normal discovery. Read commands fail concisely; `config-set`, `setup`, and
+`init` may create an authoritative missing target, while `show-config` reports one
+with `exists: false`.
 
 ## Output Artifacts (Machine-Readable)
 
