@@ -1726,7 +1726,7 @@ def impact(
     """Change-impact diff against a baseline graph.json (e.g., git main)."""
     import subprocess
 
-    from coop_data_doc.graph.diff import diff_graphs
+    from coop_data_doc.graph.diff import impact_map
 
     config = _load_config(config_path)
 
@@ -1752,35 +1752,27 @@ def impact(
     else:
         raise click.ClickException("Must provide --baseline or --git")
 
-    diff = diff_graphs(old_graph, current_graph)
-
-    # Identify seeded nodes
-    seed_node_ids = set()
-    if files_list:
-        file_set = set(files_list)
-        for node in current_graph.nodes.values():
-            if node.source_file in file_set:
-                seed_node_ids.add(node.id)
-    else:
-        seed_node_ids.update(n.id for n in diff.added_nodes)
-        seed_node_ids.update(n.id for n in diff.changed_nodes)
-
-    # Calculate downstream impact
-    impact_map = {}
-    for nid in sorted(seed_node_ids):
-        if nid not in current_graph.nodes:
-            continue
-        down = current_graph.downstream(nid)
-        impact_map[nid] = sorted(down)
+    impacts, seed_graphs = impact_map(old_graph, current_graph, files_list)
 
     if fmt == "json":
-        click.echo(json.dumps(impact_map, indent=2))
+        click.echo(json.dumps(impacts, indent=2))
     else:
-        for nid, down in impact_map.items():
-            node = current_graph.nodes[nid]
-            trust = " ⚠️ " + node.metadata.get("trust") if node.metadata.get("trust") else ""
-            click.echo(f"### {node.qualified_display} ({node.node_type.value}){trust}")
+        for nid, down in impacts.items():
+            graph = seed_graphs[nid]
+            node = graph.nodes.get(nid) or current_graph.nodes.get(nid) or old_graph.nodes.get(nid)
+            if node is None:
+                # Dangling edge endpoints are unusual but valid graph data;
+                # retain their JSON impact entry instead of failing to render.
+                click.echo(f"### {nid}")
+            else:
+                removed = nid not in current_graph.nodes
+                trust = " ⚠️ " + node.metadata.get("trust") if node.metadata.get("trust") else ""
+                removed_marker = " [removed]" if removed else ""
+                click.echo(f"### {node.qualified_display} ({node.node_type.value}){removed_marker}{trust}")
             for d_id in down:
-                d_node = current_graph.nodes[d_id]
-                click.echo(f"- {d_node.qualified_display} ({d_node.node_type.value})")
+                d_node = graph.nodes.get(d_id) or current_graph.nodes.get(d_id) or old_graph.nodes.get(d_id)
+                if d_node is None:
+                    click.echo(f"- {d_id}")
+                else:
+                    click.echo(f"- {d_node.qualified_display} ({d_node.node_type.value})")
             click.echo()
