@@ -2,6 +2,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from coop_data_doc import __version__
@@ -580,6 +581,27 @@ def test_unresolvable_env_path_is_a_friendly_error(tmp_path: Path, monkeypatch):
     assert result.exit_code == 1
     assert selected in result.output
     assert "Traceback" not in result.output
+
+
+def test_resolve_path_rejects_a_synthetic_missing_named_home(tmp_path: Path, monkeypatch):
+    """Windows-style expanduser guesses must not make unknown users resolvable."""
+    from coop_data_doc.config import Config, ConfigError
+
+    original_expanduser = Path.expanduser
+    missing_home = tmp_path / "Users" / "__coop_data_doc_missing_user__"
+
+    def windows_style_expanduser(path: Path) -> Path:
+        raw = str(path)
+        if raw == "~__coop_data_doc_missing_user__":
+            return missing_home
+        if raw.startswith("~__coop_data_doc_missing_user__/"):
+            return missing_home / raw.split("/", 1)[1]
+        return original_expanduser(path)
+
+    monkeypatch.setattr(Path, "expanduser", windows_style_expanduser)
+
+    with pytest.raises(ConfigError, match="~__coop_data_doc_missing_user__"):
+        Config.resolve_path("~__coop_data_doc_missing_user__/selected.yml")
 
 
 def test_status_shows_version(tmp_path: Path):

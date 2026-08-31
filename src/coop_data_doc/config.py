@@ -186,6 +186,15 @@ class Config(BaseModel):
         """Resolve a config path, converting path-expansion failures to ConfigError."""
         raw = Path(path)
         try:
+            # ``Path.expanduser()`` does not validate named users on Windows:
+            # ``~missing-user`` is guessed as a sibling of the current user's
+            # home directory.  Require that named home to exist before using it
+            # so an invalid override cannot silently target the wrong location.
+            first_part = raw.parts[0] if raw.parts else ""
+            if first_part.startswith("~") and first_part != "~":
+                named_home = Path(first_part).expanduser()
+                if named_home == Path(first_part) or not named_home.is_dir():
+                    raise RuntimeError(f"Could not determine home directory for {first_part}")
             return raw.expanduser().resolve()
         except (OSError, RuntimeError, ValueError) as exc:
             raise ConfigError(f"Could not resolve config path {raw}: {exc}") from exc
