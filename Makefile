@@ -17,7 +17,7 @@ setup:
 	$(VENV)/bin/pip install -e ".[dev]"
 	$(PY) -m coop_data_doc --version
 
-# Full unit suite. Expected: ~490 passed in a few seconds.
+# Full unit suite. Every test must pass.
 test: | $(PY)
 	$(PY) -m pytest -q
 

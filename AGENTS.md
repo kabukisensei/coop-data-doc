@@ -39,7 +39,7 @@ Linux and macOS are equally supported; every command below is copy-paste on both
 
 - **Venv** (Python 3.13; 3.10–3.13 only, never 3.14). Rebuild from scratch:
   `rm -rf .venv && python3.13 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
-- **Tests:** `.venv/bin/python -m pytest -q` — expect `~490 passed` in a few seconds, zero failures.
+- **Tests:** `.venv/bin/python -m pytest -q` — expect the full suite to pass in a few seconds, with zero failures.
 - **Lint:** `.venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests` — pass looks like `All checks passed!` then `N files already formatted`.
 - **Before starting any work:** `git pull --ff-only`. If the tree is dirty or the pull fails: stop and report — do not stash, reset, or commit around it.
 - **Secrets:** none exist and none are needed (the pipeline is offline). Never add tokens, connection strings, or credentials to code, config, or fixtures.
@@ -403,10 +403,6 @@ config = Config.load("coop-data-doc.yml")
 graph, result, warnings = run_pipeline(config, interactive=False)
 # graph.nodes, graph.edges, result.resolved, result.unresolved
 ```
-
-## Version
-
-This contract matches `coop-data-doc` version `0.33.0`.
 
 ## Working the backlog (agents)
 
