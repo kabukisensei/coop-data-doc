@@ -50,7 +50,7 @@ class LineageCache:
             return cache
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             cache.warnings.append(
                 ParseWarning(
                     file=str(path),
@@ -80,7 +80,20 @@ class LineageCache:
                 )
             )
             return cache
-        for key, raw in (data.get("mappings") or {}).items():
+        if "mappings" in data:
+            mappings = data["mappings"]
+            if not isinstance(mappings, dict):
+                cache.warnings.append(
+                    ParseWarning(
+                        file=str(path),
+                        message="cache mappings is not a JSON object; ignoring file",
+                        category="cache_invalid",
+                    )
+                )
+                return cache
+        else:
+            mappings = {}
+        for key, raw in mappings.items():
             try:
                 cache.mappings[key] = CacheEntry.model_validate(raw)
             except Exception:  # noqa: BLE001 — a corrupt cache entry degrades to a warning

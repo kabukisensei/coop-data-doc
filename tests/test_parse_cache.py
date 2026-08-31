@@ -179,6 +179,19 @@ def test_version_mismatch_ignored_with_warning(tmp_path: Path):
     assert cache.warnings and cache.warnings[0].category == "parse_cache_invalid"
 
 
+def test_invalid_utf8_cache_degrades_without_rewriting(tmp_path: Path):
+    path = tmp_path / PARSE_CACHE
+    path.write_bytes(b"\xff")
+    before = path.read_bytes()
+
+    cache = ParseCache.load(path)
+
+    assert cache.entries == {}
+    assert len(cache.warnings) == 1
+    assert cache.warnings[0].category == "parse_cache_invalid"
+    assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize("payload", ["[1, 2, 3]", "42", '"a string"', "true", "null"])
 def test_wrong_shape_cache_degrades_not_crashes(tmp_path: Path, payload: str):
     """A structurally-valid JSON file of the WRONG shape (a top-level list/number/
@@ -190,6 +203,50 @@ def test_wrong_shape_cache_degrades_not_crashes(tmp_path: Path, payload: str):
     cache = ParseCache.load(path)  # must not raise
     assert cache.entries == {}
     assert cache.warnings and cache.warnings[0].category == "parse_cache_invalid"
+
+
+@pytest.mark.parametrize(
+    "nested_value",
+    [[], ["entry"], "", "not-an-object", 0, 7, False, True, None],
+)
+def test_invalid_nested_cache_degrades_without_rewriting(tmp_path: Path, nested_value):
+    path = tmp_path / PARSE_CACHE
+    path.write_text(
+        json.dumps({"version": CACHE_VERSION, "cache": nested_value}),
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    cache = ParseCache.load(path)
+
+    assert cache.entries == {}
+    assert len(cache.warnings) == 1
+    assert cache.warnings[0].category == "parse_cache_invalid"
+    assert path.read_bytes() == before
+
+
+def test_missing_cache_key_is_empty_without_invalid_shape_warning(tmp_path: Path):
+    path = tmp_path / PARSE_CACHE
+    path.write_text(json.dumps({"version": CACHE_VERSION}), encoding="utf-8")
+    before = path.read_bytes()
+
+    cache = ParseCache.load(path)
+
+    assert cache.entries == {}
+    assert cache.warnings == []
+    assert path.read_bytes() == before
+
+
+def test_empty_cache_dict_is_valid(tmp_path: Path):
+    path = tmp_path / PARSE_CACHE
+    path.write_text(json.dumps({"version": CACHE_VERSION, "cache": {}}), encoding="utf-8")
+    before = path.read_bytes()
+
+    cache = ParseCache.load(path)
+
+    assert cache.entries == {}
+    assert cache.warnings == []
+    assert path.read_bytes() == before
 
 
 def test_invalid_entry_dropped_others_kept(tmp_path: Path):
@@ -207,10 +264,13 @@ def test_invalid_entry_dropped_others_kept(tmp_path: Path):
         ),
         encoding="utf-8",
     )
+    before = path.read_bytes()
     cache = ParseCache.load(path)
     assert good_key in cache.entries
     assert "bad_key" not in cache.entries
-    assert any(w.category == "parse_cache_invalid" for w in cache.warnings)
+    assert len(cache.warnings) == 1
+    assert cache.warnings[0].category == "parse_cache_invalid"
+    assert path.read_bytes() == before
 
 
 def test_write_roundtrip_stable(tmp_path: Path):

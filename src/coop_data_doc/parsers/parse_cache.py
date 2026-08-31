@@ -136,7 +136,7 @@ class ParseCache:
             return cache
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             cache.warnings.append(
                 ParseWarning(
                     file=str(path),
@@ -167,7 +167,20 @@ class ParseCache:
                 )
             )
             return cache
-        for key, raw in (data.get("cache") or {}).items():
+        if "cache" in data:
+            entries = data["cache"]
+            if not isinstance(entries, dict):
+                cache.warnings.append(
+                    ParseWarning(
+                        file=str(path),
+                        message="parse cache entries are not a JSON object; ignoring file",
+                        category="parse_cache_invalid",
+                    )
+                )
+                return cache
+        else:
+            entries = {}
+        for key, raw in entries.items():
             try:
                 cache.entries[key] = ParseCacheEntry.model_validate(raw)
             except Exception:  # noqa: BLE001 — a corrupt cache entry degrades to a cold re-parse

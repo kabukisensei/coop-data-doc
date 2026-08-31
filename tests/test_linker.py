@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -289,6 +290,19 @@ def test_unknown_cache_version_ignored(tmp_path: Path):
     assert path.read_text().startswith('{"version": 99')  # file untouched
 
 
+def test_invalid_utf8_cache_degrades_without_rewriting(tmp_path: Path):
+    path = tmp_path / ".lineage-cache.json"
+    path.write_bytes(b"\xff")
+    before = path.read_bytes()
+
+    cache = LineageCache.load(path)
+
+    assert cache.mappings == {}
+    assert len(cache.warnings) == 1
+    assert cache.warnings[0].category == "cache_invalid"
+    assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize("payload", ["[1, 2, 3]", "42", '"a string"', "true", "null"])
 def test_wrong_shape_cache_degrades_not_crashes(tmp_path: Path, payload: str):
     """A committed .lineage-cache.json that is valid JSON of the WRONG shape (a
@@ -300,6 +314,76 @@ def test_wrong_shape_cache_degrades_not_crashes(tmp_path: Path, payload: str):
     cache = LineageCache.load(path)  # must not raise
     assert cache.mappings == {}
     assert any(w.category == "cache_invalid" for w in cache.warnings)
+
+
+@pytest.mark.parametrize(
+    "nested_value",
+    [[], ["entry"], "", "not-an-object", 0, 7, False, True, None],
+)
+def test_invalid_nested_mappings_degrade_without_rewriting(tmp_path: Path, nested_value):
+    path = tmp_path / ".lineage-cache.json"
+    path.write_text(
+        json.dumps({"version": LineageCache.VERSION, "mappings": nested_value}),
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    cache = LineageCache.load(path)
+
+    assert cache.mappings == {}
+    assert len(cache.warnings) == 1
+    assert cache.warnings[0].category == "cache_invalid"
+    assert path.read_bytes() == before
+
+
+def test_missing_mappings_key_is_empty_without_invalid_shape_warning(tmp_path: Path):
+    path = tmp_path / ".lineage-cache.json"
+    path.write_text(json.dumps({"version": LineageCache.VERSION}), encoding="utf-8")
+    before = path.read_bytes()
+
+    cache = LineageCache.load(path)
+
+    assert cache.mappings == {}
+    assert cache.warnings == []
+    assert path.read_bytes() == before
+
+
+def test_empty_mappings_dict_is_valid(tmp_path: Path):
+    path = tmp_path / ".lineage-cache.json"
+    path.write_text(json.dumps({"version": LineageCache.VERSION, "mappings": {}}), encoding="utf-8")
+    before = path.read_bytes()
+
+    cache = LineageCache.load(path)
+
+    assert cache.mappings == {}
+    assert cache.warnings == []
+    assert path.read_bytes() == before
+
+
+def test_mixed_mappings_keep_valid_entry_and_drop_invalid_without_rewriting(tmp_path: Path):
+    path = tmp_path / ".lineage-cache.json"
+    valid_key = "pbi_table:sales analytics.dim_customer"
+    path.write_text(
+        json.dumps(
+            {
+                "version": LineageCache.VERSION,
+                "mappings": {
+                    valid_key: {"target": "view:sales.dim_customer", "method": "interactive"},
+                    "invalid": {"target": "view:sales.dim_customer"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    cache = LineageCache.load(path)
+
+    assert list(cache.mappings) == [valid_key]
+    assert cache.mappings[valid_key].target == "view:sales.dim_customer"
+    assert len(cache.warnings) == 1
+    assert cache.warnings[0].category == "cache_invalid"
+    assert path.read_bytes() == before
 
 
 class _RaisingQuestionary(FakeQuestionary):
