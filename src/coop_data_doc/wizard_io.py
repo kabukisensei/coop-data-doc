@@ -140,7 +140,7 @@ class QuestionaryWizardIO(WizardIO):
 
     def select(self, prompt_id: str, message: str, choices: list[Choice], default: str | None = None) -> str:
         q_choices = [self._q.Choice(c.label, c.value) for c in choices]
-        return str(self._ask(self._q.select(message, choices=q_choices)))
+        return str(self._ask(self._q.select(message, choices=q_choices, default=default)))
 
     def checkbox(self, prompt_id: str, message: str, choices: list[Choice]) -> list[str]:
         q_choices = [self._q.Choice(c.label, c.value, checked=c.checked) for c in choices]

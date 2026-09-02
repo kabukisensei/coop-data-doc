@@ -320,22 +320,16 @@ DEFAULT_PBI_INCLUDE = [
 
 _CONFIG_TEMPLATE = """\
 # coop-data-doc configuration
-# Point the tool at your repos, then run `coop-data-doc build`.
+# Point the tool at whatever source folders are available, then run
+# `coop-data-doc build`. SQL-only, Power-BI-only, partial, and empty
+# discovery-mode configs are all valid; add more repos as the estate becomes known.
 # All relative paths resolve against the folder containing THIS file.
 # Re-run `coop-data-doc setup` anytime to update this file interactively.
 
 project_name: {project_name}
 
-# The repos to crawl.
-repos:
-  sql:
-    path: {sql_path}
-    include: {sql_include}
-    exclude: {sql_exclude}
-  powerbi:
-    path: {pbi_path}
-    include: {pbi_include}
-    exclude: {pbi_exclude}
+# The source folders to crawl. Keys are labels, not required names.
+{repos_block}
 
 # Hints linking SQL view schemas to the semantic models they feed.
 # Anything still ambiguous is resolved interactively on first run and
@@ -369,9 +363,10 @@ sql_dialect: {sql_dialect}
 def render_config_yaml(
     *,
     project_name: str,
-    sql_path: str,
-    pbi_path: str,
     mappings: list[tuple[str, str]],
+    sql_path: str | None = None,
+    pbi_path: str | None = None,
+    repos: dict[str, dict[str, object]] | None = None,
     layers: dict[str, dict[str, list[str]]] | None = None,
     ignore_schemas: list[str] | None = None,
     include_schemas: list[str] | None = None,
@@ -393,6 +388,34 @@ def render_config_yaml(
     byte-identical to before the key existed; ``include_schemas`` likewise
     renders only when non-empty.
     """
+    if repos is None:
+        repos = {}
+        if sql_path is not None:
+            repos["sql"] = {
+                "path": sql_path,
+                "include": sql_include if sql_include is not None else DEFAULT_SQL_INCLUDE,
+                "exclude": sql_exclude if sql_exclude is not None else DEFAULT_SQL_EXCLUDE,
+            }
+        if pbi_path is not None:
+            repos["powerbi"] = {
+                "path": pbi_path,
+                "include": pbi_include if pbi_include is not None else DEFAULT_PBI_INCLUDE,
+                "exclude": pbi_exclude if pbi_exclude is not None else [],
+            }
+    if repos:
+        lines = ["repos:"]
+        preferred = [key for key in ("sql", "powerbi") if key in repos]
+        for key in [*preferred, *sorted(set(repos) - set(preferred))]:
+            repo = repos[key]
+            rendered_key = key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key)
+            lines.append(f"  {rendered_key}:")
+            lines.append(f"    path: {json.dumps(str(repo['path']))}")
+            lines.append(f"    include: {json.dumps(list(repo.get('include', ['**/*'])))}")
+            lines.append(f"    exclude: {json.dumps(list(repo.get('exclude', [])))}")
+        repos_block = "\n".join(lines)
+    else:
+        repos_block = "repos: {}"
+
     if mappings:
         lines = ["schema_mappings:"]
         for schema, model in mappings:
@@ -451,12 +474,7 @@ def render_config_yaml(
 
     return _CONFIG_TEMPLATE.format(
         project_name=json.dumps(project_name),
-        sql_path=json.dumps(sql_path),
-        sql_include=json.dumps(sql_include if sql_include is not None else DEFAULT_SQL_INCLUDE),
-        sql_exclude=json.dumps(sql_exclude if sql_exclude is not None else DEFAULT_SQL_EXCLUDE),
-        pbi_path=json.dumps(pbi_path),
-        pbi_include=json.dumps(pbi_include if pbi_include is not None else DEFAULT_PBI_INCLUDE),
-        pbi_exclude=json.dumps(pbi_exclude if pbi_exclude is not None else []),
+        repos_block=repos_block,
         mappings_block=mappings_block,
         layers_block=layers_block,
         ignore_schemas=json.dumps(ignore_schemas or []),

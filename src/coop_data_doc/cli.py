@@ -22,6 +22,7 @@ import questionary
 from coop_data_doc import __version__
 from coop_data_doc.config import (
     DEFAULT_PBI_INCLUDE,
+    DEFAULT_SQL_EXCLUDE,
     DEFAULT_SQL_INCLUDE,
     Config,
     ConfigError,
@@ -780,7 +781,9 @@ def init(path: str | None, force: bool) -> None:
     except OSError as exc:
         raise click.ClickException(f"could not write {target}: {exc}") from exc
     click.echo(f"Wrote {target}.")
-    click.echo("Next: edit the two repo paths, then run `coop-data-doc build`.")
+    click.echo(
+        "Next: edit the available source paths (or use repos: {} for discovery mode), then run `coop-data-doc build`."
+    )
 
 
 def _render_kwargs_from_config(config: Config) -> dict:
@@ -788,8 +791,6 @@ def _render_kwargs_from_config(config: Config) -> dict:
     field can be changed and the file re-rendered the same way the wizard saves it
     (deterministic, comments intact). Modeled fields only; unknown YAML keys aren't
     preserved (same as re-running setup)."""
-    sql = config.repos.get("sql")
-    pbi = config.repos.get("powerbi")
     branding: dict[str, str] = {}
     brand = config.branding
     if brand:
@@ -803,17 +804,15 @@ def _render_kwargs_from_config(config: Config) -> dict:
                 branding[key] = val
     return {
         "project_name": config.project_name,
-        "sql_path": sql.path if sql else "../sql-repo",
-        "pbi_path": pbi.path if pbi else "../pbi-repo",
+        "repos": {
+            key: {"path": repo.path, "include": list(repo.include), "exclude": list(repo.exclude)}
+            for key, repo in config.repos.items()
+        },
         "mappings": [(m.schema_name, m.model) for m in config.schema_mappings],
         "layers": {k: {"schemas": list(v.schemas), "paths": list(v.paths)} for k, v in config.layers.items()},
         "ignore_schemas": list(config.ignore_schemas),
         "include_schemas": list(config.include_schemas),
         "branding": branding,
-        "sql_include": list(sql.include) if sql else None,
-        "sql_exclude": list(sql.exclude) if sql else None,
-        "pbi_include": list(pbi.include) if pbi else None,
-        "pbi_exclude": list(pbi.exclude) if pbi else None,
         "output_dir": config.output.dir,
         "site_dir": config.output.site_dir,
         "sql_dialect": config.sql_dialect,
@@ -909,8 +908,8 @@ def set_folders(config_path: str | None, repo: str, include_csv: str) -> None:
     # (non-folder) excludes are preserved
     _, custom_excludes = split_excludes(available, list(repo_cfg.exclude))
     kwargs = _render_kwargs_from_config(config)
-    kwargs["sql_include" if repo == "sql" else "pbi_include"] = new_include
-    kwargs["sql_exclude" if repo == "sql" else "pbi_exclude"] = custom_excludes
+    kwargs["repos"][repo]["include"] = new_include
+    kwargs["repos"][repo]["exclude"] = custom_excludes
     rendered = render_config_yaml(**kwargs)
     try:
         path.write_text(rendered, encoding="utf-8", newline="\n")
@@ -1098,17 +1097,23 @@ def _default_render_kwargs() -> dict:
     """render_config_yaml kwargs for a brand-new config (no file yet)."""
     return {
         "project_name": "Data Estate",
-        "sql_path": "../sql-repo",
-        "pbi_path": "../pbi-repo",
+        "repos": {
+            "sql": {
+                "path": "../sql-repo",
+                "include": list(DEFAULT_SQL_INCLUDE),
+                "exclude": list(DEFAULT_SQL_EXCLUDE),
+            },
+            "powerbi": {
+                "path": "../pbi-repo",
+                "include": list(DEFAULT_PBI_INCLUDE),
+                "exclude": [],
+            },
+        },
         "mappings": [],
         "layers": {},
         "ignore_schemas": [],
         "include_schemas": [],
         "branding": {},
-        "sql_include": None,
-        "sql_exclude": None,
-        "pbi_include": None,
-        "pbi_exclude": None,
         "output_dir": "./data-docs",
         "site_dir": "./data-docs-site",
         "sql_dialect": "tsql",
@@ -1172,16 +1177,31 @@ def _apply_config_patch(kwargs: dict, patch: dict) -> None:
     """Override render kwargs with the provided patch keys (partial update)."""
     if "project_name" in patch:
         kwargs["project_name"] = patch["project_name"]
-    for repo_key, prefix in (("sql", "sql"), ("powerbi", "pbi")):
-        repo_patch = patch.get("repos", {}).get(repo_key)
+    if "repos" in patch:
+        repo_patch = patch["repos"]
+        if not isinstance(repo_patch, dict):
+            raise TypeError("repos must be a JSON object")
+        # An explicit empty object selects discovery mode. Otherwise preserve
+        # unmentioned repos while adding/updating any arbitrary source label.
         if not repo_patch:
-            continue
-        if "path" in repo_patch:
-            kwargs[f"{prefix}_path"] = repo_patch["path"]
-        if "include" in repo_patch:
-            kwargs[f"{prefix}_include"] = list(repo_patch["include"])
-        if "exclude" in repo_patch:
-            kwargs[f"{prefix}_exclude"] = list(repo_patch["exclude"])
+            kwargs["repos"] = {}
+        else:
+            repos = kwargs.setdefault("repos", {})
+            for repo_key, changes in repo_patch.items():
+                if changes is None:
+                    repos.pop(repo_key, None)
+                    continue
+                if not isinstance(changes, dict):
+                    raise TypeError(f"repos.{repo_key} must be a JSON object or null")
+                if repo_key not in repos and "path" not in changes:
+                    raise ValueError(f"new repo repos.{repo_key} requires a path")
+                current = repos.setdefault(repo_key, {"path": "", "include": ["**/*"], "exclude": []})
+                if "path" in changes:
+                    current["path"] = changes["path"]
+                if "include" in changes:
+                    current["include"] = list(changes["include"])
+                if "exclude" in changes:
+                    current["exclude"] = list(changes["exclude"])
     output = patch.get("output", {})
     if "dir" in output:
         kwargs["output_dir"] = output["dir"]
@@ -1386,7 +1406,7 @@ def scan(
     no_parse_cache: bool,
     jobs: int | None,
 ) -> None:
-    """Crawl, parse, and link both repos; write graph.json."""
+    """Crawl, parse, and link every configured source folder; write graph.json."""
     config = _load_config(config_path)
     progress = Progress(should_enable(ctx.obj["quiet"]))
     _scan(

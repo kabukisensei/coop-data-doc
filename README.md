@@ -9,9 +9,9 @@
 
 > **Part of the Cooptimize coop suite** — alongside [coop-sql-review](https://github.com/kabukisensei/coop-sql-review) and [coop-dax-review](https://github.com/kabukisensei/coop-dax-review). If your team uses [coop-agent](https://github.com/kabukisensei/coop-agent), `coop install` installs all three tools at once and `coop update` keeps them current.
 
-**Automatic documentation for your data estate.** Point this tool at two git repos — your
-SQL repo (stored procedures, tables, views) and your Power BI repo (semantic models and
-reports) — and it maps how data flows through everything:
+**Automatic documentation for your data estate.** Point this tool at whatever source
+you have today — SQL, Power BI, selected folders from either, both, or neither yet —
+and it maps how data flows through everything available:
 
 ```
 silver table → stored proc → gold table → view → semantic model → measure → report
@@ -61,7 +61,8 @@ You'll need three things:
    `python --version` (Windows) and pressing Enter. If that prints something like
    `Python 3.12.4`, you're set. Otherwise install Python from
    [python.org](https://www.python.org/downloads/) first.
-3. **The two repos on your machine** — your SQL repo and your Power BI repo.
+3. **Any source folders you have on your machine** — SQL-only, Power-BI-only,
+   selected folders, both sides, or none yet (discovery mode) are supported.
    ("Repo" = a folder managed by git; "cloned" = downloaded to your machine with git or
    GitHub Desktop.) You'll need their folder paths — to get a path, drag the folder onto
    the terminal window (macOS), or right-click it in File Explorer and choose
@@ -126,8 +127,8 @@ pip install -e "/path/to/coop-data-doc[dev]"   # contributors: editable + test d
 ## First run — about 5 minutes
 
 **Step 1 — make a home for the docs.** Create a folder for the generated documentation
-**next to your two repos** (that makes the wizard's suggested paths like `../sql-repo`
-correct). For example, if your repos live in `~/repos` (macOS) or `C:\repos` (Windows):
+near any source folders you have. If you have no local source yet, create the docs
+home anyway and choose discovery mode. For example:
 
 ```bash
 cd ~/repos          # Windows: cd C:\repos
@@ -145,8 +146,8 @@ Because there's no configuration here yet, it offers to walk you through setup. 
 **"Set up interactively"** (↑↓ + Enter) and answer the questions:
 
 - **Project name** — the title shown on the docs website.
-- **SQL repo path** and **Power BI repo path** — type or paste the folder paths; the
-  wizard checks they exist and lets you re-type a typo.
+- **Available local source** — choose both, SQL only, Power BI only, or discovery
+  mode. The wizard asks paths only for sources you selected and can be rerun later.
 - **Which folders to document** — once a repo path is set, the wizard lists that repo's
   top-level folders as a checkbox. **Nothing starts checked** — folder selection is an
   *allowlist*: only the folders you pick are crawled. Press **Space** to check each folder
@@ -167,7 +168,7 @@ Because there's no configuration here yet, it offers to walk you through setup. 
   document it with automatic layer detection. The checked schemas are written to
   `layers.<layer>.schemas` and their union to `include_schemas`.
 - **Output folders** — press Enter to accept the defaults.
-- **Connecting Power BI tables to their SQL sources** — if both repos are on disk, the
+- **Connecting Power BI tables to their SQL sources** — if both sides are on disk, the
   wizard does a quick **read-only scan** and reports how many Power BI tables already link
   to a SQL object automatically. For any that don't, it works out which SQL schema the
   table's name actually lives in and asks you to confirm a one-line mapping (e.g. *"Map
@@ -309,6 +310,9 @@ repos:
     path: ../pbi-repo
     include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/*.pbix"]
     exclude: []
+
+# Discovery mode is simply `repos: {}`. Add any source labels later; `sql` and
+# `powerbi` are conventional names used by the wizard, not required engine keys.
 
 schema_mappings:                    # hint: which view schema feeds which model
   - schema: sales
@@ -578,7 +582,7 @@ Beyond the commands above, the CLI exposes a non-interactive surface for agents 
 | `coop-data-doc set-folders --repo KEY --include A,B` | set which top-level folders a repo documents (writes folder-scoped include globs; the non-interactive twin of the wizard's checkbox) |
 | `coop-data-doc lineage OBJECT [--depth N]` | print one object's lineage from the built `graph.json` (JSON) |
 | `coop-data-doc show-config` | print the current config as JSON (the shape `config-set` accepts) |
-| `coop-data-doc config-set --from-json -` | apply a JSON patch to `coop-data-doc.yml` non-interactively |
+| `coop-data-doc config-set --from-json -` | apply a JSON patch to `coop-data-doc.yml` non-interactively; arbitrary repo keys are supported, `{"repos":{}}` selects discovery mode, and a repo value of `null` removes that repo |
 | `coop-data-doc resolve` | list ambiguous cross-repo links + their candidates (JSON) |
 | `coop-data-doc resolve-apply --from-json -` | write link decisions to the cache (run `build` separately to apply them) |
 

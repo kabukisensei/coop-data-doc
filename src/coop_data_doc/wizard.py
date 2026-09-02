@@ -238,8 +238,8 @@ def _candidate_config(
     *,
     base_dir: Path,
     project_name: str,
-    sql_path: str,
-    pbi_path: str,
+    sql_path: str | None,
+    pbi_path: str | None,
     sql_include: list[str],
     sql_exclude: list[str],
     pbi_include: list[str],
@@ -275,8 +275,8 @@ def _scan_estate(
     io: WizardIO,
     base_dir: Path,
     project_name: str,
-    sql_path: str,
-    pbi_path: str,
+    sql_path: str | None,
+    pbi_path: str | None,
     sql_include: list[str],
     sql_exclude: list[str],
     pbi_include: list[str],
@@ -293,9 +293,8 @@ def _scan_estate(
     prompts."""
     import logging
 
-    sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
-    pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
-    if not (sql_abs.is_dir() and pbi_abs.is_dir()):
+    paths = [path for path in (sql_path, pbi_path) if path is not None]
+    if not paths or not all((base_dir / Path(path).expanduser()).resolve().is_dir() for path in paths):
         return None  # nothing to scan; callers use manual entry
 
     from coop_data_doc.cli import build_graph  # lazy: avoid the wizard<->cli cycle
@@ -678,26 +677,64 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
         or "Coop BI Estate"
     )
 
-    # These two prompts are the step users most often click past without
-    # understanding — spell out that a *folder path* is expected, with examples.
-    io.notice(
-        "\nNext, point the tool at your two source folders (the repos cloned on\n"
-        "this computer). For each, enter the path to the folder — for example\n"
-        "  /Users/you/code/sql-warehouse   or   C:\\Users\\you\\code\\PowerBI\n"
-        "Relative paths are resolved against the config file's folder.\n"
+    # Local source is progressive, not a prerequisite. A new engagement may
+    # begin with neither side, one side, or only a scoped portion of a repo.
+    prior_sources = set(existing.repos) if existing else {"sql", "powerbi"}
+    if {"sql", "powerbi"}.issubset(prior_sources):
+        source_default = "both"
+    elif "sql" in prior_sources:
+        source_default = "sql"
+    elif "powerbi" in prior_sources:
+        source_default = "powerbi"
+    else:
+        source_default = "none"
+    source_choices = [
+        WizardChoice("SQL and Power BI", value="both"),
+        WizardChoice("SQL / warehouse code only", value="sql"),
+        WizardChoice("Power BI models / reports only", value="powerbi"),
+        WizardChoice("No local source yet — discovery mode", value="none"),
+    ]
+    source_choices.sort(key=lambda choice: choice.value != source_default)
+    source_mode = io.select(
+        "local_sources",
+        "What local source is available now?",
+        source_choices,
+        default=source_default,
     )
-    sql_path = _ask_repo_path(
-        io,
-        "SQL repo path — the folder with your procs, tables, views",
-        _repo_default(existing, "sql", "../sql-repo"),
-        base_dir,
-    )
-    pbi_path = _ask_repo_path(
-        io,
-        "Power BI repo path — the folder with your semantic models and reports",
-        _repo_default(existing, "powerbi", "../pbi-repo"),
-        base_dir,
-    )
+    selected_sources = {
+        "both": {"sql", "powerbi"},
+        "sql": {"sql"},
+        "powerbi": {"powerbi"},
+        "none": set(),
+    }[source_mode]
+    sql_path: str | None = None
+    pbi_path: str | None = None
+    if selected_sources:
+        io.notice(
+            "\nPoint the tool only at the source folders you have today. Enter a folder\n"
+            "path such as /Users/you/code/sql-warehouse or C:\\Users\\you\\code\\PowerBI.\n"
+            "Relative paths are resolved against the config file's folder. You can rerun\n"
+            "setup later as more of the estate becomes available.\n"
+        )
+    else:
+        io.notice(
+            "\nDiscovery mode selected: no local source is required. This creates a valid\n"
+            "starting config; rerun setup when SQL or Power BI code becomes available.\n"
+        )
+    if "sql" in selected_sources:
+        sql_path = _ask_repo_path(
+            io,
+            "SQL repo path — the folder with your procs, tables, views",
+            _repo_default(existing, "sql", "../sql-repo"),
+            base_dir,
+        )
+    if "powerbi" in selected_sources:
+        pbi_path = _ask_repo_path(
+            io,
+            "Power BI repo path — the folder with your semantic models and reports",
+            _repo_default(existing, "powerbi", "../pbi-repo"),
+            base_dir,
+        )
 
     output_dir = (
         io.text(
@@ -733,34 +770,47 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
     # --- what to document (folder allowlist), per repo ---
     sql_repo = existing.repos.get("sql") if existing else None
     pbi_repo = existing.repos.get("powerbi") if existing else None
-    io.notice("\n── What to document ──")
-    io.notice(
-        "  FOLDERS = check the top-level folders to document. NOTHING is checked to\n"
-        "            start — only the folders you pick are crawled. When the repo isn't\n"
-        "            on disk yet, you type include globs instead."
-    )
-    sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
-    sql_bases = base_patterns_from_includes(list(sql_repo.include)) if sql_repo else []
-    sql_include = _ask_folders_to_document(
-        io,
-        "SQL",
-        sql_path,
-        base_dir,
-        sql_repo.include if sql_repo else None,
-        sql_bases or DEFAULT_SQL_INCLUDE,
-        "SQL — files/patterns to INCLUDE (comma-separated globs):",
-    )
-    # hand-written (non-folder) excludes are preserved; folder excludes are
-    # superseded by the allowlist
-    _, sql_exclude = split_excludes(_top_level_folders(sql_abs), list(sql_repo.exclude) if sql_repo else [])
+    sql_include: list[str] = []
+    sql_exclude: list[str] = []
+    pbi_include: list[str] = []
+    pbi_exclude: list[str] = []
+    if selected_sources:
+        io.notice("\n── What to document ──")
+        io.notice(
+            "  FOLDERS = check the top-level folders to document. Only the folders you\n"
+            "            pick are crawled, so a partial repo is a supported starting point.\n"
+            "            When a repo isn't on disk yet, you type include globs instead."
+        )
+    if sql_path is not None:
+        sql_abs = (base_dir / Path(sql_path).expanduser()).resolve()
+        sql_bases = base_patterns_from_includes(list(sql_repo.include)) if sql_repo else []
+        sql_include = _ask_folders_to_document(
+            io,
+            "SQL",
+            sql_path,
+            base_dir,
+            sql_repo.include if sql_repo else None,
+            sql_bases or DEFAULT_SQL_INCLUDE,
+            "SQL — files/patterns to INCLUDE (comma-separated globs):",
+        )
+        # hand-written (non-folder) excludes are preserved; folder excludes are
+        # superseded by the allowlist
+        _, sql_exclude = split_excludes(
+            _top_level_folders(sql_abs), list(sql_repo.exclude) if sql_repo else []
+        )
     # If the PBI repo is on disk, let the user pick which .SemanticModel folders
     # to document (scoping the model globs to those), then pick the top-level
     # folders the report/pbix globs scope to; otherwise fall back to the folder
     # allowlist over the full PBI file-type set.
-    pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
-    _, pbi_exclude = split_excludes(_top_level_folders(pbi_abs), list(pbi_repo.exclude) if pbi_repo else [])
-    selected_models = _ask_semantic_models(io, pbi_abs, pbi_repo.include if pbi_repo else None)
-    if selected_models is not None:
+    if pbi_path is not None:
+        pbi_abs = (base_dir / Path(pbi_path).expanduser()).resolve()
+        _, pbi_exclude = split_excludes(
+            _top_level_folders(pbi_abs), list(pbi_repo.exclude) if pbi_repo else []
+        )
+        selected_models = _ask_semantic_models(io, pbi_abs, pbi_repo.include if pbi_repo else None)
+    else:
+        selected_models = None
+    if pbi_path is not None and selected_models is not None:
         # The model picker scopes the models; this folder pick scopes the
         # report/pbix globs so stray .Report/.pbix copies in unselected folders
         # (BACKUP, Documentation, data-docs) can't leak in as reports or
@@ -775,7 +825,7 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
             "Power BI — report/pbix files to INCLUDE (comma-separated globs):",
         )
         pbi_include = _semantic_model_includes(selected_models, report_globs)
-    else:
+    elif pbi_path is not None:
         # Fallback (repo not cloned yet / no .SemanticModel folders): the folder
         # allowlist is the only scoping mechanism here.
         pbi_bases = base_patterns_from_includes(list(pbi_repo.include)) if pbi_repo else []
@@ -807,22 +857,38 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
     )
 
     # --- medallion layers: assign by SCHEMA (the common case) ---
-    io.notice("\n── Medallion layers ──")
-    io.notice(
-        "  Check the schemas to document, layer by layer: a checked schema is both\n"
-        "  INCLUDED in the docs and assigned that layer — an unchecked schema is left\n"
-        "  out entirely. A final catch-all offers anything left over, to document it\n"
-        "  with automatic layer detection. In a Fabric/SQL warehouse the schema IS\n"
-        "  the folder, so schemas alone are all you need."
-    )
-    layer_schemas, include_schemas = _ask_layer_schemas(io, existing, _sql_schemas(parsed))
+    if sql_path is not None:
+        io.notice("\n── Medallion layers ──")
+        io.notice(
+            "  Check the schemas to document, layer by layer: a checked schema is both\n"
+            "  INCLUDED in the docs and assigned that layer — an unchecked schema is left\n"
+            "  out entirely. A final catch-all offers anything left over, to document it\n"
+            "  with automatic layer detection. In a Fabric/SQL warehouse the schema IS\n"
+            "  the folder, so schemas alone are all you need."
+        )
+        layer_schemas, include_schemas = _ask_layer_schemas(io, existing, _sql_schemas(parsed))
+    else:
+        layer_schemas = {
+            layer: list(existing.layers[layer].schemas)
+            for layer in VALID_LAYERS
+            if existing and layer in existing.layers
+        }
+        include_schemas = list(existing.include_schemas) if existing else []
 
     # Folder-based layering is an advanced fallback for repos where a layer is
     # a directory rather than a schema. Most repos don't need it, so it's off
     # by default — but re-running setup keeps any folder rules you already had.
     had_paths = bool(existing and any(rule.paths for rule in existing.layers.values()))
-    layer_paths: dict[str, list[str]] = {}
-    if io.confirm(
+    layer_paths: dict[str, list[str]] = (
+        {
+            layer: list(existing.layers[layer].paths)
+            for layer in VALID_LAYERS
+            if existing and layer in existing.layers
+        }
+        if sql_path is None
+        else {}
+    )
+    if sql_path is not None and io.confirm(
         "layer_paths",
         "Advanced: does any layer map to a FOLDER instead of a schema?",
         default=had_paths,
@@ -843,19 +909,22 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
         if schemas or paths:
             layers[layer] = {"schemas": schemas, "paths": paths}
 
-    io.notice("\n── Schemas to drop ──")
-    io.notice(
-        "  Only the schemas checked above are documented, so most estates need nothing\n"
-        "  here. This drops objects even from a checked schema (noise like staging/temp);\n"
-        "  system schemas (sys, information_schema, …) are always dropped. Blank = drop\n"
-        "  nothing extra."
-    )
-    ignore_schemas = _ask_csv(
-        io,
-        "Schemas to DROP from the docs (comma-separated, e.g. staging, tmp — blank "
-        "for none; system schemas like sys/information_schema are always dropped):",
-        existing.ignore_schemas if existing else [],
-    )
+    if sql_path is not None:
+        io.notice("\n── Schemas to drop ──")
+        io.notice(
+            "  Only the schemas checked above are documented, so most estates need nothing\n"
+            "  here. This drops objects even from a checked schema (noise like staging/temp);\n"
+            "  system schemas (sys, information_schema, …) are always dropped. Blank = drop\n"
+            "  nothing extra."
+        )
+        ignore_schemas = _ask_csv(
+            io,
+            "Schemas to DROP from the docs (comma-separated, e.g. staging, tmp — blank "
+            "for none; system schemas like sys/information_schema are always dropped):",
+            existing.ignore_schemas if existing else [],
+        )
+    else:
+        ignore_schemas = list(existing.ignore_schemas) if existing else []
 
     # --- optional company branding for the HTML site ---
     existing_brand = existing.branding if existing else None
@@ -896,41 +965,46 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
         branding["favicon"] = existing_brand.favicon
 
     # --- schema → semantic-model hints ---
-    io.notice("\n── Power BI: connecting tables to their SQL sources ──")
     mappings: list[tuple[str, str]] = []
     if existing is not None and existing.schema_mappings:
+        mappings = [(m.schema_name, m.model) for m in existing.schema_mappings]
+    if sql_path is not None and pbi_path is not None:
+        io.notice("\n── Power BI: connecting tables to their SQL sources ──")
+    if sql_path is not None and pbi_path is not None and existing is not None and existing.schema_mappings:
         current = ", ".join(f"{m.schema_name} → {m.model}" for m in existing.schema_mappings)
         keep = io.confirm(
             "keep_mappings",
             f"Keep existing schema mappings ({current})?",
             default=True,
         )
-        if keep:
-            mappings = [(m.schema_name, m.model) for m in existing.schema_mappings]
+        if not keep:
+            mappings = []
 
     # When the repos are on disk (= the estate was scanned above), auto-derive
     # the schema mappings that are actually needed (confirm, don't type).
     # Falls back to manual entry when the repos aren't cloned yet.
-    auto = _autosuggest_mappings(
-        io=io,
-        base_dir=base_dir,
-        project_name=project_name,
-        sql_path=sql_path,
-        pbi_path=pbi_path,
-        sql_include=sql_include,
-        sql_exclude=sql_exclude,
-        pbi_include=pbi_include,
-        pbi_exclude=pbi_exclude,
-        layers=layers,
-        ignore_schemas=ignore_schemas,
-        include_schemas=include_schemas,
-        sql_dialect=sql_dialect,
-        mappings=mappings,
-        parsed=parsed,
-    )
+    auto = None
+    if sql_path is not None and pbi_path is not None:
+        auto = _autosuggest_mappings(
+            io=io,
+            base_dir=base_dir,
+            project_name=project_name,
+            sql_path=sql_path,
+            pbi_path=pbi_path,
+            sql_include=sql_include,
+            sql_exclude=sql_exclude,
+            pbi_include=pbi_include,
+            pbi_exclude=pbi_exclude,
+            layers=layers,
+            ignore_schemas=ignore_schemas,
+            include_schemas=include_schemas,
+            sql_dialect=sql_dialect,
+            mappings=mappings,
+            parsed=parsed,
+        )
     if auto is not None:
         mappings = auto
-    else:
+    elif sql_path is not None and pbi_path is not None:
         while io.confirm(
             "add_mapping",
             "Add a view-schema → semantic-model mapping?",
@@ -941,10 +1015,19 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
             if schema and model:
                 mappings.append((schema, model))
 
+    repos = {
+        key: {"path": repo.path, "include": list(repo.include), "exclude": list(repo.exclude)}
+        for key, repo in (existing.repos.items() if existing else [])
+        if key not in ("sql", "powerbi")
+    }
+    if sql_path is not None:
+        repos["sql"] = {"path": sql_path, "include": sql_include, "exclude": sql_exclude}
+    if pbi_path is not None:
+        repos["powerbi"] = {"path": pbi_path, "include": pbi_include, "exclude": pbi_exclude}
+
     rendered = render_config_yaml(
         project_name=project_name,
-        sql_path=sql_path,
-        pbi_path=pbi_path,
+        repos=repos,
         mappings=mappings,
         layers=layers,
         ignore_schemas=ignore_schemas,

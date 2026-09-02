@@ -312,6 +312,32 @@ def test_config_set_partial_repo_preserves_other_fields(tmp_path: Path):
     assert loaded.repos["sql"].exclude == ["**/archive/**"]
 
 
+def test_config_set_supports_arbitrary_and_empty_repo_sets(tmp_path: Path):
+    config = _workspace(tmp_path)
+    extra = tmp_path / "extra-source"
+    extra.mkdir()
+    res = _run(
+        ["config-set"],
+        tmp_path,
+        stdin=json.dumps(
+            {"repos": {"lakehouse notebooks": {"path": "./extra-source", "include": ["**/*.py"]}}}
+        ),
+    )
+    assert res.exit_code == 0, res.output
+    loaded = Config.load(config)
+    assert loaded.repos["lakehouse notebooks"].include == ["**/*.py"]
+    assert "sql" in loaded.repos and "powerbi" in loaded.repos
+
+    res = _run(["config-set"], tmp_path, stdin=json.dumps({"repos": {"lakehouse notebooks": None}}))
+    assert res.exit_code == 0, res.output
+    assert "lakehouse notebooks" not in Config.load(config).repos
+
+    res = _run(["config-set"], tmp_path, stdin=json.dumps({"repos": {}}))
+    assert res.exit_code == 0, res.output
+    assert Config.load(config).repos == {}
+    assert "repos: {}" in config.read_text(encoding="utf-8")
+
+
 def test_config_set_rejects_non_object(tmp_path: Path):
     _workspace(tmp_path)
     res = _run(["config-set"], tmp_path, stdin="[]")

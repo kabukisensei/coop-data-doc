@@ -262,6 +262,9 @@ class _RoutedQuestionary:
     def confirm(self, message, **kwargs):
         return self._q("confirm", message, **kwargs)
 
+    def select(self, message, **kwargs):
+        return self._q("select", message, **kwargs)
+
     def checkbox(self, message, **kwargs):
         return self._q("checkbox", message, **kwargs)
 

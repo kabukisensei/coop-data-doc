@@ -47,6 +47,9 @@ class RoutedQuestionary:
     def confirm(self, message, **kwargs):
         return self._q("confirm", message, **kwargs)
 
+    def select(self, message, **kwargs):
+        return self._q("select", message, **kwargs)
+
     def checkbox(self, message, **kwargs):
         return self._q("checkbox", message, **kwargs)
 
@@ -107,6 +110,43 @@ def test_fresh_setup_with_layers(tmp_path: Path, monkeypatch):
     assert config.include_schemas == ["erp_orders", "erp_finance", "stg", "mart", "common", "silver"]
     assert config.layers["gold"].paths == ["**/dim/**", "**/fact/**"]
     assert Config.load(config_path).layers["gold"].paths == ["**/dim/**", "**/fact/**"]
+
+
+@pytest.mark.parametrize(
+    ("source_mode", "expected", "absent_prompt"),
+    [
+        ("none", set(), "SQL repo path"),
+        ("sql", {"sql"}, "Power BI repo path"),
+        ("powerbi", {"powerbi"}, "SQL repo path"),
+    ],
+)
+def test_wizard_supports_progressive_source_modes(
+    tmp_path: Path, monkeypatch, source_mode: str, expected: set[str], absent_prompt: str
+):
+    make_repos(tmp_path)
+
+    def router(kind, message, kwargs):
+        if "What local source is available" in message:
+            return source_mode
+        if "SQL repo path" in message:
+            return "./sql-repo"
+        if "Power BI repo path" in message:
+            return "./pbi-repo"
+        if kind == "confirm":
+            return False
+        if kind == "checkbox":
+            return [choice.value for choice in kwargs.get("choices", [])]
+        return kwargs.get("default", "")
+
+    fake = RoutedQuestionary(router)
+    monkeypatch.setattr(wizard_io, "questionary", fake)
+    config_path = tmp_path / "coop-data-doc.yml"
+    config = wizard.run_setup(config_path)
+
+    assert config is not None
+    assert set(config.repos) == expected
+    assert not any(absent_prompt in message for _, message, _ in fake.calls)
+    assert Config.load(config_path).repos == config.repos
 
 
 def test_folder_layering_skipped_by_default(tmp_path: Path, monkeypatch):
