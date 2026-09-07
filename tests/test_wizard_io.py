@@ -262,3 +262,32 @@ def test_jsonl_max_line_is_content_only():
     io_obj = JsonlWizardIO(io.StringIO(oversize + "\n"), io.StringIO())
     with pytest.raises(WizardProtocolError, match="exceeds 1 MiB"):
         io_obj.text("q1", "Bigger:")
+
+
+def test_stdio_jsonl_uses_utf8_despite_legacy_pipe_encoding():
+    """Real pipes round-trip non-ASCII IDs and answers even with cp1252 defaults."""
+    import os
+    import subprocess
+    import sys
+
+    prompt_id = "SQL — café 表"
+    answer = "D:/données/分析/😀"
+    program = """
+from coop_data_doc.wizard_io import JsonlWizardIO
+transport = JsonlWizardIO.from_stdio()
+answer = transport.text('SQL — café 表', 'Folder — 表')
+transport._emit({'type': 'complete', 'answer': answer})
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        input=(json.dumps({"id": prompt_id, "answer": answer}, ensure_ascii=False) + "\n").encode("utf-8"),
+        capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"},
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    events = [json.loads(line) for line in result.stdout.decode("utf-8").splitlines()]
+    assert [event["type"] for event in events] == ["hello", "prompt", "complete"]
+    assert events[1]["id"] == prompt_id
+    assert events[2]["answer"] == answer

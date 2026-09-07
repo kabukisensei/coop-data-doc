@@ -655,7 +655,7 @@ def setup(ctx: click.Context, path: str | None, transport: str) -> None:
 
     transport = transport.lower()
     if transport == "jsonl":
-        io = JsonlWizardIO(sys.stdin, sys.stdout)
+        io = JsonlWizardIO.from_stdio()
     else:
         io = QuestionaryWizardIO()
 

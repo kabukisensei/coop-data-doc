@@ -794,3 +794,6 @@ See [CONTRIBUTING.md](https://github.com/kabukisensei/coop-data-doc/blob/main/CO
 ## License
 
 MIT — see [LICENSE](https://github.com/kabukisensei/coop-data-doc/blob/main/LICENSE).
+
+Agent integrations using `setup --transport jsonl` exchange UTF-8 JSON lines on
+standard input and output, including on Windows with a legacy console code page.

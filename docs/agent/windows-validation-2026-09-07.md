@@ -20,3 +20,17 @@ Backup: .backups/windows-20260907/cli.py.bak and README.md.bak (ignored).
 Evidence logs: ../../outputs/evidence/coop-data-doc-desktop-*-fixed.log in the Windows validation parent.
 This verifies source behavior only. Managed wheel inclusion and installed Desktop lineage acceptance remain open.
 No release version, tag, publication, client workspace, or existing user installation changed.
+
+The real Windows Node-to-Python JSONL setup run exposed a second issue: Python
+pipes defaulted to cp1252, so the em dash in a prompt ID was corrupted by the
+UTF-8 client and the returned ID failed protocol validation. JSONL now explicitly
+configures standard input/output as UTF-8 before reading; terminal IO is unchanged.
+A real subprocess regression sets PYTHONIOENCODING=cp1252 and PYTHONUTF8=0 and
+round-trips an em dash, accented text, CJK and emoji in IDs/answers.
+
+- .venv/Scripts/python.exe -m pytest -q: 635 passed in 247.37s, exit 0.
+- .venv/Scripts/python.exe -m ruff check src tests: passed.
+- .venv/Scripts/python.exe -m ruff format --check src tests: 64 files already formatted.
+- Agent node tests/jsonl-live.test.mjs with this editable executable first on PATH:
+  19 prompts answered, exactly one complete event, exit 0, generated config parsed.
+  Logs: ../../outputs/evidence/data-doc-utf8-{full,lint}.log and jsonl-native-utf8-fixed.log.

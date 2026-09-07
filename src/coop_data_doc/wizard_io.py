@@ -12,6 +12,7 @@ questionary, so the JSONL transport has no terminal dependency.
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from abc import ABC, abstractmethod
@@ -162,6 +163,18 @@ class JsonlWizardIO(WizardIO):
     """
 
     PROTOCOL_VERSION = "1.1"
+
+    @classmethod
+    def from_stdio(cls) -> JsonlWizardIO:
+        """Use UTF-8 on the wire, independent of the Windows pipe code page.
+
+        Configure before any answers are read. Injected text streams retain
+        their caller-owned behavior; the terminal transport is unaffected.
+        """
+        for stream in (sys.stdin, sys.stdout):
+            if isinstance(stream, io.TextIOWrapper):
+                stream.reconfigure(encoding="utf-8", errors="strict", newline="\n")
+        return cls(sys.stdin, sys.stdout)
 
     def __init__(self, in_stream: TextIO, out_stream: TextIO) -> None:
         self._in = in_stream
