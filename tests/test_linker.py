@@ -5,6 +5,7 @@ import pytest
 
 from coop_data_doc.config import Config, RepoConfig, SchemaMapping
 from coop_data_doc.graph import LineageGraph, Node, NodeType
+from coop_data_doc.linker import cache as cache_module
 from coop_data_doc.linker import interactive
 from coop_data_doc.linker.cache import CacheEntry, LineageCache
 from coop_data_doc.linker.resolver import link_graph
@@ -195,7 +196,7 @@ def test_write_failure_records_warning_never_raises(tmp_path: Path, monkeypatch)
     def boom(*_a, **_k):
         raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(cache_module.tempfile, "mkstemp", boom)
     cache.mappings["k"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
     assert cache.write() is False
     assert [w.category for w in cache.warnings] == ["cache_write_failed"]
@@ -211,7 +212,7 @@ def test_interactive_link_survives_unwritable_cache(tmp_path: Path, fake_q, monk
     def boom(*_a, **_k):
         raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(cache_module.tempfile, "mkstemp", boom)
     graph = build_graph()
     result, warnings = link_graph(graph, make_config(), cache, interactive_mode=True)
 
@@ -279,6 +280,89 @@ def test_cache_writes_non_ascii_identifiers_literally(tmp_path: Path):
     raw = cache.path.read_text(encoding="utf-8")
     assert "café.ñoño" in raw
     assert "\\u" not in raw  # no escaped Unicode
+
+
+def test_atomic_temp_write_failure_preserves_old_bytes_and_cleans_temp(tmp_path: Path, monkeypatch):
+    path = tmp_path / ".lineage-cache.json"
+    old = b'{"old":"complete"}\n'
+    path.write_bytes(old)
+    cache = LineageCache(path, {"new": CacheEntry(target=None, method="skip")})
+    real_fdopen = cache_module.os.fdopen
+
+    class FailingWriter:
+        def __init__(self, fd: int):
+            self.fd = fd
+
+        def __enter__(self):
+            return self
+
+        def write(self, _payload):
+            raise OSError("temporary write failed")
+
+        def __exit__(self, *_args):
+            cache_module.os.close(self.fd)
+
+    def fail_write(fd, *_args, **_kwargs):
+        return FailingWriter(fd)
+
+    monkeypatch.setattr(cache_module.os, "fdopen", fail_write)
+    assert cache.write() is False
+    monkeypatch.setattr(cache_module.os, "fdopen", real_fdopen)
+
+    assert path.read_bytes() == old
+    assert list(tmp_path.glob("..lineage-cache.json.*.tmp")) == []
+    assert [warning.category for warning in cache.warnings] == ["cache_write_failed"]
+
+
+def test_atomic_fsync_failure_preserves_old_bytes_and_cleans_temp(tmp_path: Path, monkeypatch):
+    path = tmp_path / ".lineage-cache.json"
+    old = b'{"old":"complete"}\n'
+    path.write_bytes(old)
+    cache = LineageCache(path, {"new": CacheEntry(target=None, method="skip")})
+
+    monkeypatch.setattr(cache_module.os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("fsync failed")))
+
+    assert cache.write() is False
+    assert path.read_bytes() == old
+    assert list(tmp_path.glob("..lineage-cache.json.*.tmp")) == []
+    assert [warning.category for warning in cache.warnings] == ["cache_write_failed"]
+
+
+def test_atomic_replace_failure_preserves_old_bytes_warns_once_and_cleans_temp(tmp_path: Path, monkeypatch):
+    path = tmp_path / ".lineage-cache.json"
+    old = b'{"old":"complete"}\n'
+    path.write_bytes(old)
+    cache = LineageCache(path, {"new": CacheEntry(target=None, method="skip")})
+
+    monkeypatch.setattr(
+        cache_module.os,
+        "replace",
+        lambda _source, _destination: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+
+    assert cache.write() is False
+    assert path.read_bytes() == old
+    assert list(tmp_path.glob("..lineage-cache.json.*.tmp")) == []
+    assert [warning.category for warning in cache.warnings] == ["cache_write_failed"]
+
+
+def test_put_persists_each_interactive_answer(tmp_path: Path, monkeypatch):
+    cache = cache_at(tmp_path)
+    real_write = cache.write
+    calls = 0
+
+    def counting_write():
+        nonlocal calls
+        calls += 1
+        return real_write()
+
+    monkeypatch.setattr(cache, "write", counting_write)
+    cache.put("one", CacheEntry(target=None, method="skip"))
+    cache.put("two", CacheEntry(target=None, method="external"))
+
+    assert calls == 2
+    reloaded = cache_at(tmp_path)
+    assert sorted(reloaded.mappings) == ["one", "two"]
 
 
 def test_unknown_cache_version_ignored(tmp_path: Path):

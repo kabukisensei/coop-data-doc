@@ -9,6 +9,8 @@ from coop_data_doc import folders as F
 from coop_data_doc.cli import cli
 from coop_data_doc.config import Config
 from coop_data_doc.crawler import crawl
+from coop_data_doc.linker import cache as cache_module
+from coop_data_doc.linker.cache import LineageCache
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -234,6 +236,30 @@ def test_lineage_exact_object(tmp_path: Path):
     assert data["object"]["doc"].endswith(".md")
     assert isinstance(data["upstream"], list)
     assert isinstance(data["downstream"], list)
+    assert data["schema_version"] == 1
+    assert data["query"] == "dbo.fact_sales"
+    assert data["depth"] == 1
+    assert data["evidence_status"] in {"complete", "partial"}
+    assert data["coverage"]["diagnostics"]["status"] == "complete"
+    assert isinstance(data["diagnostics"], list)
+    assert "source_file" in data["object"]
+    assert "trust" in data["object"]
+    assert data["object"]["doc_path"].endswith(data["object"]["doc"])
+    assert Path(data["object"]["source_path"]).is_file()
+    assert isinstance(data["edges"], list)
+    for edge in data["edges"]:
+        assert set(edge) == {"source_id", "target_id", "type", "evidence", "flow"}
+        assert set(edge["flow"]) == {"upstream_id", "downstream_id"}
+        assert edge["source_id"] in {
+            data["object"]["id"],
+            *(item["id"] for item in data["upstream"]),
+            *(item["id"] for item in data["downstream"]),
+        }
+        assert edge["target_id"] in {
+            data["object"]["id"],
+            *(item["id"] for item in data["upstream"]),
+            *(item["id"] for item in data["downstream"]),
+        }
 
 
 def test_lineage_ambiguous_lists_candidates(tmp_path: Path):
@@ -244,6 +270,35 @@ def test_lineage_ambiguous_lists_candidates(tmp_path: Path):
     data = json.loads(res.output)
     assert data["ambiguous"] is True
     assert len(data["matches"]) >= 2
+    assert data["schema_version"] == 1
+    assert all(
+        "source_file" in match and "trust" in match and "doc_path" in match for match in data["matches"]
+    )
+
+
+def test_lineage_surfaces_focused_and_global_diagnostic_completeness(tmp_path: Path):
+    _workspace(tmp_path)
+    _scan(tmp_path)
+    initial = _run(["lineage", "dbo.fact_sales"], tmp_path)
+    source_file = json.loads(initial.output)["object"]["source_file"]
+    diagnostics_path = tmp_path / "data-docs" / "diagnostics.json"
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    diagnostics["severity_counts"]["warning"] = diagnostics["severity_counts"].get("warning", 0) + 1
+    diagnostics["issues"].append(
+        {
+            "severity": "warning",
+            "category": "dynamic_sql",
+            "file": source_file,
+            "message": "focused evidence warning",
+        }
+    )
+    diagnostics_path.write_text(json.dumps(diagnostics), encoding="utf-8")
+
+    result = _run(["lineage", "dbo.fact_sales"], tmp_path)
+    data = json.loads(result.output)
+    assert data["evidence_status"] == "partial"
+    assert data["coverage"]["diagnostics"]["severity_counts"]["warning"] >= 1
+    assert data["diagnostics"][-1]["message"] == "focused evidence warning"
 
 
 def test_lineage_not_found_errors(tmp_path: Path):
@@ -386,6 +441,38 @@ def test_resolve_apply_external_and_skip(tmp_path: Path):
     assert "Applied 2" in res.output
 
 
+def test_resolve_apply_persists_multiple_decisions_once(tmp_path: Path, monkeypatch):
+    _workspace(tmp_path)
+    payload = json.dumps(
+        {
+            "decisions": [
+                {"cache_key": "pbi_table:sales.fact_sales", "target": "gold_table:dbo.fact_sales"},
+                {"cache_key": "pbi_table:sales.external", "external": True},
+                {"cache_key": "pbi_table:sales.skipped", "skip": True},
+            ]
+        }
+    )
+    real_write = LineageCache.write
+    writes = 0
+
+    def counting_write(self):
+        nonlocal writes
+        writes += 1
+        return real_write(self)
+
+    monkeypatch.setattr(LineageCache, "write", counting_write)
+    result = _run(["resolve-apply"], tmp_path, stdin=payload)
+
+    assert result.exit_code == 0, result.output
+    assert writes == 1
+    cache = LineageCache.load(tmp_path / ".lineage-cache.json")
+    assert sorted(cache.mappings) == [
+        "pbi_table:sales.external",
+        "pbi_table:sales.fact_sales",
+        "pbi_table:sales.skipped",
+    ]
+
+
 def test_resolve_apply_rejects_bad_payload(tmp_path: Path):
     _workspace(tmp_path)
     res = _run(["resolve-apply"], tmp_path, stdin='{"nope": 1}')
@@ -401,7 +488,7 @@ def test_resolve_apply_fails_loud_on_unwritable_cache(tmp_path: Path, monkeypatc
     def boom(*_a, **_k):
         raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(cache_module.tempfile, "mkstemp", boom)
     decision = json.dumps(
         {"decisions": [{"cache_key": "pbi_table:sales.fact_sales", "target": "gold_table:dbo.fact_sales"}]}
     )

@@ -137,6 +137,14 @@ the always-dropped system schemas (`sys`, `information_schema`, `tempdb`,
 schemas checked in its layer questions, so wizard-produced configs are strictly
 opt-in. `config-set` accepts it like any other key.
 | `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON) | `--depth`, `--config` |
+
+`lineage` response schema 1 is a focused, additive UI/agent contract. Alongside
+the established object/upstream/downstream/relationships fields it includes
+source and generated-doc paths, node trust markers, exact in-slice authored
+edges with explicit flow-normalized direction and evidence, focused diagnostics,
+global diagnostic coverage, and `evidence_status`. Ambiguous matches are listed
+and never guessed. Consumers must treat `partial` as unknown dependencies being
+possible, not as a clean absence.
 | `coop-data-doc show-config` | Print the current config as JSON (the `config-set` shape) | `--config` |
 | `coop-data-doc config-set` | Apply a JSON patch to the config, non-interactively | `--from-json` (file or `-`), `--config` |
 | `coop-data-doc resolve` | List ambiguous cross-repo links + candidates (JSON) | `--config` |

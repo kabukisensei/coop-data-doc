@@ -7,7 +7,11 @@ keys are sorted, and formatting is stable so diffs stay minimal.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -118,6 +122,19 @@ class LineageCache:
         self.mappings[key] = entry
         self.write()
 
+    def put_many(self, entries: Iterable[tuple[str, CacheEntry]]) -> bool:
+        """Store a batch in memory, then persist the complete cache exactly once.
+
+        Interactive callers should continue to use :meth:`put`, which preserves
+        the existing answer-by-answer durability contract. Machine-driven bulk
+        callers such as ``resolve-apply`` use this method so a batch cannot cause
+        N full-file rewrites followed by a redundant final write.
+        """
+        for key, entry in entries:
+            self._ignored.discard(key)
+            self.mappings[key] = entry
+        return self.write()
+
     def prune_invalid(self, graph: LineageGraph, persist: bool = False) -> list[str]:
         """Handle entries whose target node isn't in ``graph``; return their keys.
 
@@ -146,29 +163,51 @@ class LineageCache:
         return dropped
 
     def write(self) -> bool:
-        """Persist with sorted keys and stable formatting for clean git diffs.
+        """Atomically persist with stable formatting for clean git diffs.
 
-        Returns True on a successful write. An ``OSError`` (a locked or
-        read-only file — Windows OneDrive/Defender routinely hold short-lived
-        locks on small JSON files) is caught, recorded on ``self.warnings`` as
-        a ``cache_write_failed`` warning, and reported as False rather than
-        crashing the caller. The mapping was already stored in memory before
-        this call, so a later successful ``write()`` in the same session
-        persists every accumulated answer — transient locks self-heal. Unlike
-        the derivable parse cache, these are human answers, so callers that
-        can't rely on a later write (``resolve-apply``) must check the return
-        value and surface a hard error.
+        The complete UTF-8/LF payload is written and flushed in a unique
+        same-directory temporary file before ``os.replace`` swaps it into place.
+        Consequently readers see either the previous complete cache or the new
+        complete cache, never a partially-truncated destination. The destination
+        is never opened for writing, which also keeps the operation compatible
+        with Windows replacement semantics.
+
+        File fsync failures are fatal before replacement, except for explicit
+        platform "not supported" errors. After replacement, POSIX parent-folder
+        fsync is best-effort because some filesystems reject directory handles;
+        the cache is already complete at that point. Any pre-replacement
+        ``OSError`` records one ``cache_write_failed`` warning and returns False.
+        The in-memory mappings remain available for a later retry.
         """
         payload = {
             "version": self.VERSION,
             "mappings": {key: self.mappings[key].model_dump() for key in sorted(self.mappings)},
         }
+        serialized = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        temp_path: Path | None = None
+        temp_fd: int | None = None
         try:
-            self.path.write_text(
-                json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-                newline="\n",
+            temp_fd, temp_name = tempfile.mkstemp(
+                dir=self.path.parent,
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
             )
+            temp_path = Path(temp_name)
+            with os.fdopen(temp_fd, "w", encoding="utf-8", newline="\n") as handle:
+                temp_fd = None  # fdopen owns and closes the descriptor from here.
+                handle.write(serialized)
+                handle.flush()
+                try:
+                    os.fsync(handle.fileno())
+                except OSError as exc:
+                    unsupported = {errno.EINVAL, errno.ENOSYS}
+                    if hasattr(errno, "ENOTSUP"):
+                        unsupported.add(errno.ENOTSUP)
+                    if exc.errno not in unsupported:
+                        raise
+
+            os.replace(temp_path, self.path)
+            temp_path = None  # replacement consumed the temporary path.
         except OSError as exc:
             self.warnings.append(
                 ParseWarning(
@@ -178,4 +217,34 @@ class LineageCache:
                 )
             )
             return False
+        finally:
+            if temp_fd is not None:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        # Once the atomic replacement has succeeded, make the directory entry
+        # durable where POSIX supports directory fsync. This is deliberately
+        # best-effort: Windows has no equivalent, and some POSIX filesystems
+        # reject directory handles even though the replacement itself succeeded.
+        if os.name == "posix":
+            directory_fd: int | None = None
+            try:
+                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                directory_fd = os.open(self.path.parent, flags)
+                os.fsync(directory_fd)
+            except OSError:
+                pass
+            finally:
+                if directory_fd is not None:
+                    try:
+                        os.close(directory_fd)
+                    except OSError:
+                        pass
         return True

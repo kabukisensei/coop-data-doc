@@ -939,6 +939,111 @@ def _node_ref(graph: LineageGraph, node_id: str) -> dict:
     }
 
 
+_LINEAGE_TRUST_KEYS = (
+    "parse_quality",
+    "dynamic_sql_untraced",
+    "unresolved",
+    "partition_source_unresolved",
+    "skipped",
+    "external_source",
+    "columns_unresolved",
+    "pbix_model_opaque",
+    "dax_refs_heuristic",
+    "unmatched_dax_refs",
+)
+
+
+def _lineage_node_ref(
+    graph: LineageGraph, node_id: str, docs_root: Path | None = None, config: Config | None = None
+) -> dict:
+    """Focused-query node reference with source and trust evidence.
+
+    This is deliberately additive to the long-standing ``_node_ref`` shape so
+    existing agents keep working while richer clients can render provenance and
+    incomplete-evidence markers without loading the full graph artifact.
+    """
+    node = graph.nodes[node_id]
+    ref = _node_ref(graph, node_id)
+    ref.update(
+        {
+            "schema": node.schema_name,
+            "layer": node.metadata.get("layer", ""),
+            "source_file": node.source_file,
+            "trust": {key: node.metadata[key] for key in _LINEAGE_TRUST_KEYS if key in node.metadata},
+        }
+    )
+    if docs_root is not None:
+        ref["doc_path"] = str((docs_root / ref["doc"]).resolve())
+    if config is not None and node.source_file:
+        candidates = [
+            (config.repo_root(repo_key) / node.source_file).resolve()
+            for repo_key in sorted(config.repos)
+            if (config.repo_root(repo_key) / node.source_file).is_file()
+        ]
+        # The same repo-relative filename can legitimately exist in multiple
+        # configured repos. Do not guess which one is authoritative.
+        if len(candidates) == 1:
+            ref["source_path"] = str(candidates[0])
+    return ref
+
+
+def _lineage_evidence_status(refs: list[dict]) -> str:
+    """Return partial only for markers that mean evidence is actually missing.
+
+    ``external_source`` is an intentional boundary, while heuristic DAX parsing
+    and regex fallback remain visible trust qualifiers rather than automatically
+    claiming that the focused slice omitted an object.
+    """
+    incomplete = {
+        "dynamic_sql_untraced",
+        "unresolved",
+        "partition_source_unresolved",
+        "skipped",
+        "columns_unresolved",
+        "pbix_model_opaque",
+        "unmatched_dax_refs",
+    }
+    for ref in refs:
+        trust = ref.get("trust", {})
+        for key in incomplete:
+            value = trust.get(key)
+            if value is True or (isinstance(value, (list, dict, str)) and bool(value)):
+                return "partial"
+    return "complete"
+
+
+def _lineage_diagnostics(config: Config, refs: list[dict]) -> tuple[list[dict], dict]:
+    """Return focused issues plus a global completeness summary.
+
+    A parse failure elsewhere can hide an otherwise relevant dependency, so the
+    summary is retained even when the issue cannot be attributed to one visible
+    node. Individual issues are limited to source files and IDs in this slice.
+    """
+    path = config.output_dir() / "diagnostics.json"
+    if not path.is_file():
+        return [], {"status": "missing", "severity_counts": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return [], {"status": "invalid", "severity_counts": {}}
+    counts = data.get("severity_counts", {}) if isinstance(data, dict) else {}
+    issues = data.get("issues", []) if isinstance(data, dict) else []
+    source_files = {ref.get("source_file") for ref in refs if ref.get("source_file")}
+    node_ids = {ref.get("id") for ref in refs if ref.get("id")}
+    focused = []
+    for issue in issues if isinstance(issues, list) else []:
+        if not isinstance(issue, dict):
+            continue
+        issue_file = str(issue.get("file", ""))
+        if (
+            issue_file in node_ids
+            or issue_file in source_files
+            or any(issue_file.endswith(source_file) for source_file in source_files)
+        ):
+            focused.append(issue)
+    return focused, {"status": "complete", "severity_counts": counts if isinstance(counts, dict) else {}}
+
+
 def _match_nodes(graph: LineageGraph, query: str) -> list[str]:
     """Node ids matching ``query`` — exact id, then exact name, then substring. Sorted."""
     q = query.strip().lower()
@@ -980,9 +1085,10 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
         click.echo(
             json.dumps(
                 {
+                    "schema_version": 1,
                     "query": object_name,
                     "ambiguous": True,
-                    "matches": [_node_ref(graph, n) for n in matches],
+                    "matches": [_lineage_node_ref(graph, n, config.output_dir(), config) for n in matches],
                 },
                 indent=2,
                 sort_keys=True,
@@ -1059,16 +1165,51 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
         )
         return
 
+    upstream_ids = graph.upstream(nid, depth=depth)
+    downstream_ids = graph.downstream(nid, depth=depth)
+    node_refs = [
+        _lineage_node_ref(graph, x, config.output_dir(), config)
+        for x in [nid, *upstream_ids, *downstream_ids]
+    ]
+    focused_diagnostics, diagnostic_coverage = _lineage_diagnostics(config, node_refs)
+    evidence_status = _lineage_evidence_status(node_refs)
+    diagnostic_counts = diagnostic_coverage["severity_counts"]
+    if diagnostic_coverage["status"] != "complete" or any(
+        int(diagnostic_counts.get(level, 0) or 0) > 0 for level in ("error", "warning")
+    ):
+        evidence_status = "partial"
+    slice_ids = {ref["id"] for ref in node_refs}
+    edges = []
+    for edge in sorted(graph.edges, key=lambda item: item.key()):
+        if edge.source_id not in slice_ids or edge.target_id not in slice_ids:
+            continue
+        flow_upstream, flow_downstream = edge.flow()
+        edges.append(
+            {
+                "source_id": edge.source_id,
+                "target_id": edge.target_id,
+                "type": edge.edge_type.value,
+                "evidence": edge.evidence,
+                "flow": {"upstream_id": flow_upstream, "downstream_id": flow_downstream},
+            }
+        )
     click.echo(
         json.dumps(
             {
-                "object": _node_ref(graph, nid),
+                "schema_version": 1,
+                "query": object_name,
+                "depth": depth,
+                "evidence_status": evidence_status,
+                "coverage": {"diagnostics": diagnostic_coverage},
+                "object": node_refs[0],
                 "schema": node.schema_name,
                 "layer": node.metadata.get("layer", ""),
                 "source_file": node.source_file,
-                "upstream": [_node_ref(graph, x) for x in graph.upstream(nid, depth=depth)],
-                "downstream": [_node_ref(graph, x) for x in graph.downstream(nid, depth=depth)],
+                "upstream": node_refs[1 : 1 + len(upstream_ids)],
+                "downstream": node_refs[1 + len(upstream_ids) :],
+                "edges": edges,
                 "relationships": node.metadata.get("relationships", []),
+                "diagnostics": focused_diagnostics,
             },
             indent=2,
             sort_keys=True,
@@ -1338,6 +1479,7 @@ def resolve_apply(config_path: str | None, json_src) -> None:
     config = _load_config(config_path)
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
     applied = 0
+    entries: list[tuple[str, CacheEntry]] = []
     for decision in decisions:
         if not isinstance(decision, dict):
             continue
@@ -1350,13 +1492,13 @@ def resolve_apply(config_path: str | None, json_src) -> None:
             entry = CacheEntry(target=None, method="external")
         else:
             entry = CacheEntry(target=None, method="skip")
-        cache.put(key, entry)
+        entries.append((key, entry))
         applied += 1
     # resolve-apply's whole job is to persist these human decisions to disk;
     # unlike the interactive loop there is no later write to self-heal a lock, so
     # a swallowed write failure would print "Applied N" while nothing reached the
     # file — silently breaking the agent contract. Fail loud (exit 1) instead.
-    if not cache.write():
+    if not cache.put_many(entries):
         message = next(
             (w.message for w in cache.warnings if w.category == "cache_write_failed"),
             "could not write lineage cache",
