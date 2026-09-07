@@ -582,7 +582,10 @@ Beyond the commands above, the CLI exposes a non-interactive surface for agents 
 | `coop-data-doc set-folders --repo KEY --include A,B` | set which top-level folders a repo documents (writes folder-scoped include globs; the non-interactive twin of the wizard's checkbox) |
 | `coop-data-doc lineage OBJECT [--depth N]` | print one object's lineage from the built `graph.json` (JSON) |
 
-The focused lineage JSON is versioned with `schema_version: 1`. It preserves
+The focused lineage JSON is versioned with `schema_version: 1`. Absolute
+`doc_path` and `source_path` values use forward slashes on Windows as well as
+macOS/Linux, matching the relative `doc` paths and remaining valid filesystem paths.
+It preserves
 the familiar object/upstream/downstream/relationships fields and adds exact
 in-slice edges, each edge's authored endpoints, flow-normalized endpoints, and
 evidence text. Node references include source/doc paths and trust markers;

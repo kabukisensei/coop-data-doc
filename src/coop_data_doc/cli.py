@@ -973,7 +973,7 @@ def _lineage_node_ref(
         }
     )
     if docs_root is not None:
-        ref["doc_path"] = str((docs_root / ref["doc"]).resolve())
+        ref["doc_path"] = (docs_root / ref["doc"]).resolve().as_posix()
     if config is not None and node.source_file:
         candidates = [
             (config.repo_root(repo_key) / node.source_file).resolve()
@@ -983,7 +983,7 @@ def _lineage_node_ref(
         # The same repo-relative filename can legitimately exist in multiple
         # configured repos. Do not guess which one is authoritative.
         if len(candidates) == 1:
-            ref["source_path"] = str(candidates[0])
+            ref["source_path"] = candidates[0].as_posix()
     return ref
 
 
