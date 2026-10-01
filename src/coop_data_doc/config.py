@@ -267,6 +267,15 @@ class Config(BaseModel):
             raise ConfigError(f"Invalid config in {path}: {issues}") from exc
         config._base_dir = path.resolve().parent
         out_dir, site = config.output_dir(), config.site_dir()
+        for repo_key in sorted(config.repos):
+            root = config.repo_root(repo_key)
+            for key, output in (("dir", out_dir), ("site_dir", site)):
+                if output_dirs_conflict(output, root):
+                    raise ConfigError(
+                        f"output.{key} overlaps source repo '{repo_key}': {output} / {root}. "
+                        "Use separate output folders outside every source root; builds may "
+                        "clean generated output."
+                    )
         if output_dirs_conflict(out_dir, site):
             raise ConfigError(
                 "output.dir and output.site_dir must be separate folders — neither can be "

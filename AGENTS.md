@@ -167,6 +167,21 @@ After a successful `build`/`update`, these files exist. `scan` is rendering-free
 it writes only `data-docs/graph.json` and `data-docs/diagnostics.json` (no
 `manifest.json` and no Markdown pages).
 
+**Output safety:** both output directories must be outside every configured
+source root, with no ancestor/descendant overlap (resolved symlinks included).
+Use sibling source and output folders. A strict scan failure preserves previously
+published graph/diagnostics/pages. An incomplete directory crawl is fatal even
+without `--strict` and stops before parsing or cache updates. Other strict
+failures may still refresh parse/mapping caches; full transactional publication
+and scoped coverage are separate pending work.
+
+**Authored intent:** a unique SQL table identity with unchanged schema, name, source repository and
+source file carries its Business Intent when a layer change moves its ID/page.
+Unmatched authored intent pages are retained with a warning for reconciliation;
+they are not current graph members. Scope changes and uncertain identities never
+justify deleting their human text. General scope-qualified ID migration remains
+pending.
+
 ### `data-docs/manifest.json`
 
 The entire lineage graph in one JSON file. **Preferred entry point for agents.**

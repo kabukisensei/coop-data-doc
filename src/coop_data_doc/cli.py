@@ -113,6 +113,9 @@ def build_graph(
     progress.line(f"  {len(inventory.entries)} files found")
     _log.debug("crawled %d files across %d repos", len(inventory.entries), len(config.repos))
 
+    if any(w.category == "crawl_incomplete" for w in warnings):
+        return graph, warnings
+
     sql_entries = inventory.by_kind(FileKind.SQL_FILE)
     _log.debug("parsing %d SQL files (dialect=%s)", len(sql_entries), config.sql_dialect)
     # Shared across both passes so each SQL file is read + decoded exactly ONCE (the second
@@ -231,6 +234,8 @@ def run_pipeline(
     is deterministic so ``--jobs N`` == ``--jobs 1`` == cold (see build_graph).
     """
     graph, warnings = build_graph(config, progress, no_parse_cache=no_parse_cache, jobs=jobs)
+    if any(w.category == "crawl_incomplete" for w in warnings):
+        return graph, ResolutionResult(), warnings
     result, link_warnings = resolve_graph(graph, config, interactive, progress, pending_out)
     warnings += link_warnings
     _log.debug(
@@ -331,6 +336,14 @@ def _scan(
         # e.g. review-file load problems (issue #38) — surfaced through the same
         # diagnostics channel as parser warnings, advisory (never a strict failure)
         warnings = warnings + extra_warnings
+    # Validate before publishing any artifacts: a failed strict scan must not
+    # replace the previous graph while its manifest/pages still describe it.
+    if strict or any(w.category == "crawl_incomplete" for w in warnings):
+        failures = _strict_failures(result, warnings) if strict else _error_failures(warnings)
+        if failures:
+            for failure in failures:
+                click.echo(f"scan rejected: {failure}", err=True)
+            sys.exit(2)
     out_dir = config.output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     to_json_file(graph, out_dir / "graph.json")
@@ -350,12 +363,6 @@ def _scan(
             f"({result.resolved} cross-repo links; {len(result.unresolved)} unresolved)",
             err=True,
         )
-    if strict:
-        failures = _strict_failures(result, warnings)
-        if failures:
-            for failure in failures:
-                click.echo(f"strict: {failure}", err=True)
-            sys.exit(2)
     return graph, diagnostics
 
 

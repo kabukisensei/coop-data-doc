@@ -11,6 +11,7 @@ Severity is advisory — nothing here is fatal to a build:
 
 from __future__ import annotations
 
+import html
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -18,6 +19,7 @@ from coop_data_doc.config import ParseWarning
 
 _SEVERITY: dict[str, str] = {
     # parse failures / missing data
+    "crawl_incomplete": "error",
     "tmdl_parse": "error",
     "bim_parse": "error",
     "pbir_parse": "error",
@@ -102,7 +104,7 @@ def _md_cell(value: str) -> str:
     File/message cells can carry user-derived content — e.g. a Power BI page or
     object name with a literal '|' — so this mirrors render/markdown._cell.
     """
-    return (value or "").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+    return html.escape(value or "", quote=False).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
 @dataclass
@@ -196,7 +198,7 @@ class Diagnostics:
 
     def to_markdown(self, project_name: str) -> str:
         rows = self.items()
-        out = [f"# Diagnostics — {project_name}", ""]
+        out = [f"# Diagnostics — {html.escape(project_name, quote=False)}", ""]
         if not rows:
             out.append("✅ No issues found.")
             out.append("")
@@ -221,7 +223,7 @@ class Diagnostics:
             out.append(f"## {severity.capitalize()}")
             for category in cats:
                 out.append("")
-                out.append(f"### `{category}` ({by_cat[(severity, category)]})")
+                out.append(f"### `{html.escape(category, quote=False)}` ({by_cat[(severity, category)]})")
                 out.append("")
                 out.append("| File / Object | Detail |")
                 out.append("| --- | --- |")

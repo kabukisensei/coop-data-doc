@@ -145,6 +145,7 @@ def crawl(config: Config) -> tuple[FileInventory, list[ParseWarning]]:
     for repo_key in sorted(config.repos):
         repo = config.repos[repo_key]
         root = config.repo_root(repo_key)
+
         # os.walk with in-place dir pruning (not rglob) so huge non-source trees
         # are never *descended into*. rglob("*") would enter .git / .venv /
         # node_modules and stat every file only to discard it — cheap on a local
@@ -152,7 +153,16 @@ def crawl(config: Config) -> tuple[FileInventory, list[ParseWarning]]:
         # a big .git alone can stall the crawl for minutes. Pruning here is
         # behaviour-identical to the per-file skips below: hidden paths were
         # always skipped, and a subtree-wide exclude drops every file under it.
-        for dirpath, dirnames, filenames in os.walk(root):
+        def walk_error(exc: OSError, root: Path = root, repo_key: str = repo_key) -> None:
+            warnings.append(
+                ParseWarning(
+                    file=str(exc.filename or root),
+                    message=f"source repo '{repo_key}' could not be fully scanned: {exc}",
+                    category="crawl_incomplete",
+                )
+            )
+
+        for dirpath, dirnames, filenames in os.walk(root, onerror=walk_error):
             base = Path(dirpath)
             dirnames[:] = sorted(
                 d

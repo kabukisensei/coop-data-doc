@@ -9,6 +9,8 @@ regeneration verbatim.
 from __future__ import annotations
 
 import html
+import json
+import logging
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -1115,6 +1117,18 @@ def render_markdown(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # A layer change changes table IDs and page directories. Recover intent
+    # only from a unique prior manifest identity with the same source; never
+    # infer identity across SQL estates or semantic models by basename.
+    previous = None
+    manifest = out_dir / "manifest.json"
+    if manifest.is_file():
+        try:
+            previous = LineageGraph.model_validate(json.loads(manifest.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning("Prior manifest unreadable; retaining authored intent pages")
+    migrated: set[Path] = set()
+    table_types = {NodeType.BRONZE_TABLE, NodeType.SILVER_TABLE, NodeType.GOLD_TABLE}
     # whole-graph scans hoisted out of the per-node loop (computed once, not per page)
     used_measures = _used_measure_ids(graph)
     direct_upstream = _direct_upstream(graph)
@@ -1127,19 +1141,38 @@ def render_markdown(
         page_dir = out_dir / node.node_type.value
         page_dir.mkdir(parents=True, exist_ok=True)
         page_path = page_dir / f"{slug(node_id)}.md"
-        page_path.write_text(
-            render_node_page(
-                graph,
-                node,
-                page_path,
-                used_measures=used_measures,
-                direct_upstream=direct_upstream,
-                edge_info=edge_info,
-                findings=reviews.by_node.get(node_id) if reviews is not None else None,
-            ),
-            encoding="utf-8",
-            newline="\n",
+        content = render_node_page(
+            graph,
+            node,
+            page_path,
+            used_measures=used_measures,
+            direct_upstream=direct_upstream,
+            edge_info=edge_info,
+            findings=reviews.by_node.get(node_id) if reviews is not None else None,
         )
+        if (
+            not page_path.exists()
+            and previous is not None
+            and node.node_type in table_types
+            and node.source_file
+        ):
+            candidates = [
+                old
+                for old in previous.nodes.values()
+                if old.node_type in table_types
+                and (old.schema_name, old.name, old.source_file, old.metadata.get("repo_key"))
+                == (node.schema_name, node.name, node.source_file, node.metadata.get("repo_key"))
+            ]
+            if len(candidates) == 1:
+                old = candidates[0]
+                old_page = out_dir / old.node_type.value / f"{slug(old.id)}.md"
+                intent = _existing_intent(old_page)
+                content = content.replace(
+                    f"{INTENT_BEGIN}\n{_DEFAULT_INTENT}\n{INTENT_END}",
+                    f"{INTENT_BEGIN}\n{intent}\n{INTENT_END}",
+                )
+                migrated.add(old_page)
+        page_path.write_text(content, encoding="utf-8", newline="\n")
         written.append(page_path)
 
     index_path = out_dir / "index.md"
@@ -1176,6 +1209,11 @@ def render_markdown(
             continue
         for page in sorted(subdir.glob("*.md")):
             if page not in written_set:
+                if page not in migrated and _existing_intent(page) != _DEFAULT_INTENT:
+                    logging.getLogger(__name__).warning(
+                        "Retained unmatched authored intent at %s; reconcile identity before removal", page
+                    )
+                    continue
                 page.unlink()
         if not any(subdir.iterdir()):
             subdir.rmdir()
