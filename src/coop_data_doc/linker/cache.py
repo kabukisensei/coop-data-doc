@@ -38,6 +38,7 @@ class LineageCache:
         # resolve/wizard-dry-run against a branch or a narrower scope must
         # never destroy committed human answers.
         self._ignored: set[str] = set()
+        self.defer_writes = False
 
     @classmethod
     def load(cls, path: Path | str) -> LineageCache:
@@ -116,7 +117,8 @@ class LineageCache:
         """Store an answer and write the file immediately (crash-safe)."""
         self._ignored.discard(key)  # a fresh answer supersedes "ignored"
         self.mappings[key] = entry
-        self.write()
+        if not self.defer_writes:
+            self.write()
 
     def prune_invalid(self, graph: LineageGraph, persist: bool = False) -> list[str]:
         """Handle entries whose target node isn't in ``graph``; return their keys.

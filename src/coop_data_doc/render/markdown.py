@@ -1176,7 +1176,13 @@ def render_markdown(
         written.append(page_path)
 
     index_path = out_dir / "index.md"
-    index_path.write_text(_index_page(graph, project_name, reviews), encoding="utf-8", newline="\n")
+    from coop_data_doc.coverage import coverage_markdown
+
+    index_path.write_text(
+        _index_page(graph, project_name, reviews) + "\n" + coverage_markdown(graph),
+        encoding="utf-8",
+        newline="\n",
+    )
     written.append(index_path)
 
     estate_map_path = out_dir / "estate_map.md"

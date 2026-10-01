@@ -17,7 +17,7 @@ def _nodes_equal(a: Node, b: Node) -> bool:
         return False
     if a.source_file != b.source_file:
         return False
-    if a.metadata.get("trust") != b.metadata.get("trust"):
+    if a.metadata != b.metadata:
         return False
 
     # compare columns

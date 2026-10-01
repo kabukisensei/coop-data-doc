@@ -139,6 +139,11 @@ def _apply(graph: LineageGraph, item: _Item, target_id: str, method: str, result
             evidence=f"linker: {method} ({item.schema_name}.{item.object_name})",
         )
     )
+    graph.nodes[item.node_id].metadata.setdefault("source_resolutions", {})[item.cache_key] = {
+        "target": target_id,
+        "method": method,
+        "source": f"{item.schema_name}.{item.object_name}",
+    }
     result.count(method)
 
 
@@ -177,7 +182,7 @@ def link_graph(
                 file=str(cache.path),
                 message=(
                     f"cache entry {key!r} points at a node not in this build; "
-                    "ignored this run (kept on disk — a successful `build` prunes it)"
+                    "ignored this run (kept on disk for review; selected-scope builds do not prove estate deletion)"
                 ),
                 category="cache_pruned",
             )

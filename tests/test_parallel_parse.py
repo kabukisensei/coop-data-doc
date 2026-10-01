@@ -386,8 +386,8 @@ def test_pool_bootstrap_failure_fallback(tmp_path: Path, monkeypatch):
 
 def test_worker_parse_error_becomes_parse_worker_error_warning(tmp_path: Path, monkeypatch):
     """A worker that returns an error for a file degrades that file to a
-    parse_worker_error diagnostic; the build still exits 0 and the other files
-    are documented."""
+    parse_worker_error diagnostic; the in-memory pipeline still parses other files, but the build rejects
+    publication to preserve its previous generation."""
     setup_workspace(tmp_path)
     import coop_data_doc.parsers.parallel as parallel_mod
 
@@ -404,13 +404,12 @@ def test_worker_parse_error_becomes_parse_worker_error_warning(tmp_path: Path, m
 
     monkeypatch.setattr(parallel_mod, "_run_pool", _one_file_errors)
     result = run(["build", "--non-interactive", "--skip-html", "--jobs", "4", "--no-parse-cache"], tmp_path)
-    assert result.exit_code == 0
-    diagnostics = json.loads((tmp_path / "data-docs" / "diagnostics.json").read_text(encoding="utf-8"))
-    cats = {i["category"] for i in diagnostics["issues"]}
-    assert "parse_worker_error" in cats
-    # error severity (data is missing) — like encoding_unreadable
-    err = next(i for i in diagnostics["issues"] if i["category"] == "parse_worker_error")
-    assert err["severity"] == "error"
+    assert result.exit_code == 2
+    assert "parse_worker_error" in result.output
+    assert not (tmp_path / "data-docs" / "graph.json").exists()
+    from coop_data_doc.diagnostics import severity_of
+
+    assert severity_of("parse_worker_error") == "error"
 
 
 def test_worker_error_never_aborts_build_unit(tmp_path: Path, monkeypatch):

@@ -11,6 +11,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
@@ -129,6 +130,14 @@ class LayerRule(BaseModel):
     paths: list[str] = Field(default_factory=list)
 
 
+class CoverageDeclaration(BaseModel):
+    """User-declared completeness within a described client/source/layer scope."""
+
+    model_config = ConfigDict(extra="forbid")
+    state: Literal["unknown", "complete", "partial", "missing", "external"] = "unknown"
+    scope: str = ""
+
+
 class Config(BaseModel):
     """Validated coop-data-doc.yml. Relative paths resolve against the
     config file's directory, not the current working directory.
@@ -138,6 +147,7 @@ class Config(BaseModel):
 
     project_name: str = "Data Estate"
     repos: dict[str, RepoConfig]
+    coverage: dict[str, CoverageDeclaration] = Field(default_factory=dict)
     schema_mappings: list[SchemaMapping] = Field(default_factory=list)
     layers: dict[str, LayerRule] = Field(default_factory=dict)
     ignore_schemas: list[str] = Field(default_factory=list)
@@ -388,6 +398,7 @@ def render_config_yaml(
     site_dir: str = "./data-docs-site",
     sql_dialect: str = "tsql",
     reviews: list[str] | None = None,
+    coverage: dict[str, dict] | None = None,
 ) -> str:
     """Render a commented coop-data-doc.yml from values.
 
@@ -481,7 +492,13 @@ def render_config_yaml(
     else:
         reviews_block = ""
 
-    return _CONFIG_TEMPLATE.format(
+    coverage_block = ""
+    if coverage:
+        coverage_block = "\n# Declared coverage within the selected source/layer scope; omitted = unknown.\n"
+        coverage_block += "coverage:\n"
+        for key, declaration in sorted(coverage.items()):
+            coverage_block += f"  {json.dumps(key)}: {json.dumps(declaration, sort_keys=True)}\n"
+    return coverage_block + _CONFIG_TEMPLATE.format(
         project_name=json.dumps(project_name),
         repos_block=repos_block,
         mappings_block=mappings_block,

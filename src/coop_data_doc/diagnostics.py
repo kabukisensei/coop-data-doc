@@ -80,9 +80,9 @@ _SEVERITY: dict[str, str] = {
     # a classified .sql file that contributed zero nodes and zero warnings
     # (unsupported DDL, empty file) — a coverage gap, never silent (issue #31)
     "sql_no_objects": "warning",
-    "symlink_escape": "warning",
-    "file_too_large": "warning",
-    "file_unreadable": "warning",
+    "symlink_escape": "error",
+    "file_too_large": "error",
+    "file_unreadable": "error",
     "interactive_unavailable": "warning",
     # expected / cosmetic
     "layer_unclassified": "info",
