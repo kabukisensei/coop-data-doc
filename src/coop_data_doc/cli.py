@@ -209,6 +209,20 @@ def resolve_graph(
     """
     progress = progress or Progress(enabled=False)
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
+    # A previous published generation can verify unsigned legacy decisions
+    # without rewriting their committed bytes during migration.
+    previous_path = config.output_dir() / "graph.json"
+    if previous_path.is_file():
+        from coop_data_doc.linker.resolver import _collect_items
+
+        try:
+            previous = LineageGraph.model_validate(json.loads(previous_path.read_text(encoding="utf-8")))
+            cache.prior_signatures = {
+                item.cache_key: item.source_signature for item in _collect_items(previous)
+            }
+        except (OSError, ValueError):
+            pass  # legacy cache remains explicitly unverified
+
     if deferred_caches is not None:
         cache.defer_writes = True
         deferred_caches.append(cache)
@@ -1400,6 +1414,7 @@ def resolve_apply(config_path: str | None, json_src) -> None:
             entry = CacheEntry(target=None, method="external")
         else:
             entry = CacheEntry(target=None, method="skip")
+        entry.source_signature = decision.get("source_signature")
         cache.put(key, entry)
         applied += 1
     # resolve-apply's whole job is to persist these human decisions to disk;

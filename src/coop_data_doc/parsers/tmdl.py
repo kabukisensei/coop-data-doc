@@ -8,6 +8,8 @@ recognize. Malformed input warns; it never raises.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -127,6 +129,20 @@ def model_root(path: str) -> tuple[str, str]:
     return parts[0] if len(parts) > 1 else "", parts[0].rsplit(".", 1)[0]
 
 
+def _record_partition_source(table_node: Node, source: dict) -> None:
+    sources = table_node.metadata.setdefault("partition_sources", [])
+    if source not in sources:
+        sources.append(source)
+        sources.sort(key=lambda item: json.dumps(item, sort_keys=True))
+    if len(sources) == 1:
+        table_node.metadata["partition_source"] = {
+            k: v for k, v in sources[0].items() if k != "expression_hash"
+        }
+    else:
+        # The legacy singular field must never masquerade as all partitions.
+        table_node.metadata.pop("partition_source", None)
+
+
 def _attach_native_sql(
     table_node: Node, sql_texts: list[str], source_file: str, warnings: list[ParseWarning]
 ) -> None:
@@ -136,15 +152,22 @@ def _attach_native_sql(
     for sql in sql_texts:
         for statement in parse_batch(sql):
             tables |= collect_source_tables(statement)
-    table_node.metadata["native_query_tables"] = sorted(f"{schema}.{name}" for schema, name in tables)
-    if len(tables) == 1:
-        schema, name = next(iter(tables))
-        table_node.metadata["partition_source"] = {
-            "schema": schema,
-            "object": name,
-            "raw_kind": "native_query",
-        }
-    elif not tables:
+    existing = set(table_node.metadata.get("native_query_tables", []))
+    table_node.metadata["native_query_tables"] = sorted(
+        existing | {f"{schema}.{name}" for schema, name in tables}
+    )
+    expression_hash = hashlib.sha256("\n".join(sql_texts).encode("utf-8")).hexdigest()
+    for schema, name in sorted(tables):
+        _record_partition_source(
+            table_node,
+            {
+                "schema": schema,
+                "object": name,
+                "raw_kind": "native_query",
+                "expression_hash": expression_hash,
+            },
+        )
+    if not tables:
         # zero extractable tables (ODBC {CALL}, non-T-SQL passthrough,
         # broken SQL): the source exists but can't be statically traced —
         # mark it unresolved and warn, never leave the table looking
@@ -189,14 +212,22 @@ def _attach_partition_source(
     if ref is not None and ref.raw_kind == "as_model":
         # DirectQuery chain to another semantic model — resolved later, against
         # the model graph (not SQL), by link_composite_models.
-        table_node.metadata["model_source"] = {"model": ref.object_name}
+        source = {"model": ref.object_name}
+        sources = table_node.metadata.setdefault("model_sources", [])
+        if source not in sources:
+            sources.append(source)
+        table_node.metadata["model_source"] = source
         return
     if ref is not None and ref.raw_kind != "native_query":
-        table_node.metadata["partition_source"] = {
-            "schema": ref.schema_name,
-            "object": ref.object_name,
-            "raw_kind": ref.raw_kind,
-        }
+        _record_partition_source(
+            table_node,
+            {
+                "schema": ref.schema_name,
+                "object": ref.object_name,
+                "raw_kind": ref.raw_kind,
+                "expression_hash": hashlib.sha256(m_text.encode("utf-8")).hexdigest(),
+            },
+        )
         return
     _mark_partition_unresolved(table_node, "M source not traceable", source_file, warnings)
 
@@ -268,7 +299,11 @@ def parse_table_file(
                         schema_name=model_key,
                         display_name=name,
                         source_file=entry.path,
-                        metadata={"description": table_desc} if table_desc else {},
+                        metadata={
+                            "repo_key": entry.repo_key,
+                            "definition_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                            **({"description": table_desc} if table_desc else {}),
+                        },
                     )
                 )
                 graph.add_edge(
@@ -417,13 +452,23 @@ def parse_table_file(
             if mode:
                 table_node.metadata["storage_mode"] = mode
             body = "\n".join(m_parts)
+            table_node.metadata.setdefault("partitions", []).append(
+                {
+                    "name": _unquote(partition_match.group(1)),
+                    "type": partition_type,
+                    "mode": mode or "",
+                    "expression_hash": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                }
+            )
             if partition_type == "m":
                 _attach_partition_source(table_node, body, entry.path, warnings)
             elif partition_type == "calculated" and body.strip():
                 # a DAX calculated table: its references are resolved against
                 # the whole model by link_calculated_tables (issue #30)
                 table_node.metadata["partition_calculated"] = True
-                table_node.metadata["calculated_dax"] = body
+                table_node.metadata["calculated_dax"] = "\n".join(
+                    filter(None, [table_node.metadata.get("calculated_dax", ""), body])
+                )
             elif partition_type == "query" and body.strip():
                 # legacy provider partition: the source body is native SQL —
                 # same lineage extraction as Value.NativeQuery (issue #30)
@@ -434,10 +479,9 @@ def parse_table_file(
             elif partition_type == "entity" and expression_source:
                 # DirectQuery-to-AS table: its source lives in a shared
                 # expression, resolved later by link_composite_models.
-                table_node.metadata["entity_source"] = {
-                    "entity": entity_name or "",
-                    "expression": expression_source,
-                }
+                source = {"entity": entity_name or "", "expression": expression_source}
+                table_node.metadata.setdefault("entity_sources", []).append(source)
+                table_node.metadata["entity_source"] = source
             else:
                 # any other partition flavor (policyRange, inferred, an entity
                 # with no expressionSource, an empty body…) is untraceable —
@@ -523,42 +567,46 @@ def link_composite_models(graph: LineageGraph) -> list[ParseWarning]:
         node = graph.nodes[node_id]
         if node.node_type is not NodeType.PBI_TABLE:
             continue
-        model_source = node.metadata.get("model_source")
-        entity_source = node.metadata.get("entity_source")
-        if not (model_source or entity_source):
-            continue
-        target_name: str | None = None
-        if model_source:
-            target_name = normalize_identifier(model_source.get("model", ""))
-        else:
-            owner = graph.nodes.get(f"semantic_model:{node.schema_name}")
-            expr = (owner.metadata.get("expressions", {}) if owner is not None else {}).get(
-                normalize_identifier(entity_source.get("expression", ""))
-            )
-            if expr:
-                ref, _ = extract_source(expr)
-                if ref is not None and ref.raw_kind == "as_model":
-                    target_name = normalize_identifier(ref.object_name)
-                    node.metadata.setdefault("storage_mode", "directquery")
-        upstream = models.get(target_name) if target_name else None
-        if upstream is not None and upstream != f"semantic_model:{node.schema_name}":
-            graph.add_edge(
-                Edge(
-                    source_id=upstream,
-                    target_id=node.id,
-                    edge_type=EdgeType.FEEDS,
-                    evidence=f"composite: DirectQuery to {target_name}",
+        sources = [(s, None) for s in node.metadata.get("model_sources", [])]
+        sources += [(None, s) for s in node.metadata.get("entity_sources", [])]
+        if not sources:
+            model_source = node.metadata.get("model_source")
+            entity_source = node.metadata.get("entity_source")
+            if model_source or entity_source:
+                sources = [(model_source, entity_source)]
+        for model_source, entity_source in sources:
+            target_name: str | None = None
+            if model_source:
+                target_name = normalize_identifier(model_source.get("model", ""))
+            else:
+                owner = graph.nodes.get(f"semantic_model:{node.schema_name}")
+                expr = (owner.metadata.get("expressions", {}) if owner is not None else {}).get(
+                    normalize_identifier(entity_source.get("expression", ""))
                 )
-            )
-        else:
-            node.metadata["partition_source_unresolved"] = True
-            warnings.append(
-                ParseWarning(
-                    file=node.source_file,
-                    message=f"composite source of {node.name} ({target_name or '?'}) not among loaded models",
-                    category="unresolved_partition_source",
+                if expr:
+                    ref, _ = extract_source(expr)
+                    if ref is not None and ref.raw_kind == "as_model":
+                        target_name = normalize_identifier(ref.object_name)
+                        node.metadata.setdefault("storage_mode", "directquery")
+            upstream = models.get(target_name) if target_name else None
+            if upstream is not None and upstream != f"semantic_model:{node.schema_name}":
+                graph.add_edge(
+                    Edge(
+                        source_id=upstream,
+                        target_id=node.id,
+                        edge_type=EdgeType.FEEDS,
+                        evidence=f"composite: DirectQuery to {target_name}",
+                    )
                 )
-            )
+            else:
+                node.metadata["partition_source_unresolved"] = True
+                warnings.append(
+                    ParseWarning(
+                        file=node.source_file,
+                        message=f"composite source of {node.name} ({target_name or '?'}) not among loaded models",
+                        category="unresolved_partition_source",
+                    )
+                )
     return warnings
 
 
@@ -579,13 +627,29 @@ def parse_tmdl(
         root, model_name = model_root(entry.path)
         groups.setdefault((entry.repo_key, root, model_name), []).append(entry)
 
-    for (_, _, model_name), files in sorted(groups.items()):
+    by_name: dict[str, list[tuple[str, str]]] = {}
+    for repo_key, root, name in groups:
+        by_name.setdefault(normalize_identifier(name), []).append((repo_key, root))
+    collisions = {name for name, roots in by_name.items() if len(set(roots)) > 1}
+    for name in sorted(collisions):
+        warnings.append(
+            ParseWarning(
+                file="; ".join(f"{repo}:{root}" for repo, root in sorted(by_name[name])),
+                message=f"semantic model '{name}' has multiple source scopes; not merged. "
+                "Review scope-qualified ID and saved intent/mapping migration before rebuilding.",
+                category="identity_collision",
+            )
+        )
+    for (repo_key, root, model_name), files in sorted(groups.items()):
+        if normalize_identifier(model_name) in collisions:
+            continue
         model_node = graph.add_node(
             Node(
                 id=Node.make_id(NodeType.SEMANTIC_MODEL, "", model_name),
                 node_type=NodeType.SEMANTIC_MODEL,
                 name=normalize_identifier(model_name),
                 display_name=model_name,
+                metadata={"source_identity": [repo_key, root], "repo_key": repo_key},
             )
         )
         for entry in sorted(files, key=lambda e: e.path):
@@ -619,6 +683,9 @@ def parse_tmdl(
                 # relationships.tmdl only when an export has no model.tmdl.
                 if basename == "model.tmdl" or not model_node.source_file:
                     model_node.source_file = entry.path
+            model_node.metadata.setdefault("definition_hashes", {})[entry.path] = hashlib.sha256(
+                text.encode("utf-8")
+            ).hexdigest()
             warnings += parse_table_file(text, model_name, model_node.id, entry, graph)
         link_measures(graph, model_name)
         link_calculated_tables(graph, model_name)

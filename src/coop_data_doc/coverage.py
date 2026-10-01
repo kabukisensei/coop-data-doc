@@ -81,7 +81,15 @@ def evidence_summary(graph: LineageGraph, node: Node | None = None) -> dict:
         if any(r.get("method") == "fuzzy" for r in meta.get("source_resolutions", {}).values()):
             states.add("partial")
         if (
-            any(meta.get(key) for key in ("dynamic_sql_untraced", "dax_refs_heuristic", "columns_unresolved"))
+            any(
+                meta.get(key)
+                for key in (
+                    "dynamic_sql_untraced",
+                    "dax_refs_heuristic",
+                    "columns_unresolved",
+                    "cache_source_unverified",
+                )
+            )
             or meta.get("parse_quality") == "regex_fallback"
         ):
             states.add("partial")

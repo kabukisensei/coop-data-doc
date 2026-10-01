@@ -783,3 +783,15 @@ See [CONTRIBUTING.md](https://github.com/kabukisensei/coop-data-doc/blob/main/CO
 ## License
 
 MIT — see [LICENSE](https://github.com/kabukisensei/coop-data-doc/blob/main/LICENSE).
+
+Lineage identity and mapping safeguards: duplicate semantic-model names in distinct
+source scopes raise `identity_collision` and stop generation publication. Existing
+IDs, authored intent and committed mappings remain untouched pending an explicit
+scope-ID migration. Report `byPath` bindings require the exact repository/path
+scope. SQL/M partitions accumulate their observed dependencies; SQL set operations
+and CTAS retain every table dependency, with unsupported column lineage marked
+unresolved. Mapping decisions can carry a `source_signature` from `resolve`; a
+changed source requires explicit review even when the previous target still exists.
+Unsigned legacy decisions remain readable, but are marked unverified unless a
+previous published generation supplies a matching source signature. `resolve`
+exposes changed-source review choices; preserve its signature in `resolve-apply`.

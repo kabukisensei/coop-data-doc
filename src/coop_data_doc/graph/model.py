@@ -11,6 +11,7 @@ byte-identical artifacts.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from enum import Enum
 
@@ -106,6 +107,10 @@ class Node(BaseModel):
     # section. Excluded from serialization so graph.json / manifest.json stay
     # lean — the rendered Markdown page carries the code for humans and agents.
     source_code: str = Field(default="", exclude=True)
+
+    def model_post_init(self, context) -> None:
+        if self.source_code:
+            self.metadata["definition_hash"] = hashlib.sha256(self.source_code.encode("utf-8")).hexdigest()
 
     @property
     def display(self) -> str:

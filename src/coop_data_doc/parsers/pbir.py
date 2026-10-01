@@ -12,6 +12,7 @@ surviving ``pending_model_resolution`` bindings onto the owning report as
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -498,7 +499,19 @@ def parse_pbir_definitions(
         model_key = normalize_identifier(declared)
         report.metadata["declared_model"] = model_key
         model_id = Node.make_id(NodeType.SEMANTIC_MODEL, "", declared)
-        if model_id in graph.nodes:
+        model = graph.nodes.get(model_id)
+        ref = data.get("datasetReference", {})
+        by_path = ref.get("byPath") if isinstance(ref, dict) else None
+        if isinstance(by_path, dict) and isinstance(by_path.get("path"), str):
+            report_folder, _ = report_root(entry.path)
+            declared_path = posixpath.normpath(
+                posixpath.join(report_folder, by_path["path"].replace("\\", "/"))
+            )
+            report.metadata["declared_model_path"] = declared_path
+            identity = model.metadata.get("source_identity") if model else None
+            if identity != [entry.repo_key, declared_path]:
+                model = None
+        if model is not None:
             graph.add_edge(
                 Edge(
                     source_id=model_id,
@@ -552,7 +565,11 @@ def link_visual_bindings(graph: LineageGraph) -> list[ParseWarning]:
     # the uniqueness check, so a thin report bound to a model that shares every
     # table name with a fork still resolves.
     declared_by_report = {
-        nid: node.metadata["declared_model"]
+        nid: (
+            "!unresolved"
+            if node.metadata.get("declared_model_unresolved")
+            else node.metadata["declared_model"]
+        )
         for nid, node in graph.nodes.items()
         if node.node_type is NodeType.REPORT and node.metadata.get("declared_model")
     }

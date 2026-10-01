@@ -19,6 +19,7 @@ from coop_data_doc.config import ParseWarning
 
 _SEVERITY: dict[str, str] = {
     # parse failures / missing data
+    "identity_collision": "error",
     "crawl_incomplete": "error",
     "tmdl_parse": "error",
     "bim_parse": "error",
@@ -59,6 +60,8 @@ _SEVERITY: dict[str, str] = {
     "pbir_external_model": "warning",
     "fuzzy_auto": "warning",
     "cache_pruned": "warning",
+    "cache_source_changed": "warning",
+    "cache_source_unverified": "warning",
     # a locked/read-only .lineage-cache.json couldn't be written (Windows
     # OneDrive/Defender lock small JSON files transiently). The answers stay in
     # memory and each subsequent write re-attempts the whole file, so a transient

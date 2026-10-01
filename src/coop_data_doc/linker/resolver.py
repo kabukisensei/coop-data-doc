@@ -10,6 +10,8 @@ and the prompt exist for.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from difflib import SequenceMatcher
 
 from pydantic import BaseModel, Field
@@ -56,6 +58,7 @@ class _Item(BaseModel):
     schema_name: str
     object_name: str
     raw_kind: str
+    source_signature: str
 
 
 def _collect_items(graph: LineageGraph) -> list[_Item]:
@@ -64,29 +67,37 @@ def _collect_items(graph: LineageGraph) -> list[_Item]:
         node = graph.nodes[node_id]
         if node.node_type is not NodeType.PBI_TABLE:
             continue
-        source = node.metadata.get("partition_source")
-        native_tables = node.metadata.get("native_query_tables") or []
-        if len(native_tables) > 1:
-            # one item per table read by the native query
-            for qualified in native_tables:
-                schema, _, name = qualified.partition(".")
-                items.append(
-                    _Item(
-                        cache_key=f"{node.id}#{qualified}",
-                        node_id=node.id,
-                        schema_name=schema,
-                        object_name=name,
-                        raw_kind="native_query",
-                    )
-                )
-        elif source:
+        sources = node.metadata.get("partition_sources") or []
+        if not sources:
+            source = node.metadata.get("partition_source")
+            native_tables = node.metadata.get("native_query_tables") or []
+            if len(native_tables) > 1:
+                sources = [
+                    {
+                        "schema": q.rpartition(".")[0],
+                        "object": q.rpartition(".")[2],
+                        "raw_kind": "native_query",
+                    }
+                    for q in native_tables
+                ]
+            elif source:
+                sources = [source]
+        grouped: dict[str, list[dict]] = {}
+        for source in sources:
+            qualified = normalize_identifier(f"{source.get('schema', '')}.{source.get('object', '')}")
+            grouped.setdefault(qualified, []).append(source)
+        for qualified, definitions in sorted(grouped.items()):
+            source = definitions[0]
+            canonical = sorted(json.dumps(d, sort_keys=True) for d in definitions)
+            signature = hashlib.sha256(json.dumps(canonical).encode("utf-8")).hexdigest()
             items.append(
                 _Item(
-                    cache_key=node.id,
+                    cache_key=node.id if len(grouped) == 1 else f"{node.id}#{qualified}",
                     node_id=node.id,
                     schema_name=source.get("schema", ""),
                     object_name=source.get("object", ""),
                     raw_kind=source.get("raw_kind", ""),
+                    source_signature=signature,
                 )
             )
     return items
@@ -197,6 +208,32 @@ def link_graph(
 
         cached = cache.get(item.cache_key)
         if cached is not None:
+            old_signature = cached.source_signature or cache.prior_signatures.get(item.cache_key)
+            if old_signature is not None and old_signature != item.source_signature:
+                if interactive_mode:
+                    pending_interactive.append(
+                        (item, _fuzzy_candidates(candidates, item.schema_name, item.object_name))
+                    )
+                else:
+                    node.metadata["unresolved"] = True
+                    result.unresolved.append(item.cache_key)
+                warnings.append(
+                    ParseWarning(
+                        file=node.source_file,
+                        category="cache_source_changed",
+                        message=f"source for {item.cache_key!r} changed; preserved cached decision requires review",
+                    )
+                )
+                continue
+            if cached.source_signature is None:
+                node.metadata["cache_source_unverified"] = True
+                warnings.append(
+                    ParseWarning(
+                        file=node.source_file,
+                        category="cache_source_unverified",
+                        message=f"legacy decision {item.cache_key!r} has no source signature; review before claiming complete lineage",
+                    )
+                )
             if cached.target is not None:
                 _apply(graph, item, cached.target, "cache", result)
             else:
@@ -251,6 +288,7 @@ def link_graph(
             pending_out.append(
                 {
                     "cache_key": item.cache_key,
+                    "source_signature": item.source_signature,
                     "pbi_table": node.qualified_display,
                     "model": node.schema_name,
                     "source": source,
@@ -285,6 +323,7 @@ def link_graph(
                         node, f"{item.schema_name}.{item.object_name}", scored
                     )
                     handled.add(item.cache_key)
+                    entry.source_signature = item.source_signature
                     cache.put(item.cache_key, entry)  # immediately — crash-safe
                     if entry.target is not None:
                         _apply(graph, item, entry.target, "interactive", result)

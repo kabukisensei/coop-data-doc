@@ -21,6 +21,7 @@ class CacheEntry(BaseModel):
 
     target: str | None  # node id, or None for external/skip
     method: str  # "interactive" | "external" | "skip"
+    source_signature: str | None = None
 
 
 class LineageCache:
@@ -39,6 +40,7 @@ class LineageCache:
         # never destroy committed human answers.
         self._ignored: set[str] = set()
         self.defer_writes = False
+        self.prior_signatures: dict[str, str] = {}
 
     @classmethod
     def load(cls, path: Path | str) -> LineageCache:
@@ -163,7 +165,12 @@ class LineageCache:
         """
         payload = {
             "version": self.VERSION,
-            "mappings": {key: self.mappings[key].model_dump() for key in sorted(self.mappings)},
+            "mappings": {
+                key: self.mappings[key].model_dump(
+                    exclude={"source_signature"} if self.mappings[key].source_signature is None else set()
+                )
+                for key in sorted(self.mappings)
+            },
         }
         try:
             self.path.write_text(
