@@ -795,3 +795,8 @@ changed source requires explicit review even when the previous target still exis
 Unsigned legacy decisions remain readable, but are marked unverified unless a
 previous published generation supplies a matching source signature. `resolve`
 exposes changed-source review choices; preserve its signature in `resolve-apply`.
+
+Stakeholder CSV exports neutralize formula-like source values for spreadsheet
+opening. JSONL setup always uses UTF-8 for both input and output, including
+redirected non-UTF-8 Python streams. Native Windows terminal qualification is
+still required; portable fixtures do not assert Windows runtime acceptance.

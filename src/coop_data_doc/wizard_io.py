@@ -164,6 +164,12 @@ class JsonlWizardIO(WizardIO):
     PROTOCOL_VERSION = "1.1"
 
     def __init__(self, in_stream: TextIO, out_stream: TextIO) -> None:
+        # JSONL is a UTF-8 wire protocol, including redirected Windows pipes.
+        # StringIO and caller-owned protocol streams need no reconfiguration.
+        for stream in (in_stream, out_stream):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if callable(reconfigure):
+                reconfigure(encoding="utf-8", errors="strict")
         self._in = in_stream
         self._out = out_stream
         self._counter = 0
