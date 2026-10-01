@@ -281,15 +281,15 @@ def test_status_leaves_lineage_cache_untouched(tmp_path: Path):
     assert (tmp_path / ".lineage-cache.json").read_bytes() == before
 
 
-def test_build_prunes_stale_lineage_cache_entries(tmp_path: Path):
-    # an explicit successful build is the ONE place stale answers are deleted
+def test_build_retains_stale_lineage_cache_entries(tmp_path: Path):
+    # A successful selected-scope build cannot establish estate-wide deletion.
     setup_workspace(tmp_path)
     seed_stale_cache(tmp_path)
     assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
     import json as _json
 
     mappings = _json.loads((tmp_path / ".lineage-cache.json").read_text(encoding="utf-8"))["mappings"]
-    assert "pbi_table:sales.answered_elsewhere" not in mappings
+    assert "pbi_table:sales.answered_elsewhere" in mappings
 
 
 def test_version():
@@ -1232,37 +1232,17 @@ def test_status_detects_staleness(tmp_path: Path):
     assert "stale" in result.output
 
 
-def test_build_prune_survives_unwritable_cache(tmp_path: Path, monkeypatch):
-    # The post-render prune (persist=True) rewrites .lineage-cache.json when it
-    # drops a stale entry. A locked/read-only file there must NOT abort a fully
-    # rendered build: the write records a cache_write_failed warning (never
-    # raises) and _run_build surfaces it. Seed a stale entry so the prune writes.
-    from coop_data_doc.config import ParseWarning
+def test_build_retains_unwritable_stale_cache_without_writing(tmp_path: Path, monkeypatch):
     from coop_data_doc.linker.cache import LineageCache
 
     setup_workspace(tmp_path)
-    (tmp_path / ".lineage-cache.json").write_text(
-        '{\n  "version": 1,\n  "mappings": {\n'
-        '    "pbi_table:sales.fact_sales": {\n'
-        '      "target": "gold_table:dbo.gone",\n'  # target absent from the graph → pruned
-        '      "method": "interactive"\n    }\n  }\n}\n',
-        encoding="utf-8",
-    )
-
-    def failing_write(self):
-        self.warnings.append(
-            ParseWarning(
-                file=str(self.path),
-                message="could not write lineage cache: locked",
-                category="cache_write_failed",
-            )
-        )
-        return False
-
-    monkeypatch.setattr(LineageCache, "write", failing_write)
+    before = seed_stale_cache(tmp_path)
+    writes = []
+    monkeypatch.setattr(LineageCache, "write", lambda self: writes.append(self.path))
     result = run(["build", "--non-interactive", "--skip-html"], tmp_path)
-    assert result.exit_code == 0, result.output  # docs rendered; prune write is non-fatal
-    assert "could not write lineage cache" in result.output
+    assert result.exit_code == 0, result.output
+    assert writes == []
+    assert (tmp_path / ".lineage-cache.json").read_bytes() == before
 
 
 def test_undecodable_sql_file_fails_ci_gate(tmp_path: Path):

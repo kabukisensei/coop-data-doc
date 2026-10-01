@@ -189,6 +189,7 @@ def test_impact_markdown_handles_removed_and_baseline_only_nodes(tmp_path: pathl
 
     assert result.exit_code == 0, result.output
     assert result.output.splitlines() == [
+        "Impact covers observed graph edges; empty results do not verify zero estate impact.",
         "### dbo.a (view) [removed]",
         "- dbo.b (view)",
         "- dbo.c (view)",

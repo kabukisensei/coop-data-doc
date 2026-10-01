@@ -29,6 +29,7 @@ from coop_data_doc.config import (
     ParseWarning,
     render_config_yaml,
 )
+from coop_data_doc.coverage import OMISSION_CATEGORIES, evidence_summary, source_coverage
 from coop_data_doc.crawler import FileKind, crawl
 from coop_data_doc.diagnostics import Diagnostics, severity_of
 from coop_data_doc.folders import (
@@ -83,6 +84,7 @@ def build_graph(
     progress: Progress | None = None,
     no_parse_cache: bool = False,
     jobs: int | None = None,
+    deferred_caches: list | None = None,
 ) -> tuple[LineageGraph, list[ParseWarning]]:
     """Crawl -> parse -> structural links -> prune -> assign layers, returning
     (graph, warnings). This is everything that does NOT depend on
@@ -113,6 +115,10 @@ def build_graph(
     progress.line(f"  {len(inventory.entries)} files found")
     _log.debug("crawled %d files across %d repos", len(inventory.entries), len(config.repos))
 
+    graph.coverage = source_coverage(config, inventory, warnings)
+    if any(w.category in OMISSION_CATEGORIES for w in warnings):
+        return graph, warnings
+
     sql_entries = inventory.by_kind(FileKind.SQL_FILE)
     _log.debug("parsing %d SQL files (dialect=%s)", len(sql_entries), config.sql_dialect)
     # Shared across both passes so each SQL file is read + decoded exactly ONCE (the second
@@ -137,7 +143,10 @@ def build_graph(
             # dedicated bar ticking as each worker result arrives instead.
             pool_progress=lambda total: progress.bar("Parsing SQL (workers)", total=total),
         )
-    parse_cache.write()
+    if deferred_caches is None:
+        parse_cache.write()
+    else:
+        deferred_caches.append(parse_cache)
     # cache warnings (load: corrupt/version-mismatch; write: could-not-write) surface as
     # diagnostics like any parser warning — collected AFTER write() so both are included.
     warnings += parse_cache.warnings
@@ -179,6 +188,8 @@ def build_graph(
         _log.debug("pruned %d nodes in system/ignored schemas", dropped)
     with progress.spinner("Assigning layers"):
         warnings += assign_layers(graph, config)
+    if any(severity_of(w.category) == "error" or w.category == "sql_no_objects" for w in warnings):
+        graph.coverage["observed"] = "degraded"
     return graph, warnings
 
 
@@ -188,6 +199,7 @@ def resolve_graph(
     interactive: bool,
     progress: Progress | None = None,
     pending_out: list | None = None,
+    deferred_caches: list | None = None,
 ) -> tuple[ResolutionResult, list[ParseWarning]]:
     """Resolution tail: link Power BI tables to their SQL sources (the only
     stage that depends on ``config.schema_mappings``), then wire reports to
@@ -197,6 +209,23 @@ def resolve_graph(
     """
     progress = progress or Progress(enabled=False)
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
+    # A previous published generation can verify unsigned legacy decisions
+    # without rewriting their committed bytes during migration.
+    previous_path = config.output_dir() / "graph.json"
+    if previous_path.is_file():
+        from coop_data_doc.linker.resolver import _collect_items
+
+        try:
+            previous = LineageGraph.model_validate(json.loads(previous_path.read_text(encoding="utf-8")))
+            cache.prior_signatures = {
+                item.cache_key: item.source_signature for item in _collect_items(previous)
+            }
+        except (OSError, ValueError):
+            pass  # legacy cache remains explicitly unverified
+
+    if deferred_caches is not None:
+        cache.defer_writes = True
+        deferred_caches.append(cache)
     # A spinner (not just a static line) so this stage — the fuzzy cross-repo
     # matcher, previously silent — visibly shows activity on a large estate.
     # Only when non-interactive: an interactive link_graph prompts via
@@ -220,6 +249,7 @@ def run_pipeline(
     pending_out: list | None = None,
     no_parse_cache: bool = False,
     jobs: int | None = None,
+    deferred_caches: list | None = None,
 ) -> tuple[LineageGraph, ResolutionResult, list[ParseWarning]]:
     """Execute the full crawl -> parse -> link pipeline and return
     (graph, resolution result, warnings). Shared by scan/build/check.
@@ -230,8 +260,12 @@ def run_pipeline(
     (default ``min(cpu_count, 8)``) sets the SQL-parse worker count; the merge
     is deterministic so ``--jobs N`` == ``--jobs 1`` == cold (see build_graph).
     """
-    graph, warnings = build_graph(config, progress, no_parse_cache=no_parse_cache, jobs=jobs)
-    result, link_warnings = resolve_graph(graph, config, interactive, progress, pending_out)
+    graph, warnings = build_graph(
+        config, progress, no_parse_cache=no_parse_cache, jobs=jobs, deferred_caches=deferred_caches
+    )
+    if any(w.category in OMISSION_CATEGORIES for w in warnings):
+        return graph, ResolutionResult(), warnings
+    result, link_warnings = resolve_graph(graph, config, interactive, progress, pending_out, deferred_caches)
     warnings += link_warnings
     _log.debug(
         "done: %d nodes, %d edges, %d cross-repo links, %d unresolved, %d warnings",
@@ -249,6 +283,15 @@ def _error_failures(warnings: list[ParseWarning]) -> list[str]:
     procs, parse failures) — these mean whole objects are silently missing from the docs, so
     they fail even `check --lenient` (a corrupt file is never "known and accepted")."""
     return [f"{w.category}: {w.file}" for w in warnings if severity_of(w.category) == "error"]
+
+
+def _publication_blockers(warnings: list[ParseWarning]) -> list[str]:
+    """Failure lines for diagnostics that must stop publication even without --strict:
+    source omissions (OMISSION_CATEGORIES) and semantic-model identity collisions.
+    Both hide objects the previous generation may document; publishing would read
+    as their deletion and could prune authored intent or cached decisions."""
+    blockers = OMISSION_CATEGORIES | {"identity_collision"}
+    return [f"{w.category}: {w.file}" for w in warnings if w.category in blockers]
 
 
 def _strict_failures(result: ResolutionResult, warnings: list[ParseWarning]) -> list[str]:
@@ -324,13 +367,44 @@ def _scan(
             "`coop-data-doc setup` (or `build`) in a terminal.",
             err=True,
         )
+    deferred_caches = []
     graph, result, warnings = run_pipeline(
-        config, interactive=interactive, progress=progress, no_parse_cache=no_parse_cache, jobs=jobs
+        config,
+        interactive=interactive,
+        progress=progress,
+        no_parse_cache=no_parse_cache,
+        jobs=jobs,
+        deferred_caches=deferred_caches,
     )
     if extra_warnings:
         # e.g. review-file load problems (issue #38) — surfaced through the same
         # diagnostics channel as parser warnings, advisory (never a strict failure)
         warnings = warnings + extra_warnings
+    # Validate before publishing any artifacts: a rejected scan must not replace
+    # the previous graph while its manifest/pages still describe it. Without
+    # --strict only source OMISSIONS (an incomplete crawl, an unreadable or
+    # oversized file, a symlink escape) and identity collisions reject the run:
+    # the objects they hide would otherwise vanish from the docs as if deleted.
+    # A parse error inside a readable file stays a diagnostic (the other files
+    # are still documented and `coverage.observed` says "degraded"); --strict
+    # and `check` keep failing on it.
+    failures = _strict_failures(result, warnings) if strict else _publication_blockers(warnings)
+    if failures:
+        for failure in failures:
+            click.echo(f"scan rejected: {failure}", err=True)
+        sys.exit(2)
+    for cache in deferred_caches:
+        before = len(cache.warnings)
+        # Preserve old committed answers even on successful partial builds.
+        # A read-only run that changed no decisions need not rewrite that file.
+        if isinstance(cache, LineageCache) and not cache.defer_writes:
+            continue
+        if isinstance(cache, LineageCache):
+            existing = LineageCache.load(cache.path)
+            if existing.mappings == cache.mappings:
+                continue
+        cache.write()
+        warnings.extend(cache.warnings[before:])
     out_dir = config.output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     to_json_file(graph, out_dir / "graph.json")
@@ -350,12 +424,6 @@ def _scan(
             f"({result.resolved} cross-repo links; {len(result.unresolved)} unresolved)",
             err=True,
         )
-    if strict:
-        failures = _strict_failures(result, warnings)
-        if failures:
-            for failure in failures:
-                click.echo(f"strict: {failure}", err=True)
-            sys.exit(2)
     return graph, diagnostics
 
 
@@ -817,6 +885,7 @@ def _render_kwargs_from_config(config: Config) -> dict:
         "site_dir": config.output.site_dir,
         "sql_dialect": config.sql_dialect,
         "reviews": list(config.reviews),
+        "coverage": {k: v.model_dump() for k, v in sorted(config.coverage.items())},
     }
 
 
@@ -936,6 +1005,8 @@ def _node_ref(graph: LineageGraph, node_id: str) -> dict:
         "name": node.qualified_display,
         "type": node.node_type.value,
         "doc": _doc_path(node),
+        "source_file": node.source_file,
+        "metadata": node.metadata,
     }
 
 
@@ -1052,6 +1123,7 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
                     "object": _node_ref(graph, nid),
                     "column": column_name,
                     "source_columns": sorted(traced_sources),
+                    "evidence": evidence_summary(graph, node),
                 },
                 indent=2,
                 sort_keys=True,
@@ -1069,6 +1141,7 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
                 "upstream": [_node_ref(graph, x) for x in graph.upstream(nid, depth=depth)],
                 "downstream": [_node_ref(graph, x) for x in graph.downstream(nid, depth=depth)],
                 "relationships": node.metadata.get("relationships", []),
+                "evidence": evidence_summary(graph, node),
             },
             indent=2,
             sort_keys=True,
@@ -1148,6 +1221,7 @@ def _config_to_dict(config: Config) -> dict:
         "branding": branding,
         "sql_dialect": config.sql_dialect,
         "reviews": list(config.reviews),
+        "coverage": {k: v.model_dump() for k, v in sorted(config.coverage.items())},
     }
 
 
@@ -1175,6 +1249,8 @@ def _load_config_lenient(path: Path) -> Config:
 
 def _apply_config_patch(kwargs: dict, patch: dict) -> None:
     """Override render kwargs with the provided patch keys (partial update)."""
+    if "coverage" in patch:
+        kwargs["coverage"] = dict(patch["coverage"])
     if "project_name" in patch:
         kwargs["project_name"] = patch["project_name"]
     if "repos" in patch:
@@ -1350,6 +1426,7 @@ def resolve_apply(config_path: str | None, json_src) -> None:
             entry = CacheEntry(target=None, method="external")
         else:
             entry = CacheEntry(target=None, method="skip")
+        entry.source_signature = decision.get("source_signature")
         cache.put(key, entry)
         applied += 1
     # resolve-apply's whole job is to persist these human decisions to disk;
@@ -1451,24 +1528,8 @@ def _run_build(
     with progress.bar("Rendering pages", total=len(graph.nodes)) as tick:
         render_markdown(graph, out_dir, config.project_name, reviews=review_join, on_node=tick)
     write_diagnostics(out_dir, diagnostics, config.project_name)
-    # The ONE place stale lineage-cache answers are actually deleted: an explicit
-    # build that got this far succeeded against the full configured estate, so an
-    # entry whose target still isn't in the graph is genuinely dead. Reload from
-    # disk (interactive answers were written during linking) and prune for real —
-    # read-only commands (check/status/resolve/scan, wizard dry-runs) only ever
-    # ignore such entries for the run (see LineageCache.prune_invalid).
-    prune_cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
-    pruned = prune_cache.prune_invalid(graph, persist=True)
-    if pruned:
-        _log.debug("pruned %d stale lineage-cache entr%s", len(pruned), "y" if len(pruned) == 1 else "ies")
-    # prune_invalid writes only when it dropped entries, and write() now records
-    # a cache_write_failed warning (never raises) if the file is locked/read-only
-    # — surface it here since diagnostics were already emitted upstream. The docs
-    # are fully rendered; only the on-disk prune didn't stick (harmless: those
-    # dead entries are re-ignored next run and dropped on the next writable build).
-    for warning in prune_cache.warnings:
-        if warning.category == "cache_write_failed":
-            click.echo(f"warning: {warning.message}", err=True)
+    # A successful selected-scope build does not prove that absent targets
+    # vanished from the client's estate. Retain committed decisions for review.
     click.echo(f"Markdown docs: {out_dir}", err=True)
     if skip_html:
         return
@@ -1807,12 +1868,19 @@ def findings(config_path: str | None, out_file, no_parse_cache: bool) -> None:
     default="json",
     help="Output format (default json).",
 )
+@click.option(
+    "--evidence",
+    "with_evidence",
+    is_flag=True,
+    help="Include scoped coverage/provenance in an impact envelope.",
+)
 def impact(
     config_path: str | None,
     baseline_path: str | None,
     git_ref: str | None,
     files_list: tuple[str, ...],
     fmt: str,
+    with_evidence: bool,
 ) -> None:
     """Change-impact diff against a baseline graph.json (e.g., git main)."""
     import subprocess
@@ -1846,8 +1914,19 @@ def impact(
     impacts, seed_graphs = impact_map(old_graph, current_graph, files_list)
 
     if fmt == "json":
-        click.echo(json.dumps(impacts, indent=2))
+        payload = (
+            {
+                "schema_version": 2,
+                "impacts": impacts,
+                "evidence": evidence_summary(current_graph),
+                "baseline_evidence": evidence_summary(old_graph),
+            }
+            if with_evidence
+            else impacts
+        )
+        click.echo(json.dumps(payload, indent=2))
     else:
+        click.echo("Impact covers observed graph edges; empty results do not verify zero estate impact.")
         for nid, down in impacts.items():
             graph = seed_graphs[nid]
             node = graph.nodes.get(nid) or current_graph.nodes.get(nid) or old_graph.nodes.get(nid)

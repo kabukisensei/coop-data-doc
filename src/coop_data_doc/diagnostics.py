@@ -11,6 +11,7 @@ Severity is advisory — nothing here is fatal to a build:
 
 from __future__ import annotations
 
+import html
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -18,6 +19,8 @@ from coop_data_doc.config import ParseWarning
 
 _SEVERITY: dict[str, str] = {
     # parse failures / missing data
+    "identity_collision": "error",
+    "crawl_incomplete": "error",
     "tmdl_parse": "error",
     "bim_parse": "error",
     "pbir_parse": "error",
@@ -57,6 +60,8 @@ _SEVERITY: dict[str, str] = {
     "pbir_external_model": "warning",
     "fuzzy_auto": "warning",
     "cache_pruned": "warning",
+    "cache_source_changed": "warning",
+    "cache_source_unverified": "warning",
     # a locked/read-only .lineage-cache.json couldn't be written (Windows
     # OneDrive/Defender lock small JSON files transiently). The answers stay in
     # memory and each subsequent write re-attempts the whole file, so a transient
@@ -78,9 +83,9 @@ _SEVERITY: dict[str, str] = {
     # a classified .sql file that contributed zero nodes and zero warnings
     # (unsupported DDL, empty file) — a coverage gap, never silent (issue #31)
     "sql_no_objects": "warning",
-    "symlink_escape": "warning",
-    "file_too_large": "warning",
-    "file_unreadable": "warning",
+    "symlink_escape": "error",
+    "file_too_large": "error",
+    "file_unreadable": "error",
     "interactive_unavailable": "warning",
     # expected / cosmetic
     "layer_unclassified": "info",
@@ -102,7 +107,7 @@ def _md_cell(value: str) -> str:
     File/message cells can carry user-derived content — e.g. a Power BI page or
     object name with a literal '|' — so this mirrors render/markdown._cell.
     """
-    return (value or "").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+    return html.escape(value or "", quote=False).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
 @dataclass
@@ -196,7 +201,7 @@ class Diagnostics:
 
     def to_markdown(self, project_name: str) -> str:
         rows = self.items()
-        out = [f"# Diagnostics — {project_name}", ""]
+        out = [f"# Diagnostics — {html.escape(project_name, quote=False)}", ""]
         if not rows:
             out.append("✅ No issues found.")
             out.append("")
@@ -221,7 +226,7 @@ class Diagnostics:
             out.append(f"## {severity.capitalize()}")
             for category in cats:
                 out.append("")
-                out.append(f"### `{category}` ({by_cat[(severity, category)]})")
+                out.append(f"### `{html.escape(category, quote=False)}` ({by_cat[(severity, category)]})")
                 out.append("")
                 out.append("| File / Object | Detail |")
                 out.append("| --- | --- |")

@@ -1025,9 +1025,29 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
     if pbi_path is not None:
         repos["powerbi"] = {"path": pbi_path, "include": pbi_include, "exclude": pbi_exclude}
 
+    coverage = {key: value.model_dump() for key, value in (existing.coverage.items() if existing else [])}
+    for key in sorted(selected_sources):
+        previous = coverage.get(key, {})
+        state = io.select(
+            f"coverage_{key}",
+            f"How complete is the selected {key} source for this client's intended scope?",
+            [
+                WizardChoice("Unknown — not verified", value="unknown"),
+                WizardChoice("Partial — some code is unavailable", value="partial"),
+                WizardChoice("Complete within the selected scope", value="complete"),
+            ],
+            default=previous.get("state", "unknown")
+            if previous.get("state") in {"unknown", "partial", "complete"}
+            else "unknown",
+        )
+        coverage[key] = {
+            "state": state,
+            "scope": previous.get("scope", "selected roots, folders and schemas"),
+        }
     rendered = render_config_yaml(
         project_name=project_name,
         repos=repos,
+        coverage=coverage,
         mappings=mappings,
         layers=layers,
         ignore_schemas=ignore_schemas,

@@ -387,7 +387,8 @@ def test_pool_bootstrap_failure_fallback(tmp_path: Path, monkeypatch):
 def test_worker_parse_error_becomes_parse_worker_error_warning(tmp_path: Path, monkeypatch):
     """A worker that returns an error for a file degrades that file to a
     parse_worker_error diagnostic; the build still exits 0 and the other files
-    are documented."""
+    are documented, with coverage marked degraded (only source omissions and
+    identity collisions reject a non-strict build)."""
     setup_workspace(tmp_path)
     import coop_data_doc.parsers.parallel as parallel_mod
 
@@ -404,13 +405,23 @@ def test_worker_parse_error_becomes_parse_worker_error_warning(tmp_path: Path, m
 
     monkeypatch.setattr(parallel_mod, "_run_pool", _one_file_errors)
     result = run(["build", "--non-interactive", "--skip-html", "--jobs", "4", "--no-parse-cache"], tmp_path)
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     diagnostics = json.loads((tmp_path / "data-docs" / "diagnostics.json").read_text(encoding="utf-8"))
     cats = {i["category"] for i in diagnostics["issues"]}
     assert "parse_worker_error" in cats
     # error severity (data is missing) — like encoding_unreadable
     err = next(i for i in diagnostics["issues"] if i["category"] == "parse_worker_error")
     assert err["severity"] == "error"
+    graph = json.loads((tmp_path / "data-docs" / "graph.json").read_text(encoding="utf-8"))
+    assert graph["coverage"]["observed"] == "degraded"
+    # --strict still refuses to publish a graph with a missing object
+    assert (
+        run(
+            ["build", "--non-interactive", "--skip-html", "--jobs", "4", "--no-parse-cache", "--strict"],
+            tmp_path,
+        ).exit_code
+        == 2
+    )
 
 
 def test_worker_error_never_aborts_build_unit(tmp_path: Path, monkeypatch):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass
 
 from coop_data_doc.graph.model import LineageGraph, NodeType
@@ -43,7 +44,7 @@ def generate_estate_map_svg(graph: LineageGraph) -> str:
 
     def _layer(node) -> str | None:
         if node.node_type in (NodeType.BRONZE_TABLE, NodeType.SILVER_TABLE, NodeType.GOLD_TABLE):
-            return node.node_type.value.split("-")[0]
+            return node.node_type.value.split("_")[0]
         return node.metadata.get("layer")
 
     for nid, node in sorted(graph.nodes.items()):
@@ -168,7 +169,7 @@ def generate_estate_map_svg(graph: LineageGraph) -> str:
         x, y = positions[n.id]
         color = colors[n.column]
 
-        data_attrs = f'data-title="{n.title}" data-tables="{n.tables}" data-views="{n.views}" data-procs="{n.procs}" data-warnings="{n.warnings}"'
+        data_attrs = f'data-title="{html.escape(n.title, quote=True)}" data-tables="{n.tables}" data-views="{n.views}" data-procs="{n.procs}" data-warnings="{n.warnings}"'
 
         lines.append(f'<g class="estate-node" {data_attrs} transform="translate({x},{y})">')
         lines.append(
@@ -178,7 +179,7 @@ def generate_estate_map_svg(graph: LineageGraph) -> str:
         # Truncate title if too long
         display_title = n.title if len(n.title) <= 20 else n.title[:17] + "..."
         lines.append(
-            f'<text x="{box_w / 2}" y="{box_h / 2 + 5}" text-anchor="middle" fill="#fff" font-family="sans-serif" font-size="12" font-weight="bold">{display_title}</text>'
+            f'<text x="{box_w / 2}" y="{box_h / 2 + 5}" text-anchor="middle" fill="#fff" font-family="sans-serif" font-size="12" font-weight="bold">{html.escape(display_title, quote=False)}</text>'
         )
 
         if n.warnings > 0:

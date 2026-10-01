@@ -12,12 +12,23 @@ class GraphDiff:
     removed_edges: list[Edge] = field(default_factory=list)
 
 
+# Metadata the linker rewrites from run to run without the object changing: how a
+# cached answer was applied ("interactive" on the run that asked, "cache" after) and
+# whether a legacy decision carried a source signature. Comparing them would report
+# every mapped table as changed on the first build after answering the wizard.
+_RUN_BOOKKEEPING = frozenset({"source_resolutions", "cache_source_unverified"})
+
+
+def _stable_metadata(node: Node) -> dict:
+    return {k: v for k, v in node.metadata.items() if k not in _RUN_BOOKKEEPING}
+
+
 def _nodes_equal(a: Node, b: Node) -> bool:
     if a.name != b.name or a.node_type != b.node_type or a.schema_name != b.schema_name:
         return False
     if a.source_file != b.source_file:
         return False
-    if a.metadata.get("trust") != b.metadata.get("trust"):
+    if _stable_metadata(a) != _stable_metadata(b):
         return False
 
     # compare columns

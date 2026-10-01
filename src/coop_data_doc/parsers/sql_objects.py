@@ -306,8 +306,10 @@ def _handle_create_table(
             col_lineage = extract_column_lineage(select, dialect)
             if col_lineage:
                 node.metadata["column_lineage"] = col_lineage
+    if isinstance(select, exp.Query) and not isinstance(select, exp.Select):
+        node.metadata["columns_unresolved"] = True
     _add_node(graph, node, contribution)
-    if isinstance(select, exp.Select):  # CTAS
+    if isinstance(select, exp.Query):  # CTAS, including set operations
         _add_reads(graph, node.id, collect_source_tables(select), entry.path, contribution)
 
 
@@ -350,12 +352,14 @@ def _handle_create_view(
             col_lineage = extract_column_lineage(select, dialect)
             if col_lineage:
                 node.metadata["column_lineage"] = col_lineage
+    if isinstance(select, exp.Query) and not isinstance(select, exp.Select):
+        node.metadata["columns_unresolved"] = True
     _add_node(graph, node, contribution)
     if view_warning is not None:
         warnings.append(view_warning)
         if contribution is not None:
             contribution.record_warning(view_warning)
-    if isinstance(select, exp.Select):
+    if isinstance(select, exp.Query):
         _add_reads(graph, node.id, collect_source_tables(select), entry.path, contribution)
 
 

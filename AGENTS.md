@@ -167,6 +167,52 @@ After a successful `build`/`update`, these files exist. `scan` is rendering-free
 it writes only `data-docs/graph.json` and `data-docs/diagnostics.json` (no
 `manifest.json` and no Markdown pages).
 
+**Output safety:** both output directories must be outside every configured
+source root, with no ancestor/descendant overlap (resolved symlinks included).
+Use sibling source and output folders. A strict scan failure preserves previously
+published graph/diagnostics/pages. An incomplete directory crawl is fatal even
+without `--strict` and stops before parsing or cache updates. Scan/build cache
+writes are deferred until validation passes. File-level omissions (unreadable or
+oversized files, symlink escapes) and semantic-model identity collisions also
+reject publication in non-strict mode; a parse error inside a readable file stays
+a diagnostic, marks `coverage.observed` as `degraded`, and fails only `--strict`
+and `check`. Successful
+selected-scope builds retain committed mapping answers whose target is absent;
+absence from a selected scope does not prove estate deletion.
+
+**Authored intent:** a unique SQL table identity with unchanged schema, name, source repository and
+source file carries its Business Intent when a layer change moves its ID/page.
+Unmatched authored intent pages are retained with a warning for reconciliation;
+they are not current graph members. Scope changes and uncertain identities never
+justify deleting their human text. General scope-qualified ID migration remains
+pending.
+
+### Scoped coverage and evidence
+
+Optional `coverage` declarations use source/repo keys (`sql`, `powerbi`, arbitrary
+repo labels) or `layer:bronze` / `layer:silver` / `layer:gold`:
+
+```yaml
+coverage:
+  powerbi: {state: complete, scope: "client PBIP sources"}
+  sql: {state: partial, scope: "available mart scripts"}
+  layer:bronze: {state: unknown, scope: "not supplied"}
+```
+
+States are `complete`, `partial`, `missing`, `external`, or `unknown`; omitted
+means unknown. Complete always describes the declared, selected scope, never a
+verified whole client estate. Source availability, selected globs and schema
+filters are separate observed evidence in graph/manifest `coverage`. SQL-less
+and discovery configs remain valid. The existing wizard asks source completeness
+and retains layer declarations on reruns; `config-set` accepts this shape.
+
+`lineage` includes an `evidence` object and metadata/source provenance on its
+object/neighbors. Agents must inspect this evidence before interpreting empty
+upstream/downstream arrays. `impact --evidence` returns schema-version 2 with
+`impacts`, current `evidence`, and `baseline_evidence`. The default legacy impact
+map is retained for existing consumers: it contains observed edges only and does
+not assert zero estate impact. Prefer `--evidence` for decisions.
+
 ### `data-docs/manifest.json`
 
 The entire lineage graph in one JSON file. **Preferred entry point for agents.**

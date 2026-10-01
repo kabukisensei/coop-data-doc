@@ -16,7 +16,7 @@ def test_severity_classification():
     assert severity_of("encoding_unreadable") == "error"
     assert severity_of("proc_body_not_found") == "error"
     assert severity_of("ambiguous_visual_binding") == "warning"
-    assert severity_of("file_unreadable") == "warning"
+    assert severity_of("file_unreadable") == "error"
     assert severity_of("interactive_unavailable") == "warning"
     # issue #45: an entity that matches no documented table is a heads-up, never
     # a missing edge to a known object — tolerated by --strict (not in STRICT_CATEGORIES)

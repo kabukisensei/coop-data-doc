@@ -10,11 +10,13 @@ document.addEventListener("DOMContentLoaded", () => {
             const procs = node.getAttribute("data-procs");
             const warnings = node.getAttribute("data-warnings");
             
-            tooltip.innerHTML = `<strong>${title}</strong><br/>
-            Tables: ${tables}<br/>
-            Views: ${views}<br/>
-            Procs: ${procs}<br/>
-            Warnings: ${warnings}`;
+            const heading = document.createElement("strong");
+            heading.textContent = title;
+            tooltip.replaceChildren(heading);
+            for (const line of [`Tables: ${tables}`, `Views: ${views}`,
+                                `Procs: ${procs}`, `Warnings: ${warnings}`]) {
+                tooltip.append(document.createElement("br"), document.createTextNode(line));
+            }
             tooltip.style.display = "block";
         });
         

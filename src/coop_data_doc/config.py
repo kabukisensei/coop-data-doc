@@ -11,6 +11,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
@@ -129,6 +130,14 @@ class LayerRule(BaseModel):
     paths: list[str] = Field(default_factory=list)
 
 
+class CoverageDeclaration(BaseModel):
+    """User-declared completeness within a described client/source/layer scope."""
+
+    model_config = ConfigDict(extra="forbid")
+    state: Literal["unknown", "complete", "partial", "missing", "external"] = "unknown"
+    scope: str = ""
+
+
 class Config(BaseModel):
     """Validated coop-data-doc.yml. Relative paths resolve against the
     config file's directory, not the current working directory.
@@ -138,6 +147,7 @@ class Config(BaseModel):
 
     project_name: str = "Data Estate"
     repos: dict[str, RepoConfig]
+    coverage: dict[str, CoverageDeclaration] = Field(default_factory=dict)
     schema_mappings: list[SchemaMapping] = Field(default_factory=list)
     layers: dict[str, LayerRule] = Field(default_factory=dict)
     ignore_schemas: list[str] = Field(default_factory=list)
@@ -267,6 +277,15 @@ class Config(BaseModel):
             raise ConfigError(f"Invalid config in {path}: {issues}") from exc
         config._base_dir = path.resolve().parent
         out_dir, site = config.output_dir(), config.site_dir()
+        for repo_key in sorted(config.repos):
+            root = config.repo_root(repo_key)
+            for key, output in (("dir", out_dir), ("site_dir", site)):
+                if output_dirs_conflict(output, root):
+                    raise ConfigError(
+                        f"output.{key} overlaps source repo '{repo_key}': {output} / {root}. "
+                        "Use separate output folders outside every source root; builds may "
+                        "clean generated output."
+                    )
         if output_dirs_conflict(out_dir, site):
             raise ConfigError(
                 "output.dir and output.site_dir must be separate folders — neither can be "
@@ -379,6 +398,7 @@ def render_config_yaml(
     site_dir: str = "./data-docs-site",
     sql_dialect: str = "tsql",
     reviews: list[str] | None = None,
+    coverage: dict[str, dict] | None = None,
 ) -> str:
     """Render a commented coop-data-doc.yml from values.
 
@@ -472,7 +492,13 @@ def render_config_yaml(
     else:
         reviews_block = ""
 
-    return _CONFIG_TEMPLATE.format(
+    coverage_block = ""
+    if coverage:
+        coverage_block = "\n# Declared coverage within the selected source/layer scope; omitted = unknown.\n"
+        coverage_block += "coverage:\n"
+        for key, declaration in sorted(coverage.items()):
+            coverage_block += f"  {json.dumps(key)}: {json.dumps(declaration, sort_keys=True)}\n"
+    return coverage_block + _CONFIG_TEMPLATE.format(
         project_name=json.dumps(project_name),
         repos_block=repos_block,
         mappings_block=mappings_block,

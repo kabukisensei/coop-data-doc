@@ -5,6 +5,7 @@ Same outputs as the TMDL parser, sourced from the legacy JSON model format.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -26,6 +27,7 @@ from coop_data_doc.parsers.tmdl import (
     _attach_native_sql,
     _attach_partition_source,
     _mark_partition_unresolved,
+    model_root,
 )
 
 
@@ -104,6 +106,24 @@ def parse_bim(
         if not isinstance(model_name, str) or not model_name:
             model_name = PurePosixPath(entry.path).stem
         model_key = normalize_identifier(model_name)
+        root, _ = model_root(entry.path)
+        identity = [
+            entry.repo_key,
+            root
+            if any(part.lower().endswith(".semanticmodel") for part in PurePosixPath(root).parts)
+            else entry.path,
+        ]
+        model_id = Node.make_id(NodeType.SEMANTIC_MODEL, "", model_name)
+        existing = graph.nodes.get(model_id)
+        if existing is not None and existing.metadata.get("source_identity") != identity:
+            warnings.append(
+                ParseWarning(
+                    file=entry.path,
+                    category="identity_collision",
+                    message=f"semantic model '{model_name}' conflicts with another source scope; not merged",
+                )
+            )
+            continue
         model_node = graph.add_node(
             Node(
                 id=Node.make_id(NodeType.SEMANTIC_MODEL, "", model_name),
@@ -111,6 +131,13 @@ def parse_bim(
                 name=model_key,
                 display_name=model_name,
                 source_file=entry.path,
+                metadata={
+                    "source_identity": identity,
+                    "repo_key": entry.repo_key,
+                    "definition_hash": hashlib.sha256(
+                        json.dumps(model, sort_keys=True).encode("utf-8")
+                    ).hexdigest(),
+                },
             )
         )
 
@@ -140,7 +167,13 @@ def parse_bim(
                     display_name=table_name,
                     source_file=entry.path,
                     columns=columns,
-                    metadata={"description": table_desc} if table_desc else {},
+                    metadata={
+                        "description": table_desc,
+                        "repo_key": entry.repo_key,
+                        "definition_hash": hashlib.sha256(
+                            json.dumps(table, sort_keys=True).encode("utf-8")
+                        ).hexdigest(),
+                    },
                 )
             )
             graph.add_edge(
@@ -169,7 +202,9 @@ def parse_bim(
                     # a DAX calculated table: its references are resolved against
                     # the whole model by link_calculated_tables (issue #30)
                     table_node.metadata["partition_calculated"] = True
-                    table_node.metadata["calculated_dax"] = expression
+                    table_node.metadata["calculated_dax"] = "\n".join(
+                        filter(None, [table_node.metadata.get("calculated_dax", ""), expression])
+                    )
                 elif source_type == "query" and (sql := _expression_text(source.get("query")) or expression):
                     # legacy provider partition: the query is native SQL — same
                     # lineage extraction as Value.NativeQuery (issue #30)

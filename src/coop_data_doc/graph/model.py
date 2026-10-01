@@ -11,6 +11,7 @@ byte-identical artifacts.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from enum import Enum
 
@@ -107,6 +108,10 @@ class Node(BaseModel):
     # lean — the rendered Markdown page carries the code for humans and agents.
     source_code: str = Field(default="", exclude=True)
 
+    def model_post_init(self, context) -> None:
+        if self.source_code:
+            self.metadata["definition_hash"] = hashlib.sha256(self.source_code.encode("utf-8")).hexdigest()
+
     @property
     def display(self) -> str:
         """Original-case name for rendering; falls back to the normalized name."""
@@ -148,6 +153,7 @@ class LineageGraph(BaseModel):
     with merge-on-conflict adds and cycle-safe traversal.
     """
 
+    coverage: dict = Field(default_factory=dict)
     nodes: dict[str, Node] = Field(default_factory=dict)
     edges: list[Edge] = Field(default_factory=list)
     # O(1) dedup index over `edges`, keyed by (source, target, type). Not serialized —
@@ -300,7 +306,7 @@ class LineageGraph(BaseModel):
 
     def subgraph(self, ids: set[str]) -> LineageGraph:
         """A new graph containing the given nodes and edges among them."""
-        sub = LineageGraph()
+        sub = LineageGraph(coverage=self.coverage.copy())
         for node_id in sorted(ids):
             if node_id in self.nodes:
                 sub.nodes[node_id] = self.nodes[node_id].model_copy(deep=True)

@@ -60,7 +60,7 @@ from coop_data_doc.config import ParseWarning
 # v2: cache keys gained the file path (identical-content files at different
 # paths previously shared one entry, mis-attributing warnings/evidence) — the
 # bump drops pathless v1 entries instead of carrying them as dead weight.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 class ParseCacheEntry(BaseModel):

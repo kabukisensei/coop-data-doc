@@ -412,7 +412,8 @@ upstream link.
 | `branding.favicon` | string (path) | Favicon for the HTML site; relative paths resolve against the config file. Optional. |
 | `branding.primary_color` | string (CSS color) | Header / nav / link color. Hex (`#rgb`/`#rrggbb`/`#rrggbbaa`), `rgb()`/`rgba()`/`hsl()`, or a CSS color name. Defaults to the Cooptimize theme (`#004060`). |
 | `branding.accent_color` | string (CSS color) | Hover / active color, same accepted forms. Defaults to `#e04020`. |
-| `output.dir` | string | Where the Markdown (agent docs) is written. |
+| `coverage` | mapping | Optional source/repo or `layer:gold` declarations: `{state: partial, scope: "available mart scripts"}`. States: complete (within declared selected scope), partial, missing, external, unknown. Omitted means unknown. Graph and lineage output expose scope and observed availability separately; empty links never prove zero estate impact. The existing wizard asks source completeness. SQL sources remain optional. |
+| `output.dir` | string | Where the Markdown (agent docs) is written. Both output folders must be outside every configured source root, with no ancestor/descendant overlap, including resolved symlinks. Use sibling folders for sources and generated output. |
 | `output.site_dir` | string | Where the HTML site is built. **Must be a separate folder from `output.dir`** — not the same folder and not nested inside it (each build wipes `site_dir`, which would clobber your Markdown). Side-by-side like `./data-docs` + `./data-docs-site` is the convention. |
 | `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
 | `reviews` | list of paths | `coop-sql-review` / `coop-dax-review` `--format json` reports to compose into the portal (see [Compose review findings into the portal](#compose-review-findings-into-the-portal)); paths relative to this file. The `--reviews` flag extends the list. Advisory — never affects exit codes. |
@@ -733,6 +734,25 @@ overwritten on the next `update`. To regenerate after source changes, run
 
 > Working on this tool's own source code instead? Read `CLAUDE.md` and
 > `ARCHITECTURE.md` in the repo root.
+
+### Lineage identity and export safeguards
+
+Lineage identity and mapping safeguards: duplicate semantic-model names in distinct
+source scopes raise `identity_collision` and stop generation publication. Existing
+IDs, authored intent and committed mappings remain untouched pending an explicit
+scope-ID migration. Report `byPath` bindings require the exact repository/path
+scope. SQL/M partitions accumulate their observed dependencies; SQL set operations
+and CTAS retain every table dependency, with unsupported column lineage marked
+unresolved. Mapping decisions can carry a `source_signature` from `resolve`; a
+changed source requires explicit review even when the previous target still exists.
+Unsigned legacy decisions remain readable, but are marked unverified unless a
+previous published generation supplies a matching source signature. `resolve`
+exposes changed-source review choices; preserve its signature in `resolve-apply`.
+
+Stakeholder CSV exports neutralize formula-like source values for spreadsheet
+opening. JSONL setup always uses UTF-8 for both input and output, including
+redirected non-UTF-8 Python streams. Native Windows terminal qualification is
+still required; portable fixtures do not assert Windows runtime acceptance.
 
 ## Troubleshooting
 
