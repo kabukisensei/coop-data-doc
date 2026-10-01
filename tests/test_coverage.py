@@ -179,3 +179,23 @@ def test_report_cannot_hide_estate_upstream_limitations():
     )
     assert not evidence_summary(graph, report)["complete"]
     assert evidence_summary(graph, report)["state"] == "unresolved"
+
+
+def test_resolution_bookkeeping_is_not_a_change():
+    old = LineageGraph()
+    node = Node(
+        id="pbi_table:sales.orders",
+        node_type=NodeType.PBI_TABLE,
+        name="orders",
+        schema_name="sales",
+        metadata={
+            "source_resolutions": {"k": {"target": "view:dbo.v", "method": "interactive", "source": "dbo.v"}}
+        },
+    )
+    old.add_node(node)
+    new = old.model_copy(deep=True)
+    new.nodes[node.id].metadata["source_resolutions"]["k"]["method"] = "cache"
+    new.nodes[node.id].metadata["cache_source_unverified"] = True
+    assert diff_graphs(old, new).changed_nodes == []
+    new.nodes[node.id].metadata["definition_hash"] = "changed"
+    assert [n.id for n in diff_graphs(old, new).changed_nodes] == [node.id]

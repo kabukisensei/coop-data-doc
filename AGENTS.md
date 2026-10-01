@@ -171,8 +171,12 @@ it writes only `data-docs/graph.json` and `data-docs/diagnostics.json` (no
 source root, with no ancestor/descendant overlap (resolved symlinks included).
 Use sibling source and output folders. A strict scan failure preserves previously
 published graph/diagnostics/pages. An incomplete directory crawl is fatal even
-without `--strict` and stops before parsing or cache updates. Scan/build cache writes are deferred until validation passes. File-level omissions
-and error diagnostics also reject publication in non-strict mode. Successful
+without `--strict` and stops before parsing or cache updates. Scan/build cache
+writes are deferred until validation passes. File-level omissions (unreadable or
+oversized files, symlink escapes) and semantic-model identity collisions also
+reject publication in non-strict mode; a parse error inside a readable file stays
+a diagnostic, marks `coverage.observed` as `degraded`, and fails only `--strict`
+and `check`. Successful
 selected-scope builds retain committed mapping answers whose target is absent;
 absence from a selected scope does not prove estate deletion.
 

@@ -285,6 +285,15 @@ def _error_failures(warnings: list[ParseWarning]) -> list[str]:
     return [f"{w.category}: {w.file}" for w in warnings if severity_of(w.category) == "error"]
 
 
+def _publication_blockers(warnings: list[ParseWarning]) -> list[str]:
+    """Failure lines for diagnostics that must stop publication even without --strict:
+    source omissions (OMISSION_CATEGORIES) and semantic-model identity collisions.
+    Both hide objects the previous generation may document; publishing would read
+    as their deletion and could prune authored intent or cached decisions."""
+    blockers = OMISSION_CATEGORIES | {"identity_collision"}
+    return [f"{w.category}: {w.file}" for w in warnings if w.category in blockers]
+
+
 def _strict_failures(result: ResolutionResult, warnings: list[ParseWarning]) -> list[str]:
     failures = [f"unresolved reference: {key}" for key in result.unresolved]
     # risky/unresolved warnings (STRICT_CATEGORIES) fail strict but are tolerated by
@@ -371,16 +380,19 @@ def _scan(
         # e.g. review-file load problems (issue #38) — surfaced through the same
         # diagnostics channel as parser warnings, advisory (never a strict failure)
         warnings = warnings + extra_warnings
-    # Validate before publishing any artifacts: a failed strict scan must not
-    # replace the previous graph while its manifest/pages still describe it.
-    if strict or any(
-        w.category in OMISSION_CATEGORIES or severity_of(w.category) == "error" for w in warnings
-    ):
-        failures = _strict_failures(result, warnings) if strict else _error_failures(warnings)
-        if failures:
-            for failure in failures:
-                click.echo(f"scan rejected: {failure}", err=True)
-            sys.exit(2)
+    # Validate before publishing any artifacts: a rejected scan must not replace
+    # the previous graph while its manifest/pages still describe it. Without
+    # --strict only source OMISSIONS (an incomplete crawl, an unreadable or
+    # oversized file, a symlink escape) and identity collisions reject the run:
+    # the objects they hide would otherwise vanish from the docs as if deleted.
+    # A parse error inside a readable file stays a diagnostic (the other files
+    # are still documented and `coverage.observed` says "degraded"); --strict
+    # and `check` keep failing on it.
+    failures = _strict_failures(result, warnings) if strict else _publication_blockers(warnings)
+    if failures:
+        for failure in failures:
+            click.echo(f"scan rejected: {failure}", err=True)
+        sys.exit(2)
     for cache in deferred_caches:
         before = len(cache.warnings)
         # Preserve old committed answers even on successful partial builds.
