@@ -1,0 +1,12 @@
+project_name: "Upgrade Fixture"
+repos:
+  sql:
+    path: "./sql"
+    include: ["**/*.sql"]
+  powerbi:
+    path: "./pbi"
+    include: ["**/*.tmdl", "**/*.bim", "**/report.json", "**/visual.json", "**/page.json", "**/definition.pbir"]
+output:
+  dir: "./data-docs"
+  site_dir: "./data-docs-site"
+sql_dialect: "tsql"

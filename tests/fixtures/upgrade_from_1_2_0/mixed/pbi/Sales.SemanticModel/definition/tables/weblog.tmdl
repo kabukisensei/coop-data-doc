@@ -1,0 +1,13 @@
+table weblog
+	column id
+		dataType: int64
+		sourceColumn: id
+
+	partition weblog = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("srv", "gold"),
+				    t = Source{[Schema="dbo",Item="weblog"]}[Data]
+				in
+				    t

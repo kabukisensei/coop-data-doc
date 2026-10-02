@@ -1,0 +1,13 @@
+table legacy_customer
+	column id
+		dataType: int64
+		sourceColumn: id
+
+	partition legacy_customer = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("srv", "gold"),
+				    t = Source{[Schema="sales",Item="customer"]}[Data]
+				in
+				    t
