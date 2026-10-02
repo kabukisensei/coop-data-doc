@@ -1,0 +1,7 @@
+table basket
+	column id
+		dataType: int64
+		sourceColumn: id
+
+	partition basket = query
+		source = SELECT p.id FROM sales.product p JOIN sales.custs c ON c.id = p.id

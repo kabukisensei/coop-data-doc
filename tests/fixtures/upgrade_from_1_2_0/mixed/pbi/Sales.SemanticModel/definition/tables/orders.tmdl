@@ -1,0 +1,22 @@
+table orders
+	column id
+		dataType: int64
+		sourceColumn: id
+
+	partition orders_2024 = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("srv", "gold"),
+				    t = Source{[Schema="sales",Item="ord24"]}[Data]
+				in
+				    t
+
+	partition orders_2025 = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("srv", "gold"),
+				    t = Source{[Schema="sales",Item="ord25"]}[Data]
+				in
+				    t

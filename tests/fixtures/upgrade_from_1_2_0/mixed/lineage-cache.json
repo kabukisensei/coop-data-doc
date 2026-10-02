@@ -1,0 +1,29 @@
+{
+  "mappings": {
+    "pbi_table:sales.basket#sales.custs": {
+      "method": "interactive",
+      "target": "view:sales.v_customers"
+    },
+    "pbi_table:sales.basket#sales.product": {
+      "method": "external",
+      "target": null
+    },
+    "pbi_table:sales.customer": {
+      "method": "interactive",
+      "target": "view:sales.v_customers"
+    },
+    "pbi_table:sales.orders": {
+      "method": "interactive",
+      "target": "view:sales.v_orders_2025"
+    },
+    "pbi_table:sales.scratch": {
+      "method": "skip",
+      "target": null
+    },
+    "pbi_table:sales.weblog": {
+      "method": "external",
+      "target": null
+    }
+  },
+  "version": 1
+}

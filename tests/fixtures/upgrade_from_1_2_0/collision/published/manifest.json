@@ -1,0 +1,395 @@
+{
+  "edges": [
+    {
+      "edge_type": "feeds",
+      "evidence": "Sales.SemanticModel/definition/tables/basket.tmdl",
+      "source_id": "pbi_table:sales.basket",
+      "target_id": "semantic_model:sales"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "Sales.SemanticModel/definition/tables/customer.tmdl",
+      "source_id": "pbi_table:sales.customer",
+      "target_id": "semantic_model:sales"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "Archive/Sales.SemanticModel/definition/tables/legacy_customer.tmdl",
+      "source_id": "pbi_table:sales.legacy_customer",
+      "target_id": "semantic_model:sales"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "Sales.SemanticModel/definition/tables/orders.tmdl",
+      "source_id": "pbi_table:sales.orders",
+      "target_id": "semantic_model:sales"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "Sales.SemanticModel/definition/tables/scratch.tmdl",
+      "source_id": "pbi_table:sales.scratch",
+      "target_id": "semantic_model:sales"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "Sales.SemanticModel/definition/tables/weblog.tmdl",
+      "source_id": "pbi_table:sales.weblog",
+      "target_id": "semantic_model:sales"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "linker: cache (sales.custs)",
+      "source_id": "view:sales.v_customers",
+      "target_id": "pbi_table:sales.basket"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "linker: cache (sales.customer)",
+      "source_id": "view:sales.v_customers",
+      "target_id": "pbi_table:sales.customer"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "linker: cache (sales.customer)",
+      "source_id": "view:sales.v_customers",
+      "target_id": "pbi_table:sales.legacy_customer"
+    },
+    {
+      "edge_type": "reads",
+      "evidence": "views/v_customers.sql: FROM dbo.v_customers_raw",
+      "source_id": "view:sales.v_customers",
+      "target_id": "silver_table:dbo.v_customers_raw"
+    },
+    {
+      "edge_type": "reads",
+      "evidence": "views/v_orders_2024.sql: FROM dbo.v_orders_2024_raw",
+      "source_id": "view:sales.v_orders_2024",
+      "target_id": "silver_table:dbo.v_orders_2024_raw"
+    },
+    {
+      "edge_type": "feeds",
+      "evidence": "linker: cache (sales.ord25)",
+      "source_id": "view:sales.v_orders_2025",
+      "target_id": "pbi_table:sales.orders"
+    },
+    {
+      "edge_type": "reads",
+      "evidence": "views/v_orders_2025.sql: FROM dbo.v_orders_2025_raw",
+      "source_id": "view:sales.v_orders_2025",
+      "target_id": "silver_table:dbo.v_orders_2025_raw"
+    },
+    {
+      "edge_type": "reads",
+      "evidence": "views/v_products.sql: FROM dbo.v_products_raw",
+      "source_id": "view:sales.v_products",
+      "target_id": "silver_table:dbo.v_products_raw"
+    }
+  ],
+  "nodes": {
+    "pbi_table:sales.basket": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "int64",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "basket",
+      "id": "pbi_table:sales.basket",
+      "metadata": {
+        "external_source": true,
+        "native_query_tables": [
+          "sales.custs",
+          "sales.product"
+        ]
+      },
+      "name": "basket",
+      "node_type": "pbi_table",
+      "schema_name": "sales",
+      "source_file": "Sales.SemanticModel/definition/tables/basket.tmdl"
+    },
+    "pbi_table:sales.customer": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "int64",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "customer",
+      "id": "pbi_table:sales.customer",
+      "metadata": {
+        "partition_source": {
+          "object": "customer",
+          "raw_kind": "sql_database",
+          "schema": "sales"
+        },
+        "storage_mode": "import"
+      },
+      "name": "customer",
+      "node_type": "pbi_table",
+      "schema_name": "sales",
+      "source_file": "Sales.SemanticModel/definition/tables/customer.tmdl"
+    },
+    "pbi_table:sales.legacy_customer": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "int64",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "legacy_customer",
+      "id": "pbi_table:sales.legacy_customer",
+      "metadata": {
+        "partition_source": {
+          "object": "customer",
+          "raw_kind": "sql_database",
+          "schema": "sales"
+        },
+        "storage_mode": "import"
+      },
+      "name": "legacy_customer",
+      "node_type": "pbi_table",
+      "schema_name": "sales",
+      "source_file": "Archive/Sales.SemanticModel/definition/tables/legacy_customer.tmdl"
+    },
+    "pbi_table:sales.orders": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "int64",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "orders",
+      "id": "pbi_table:sales.orders",
+      "metadata": {
+        "partition_source": {
+          "object": "ord25",
+          "raw_kind": "sql_database",
+          "schema": "sales"
+        },
+        "storage_mode": "import"
+      },
+      "name": "orders",
+      "node_type": "pbi_table",
+      "schema_name": "sales",
+      "source_file": "Sales.SemanticModel/definition/tables/orders.tmdl"
+    },
+    "pbi_table:sales.scratch": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "int64",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "scratch",
+      "id": "pbi_table:sales.scratch",
+      "metadata": {
+        "partition_source": {
+          "object": "scratch_tmp",
+          "raw_kind": "sql_database",
+          "schema": "dbo"
+        },
+        "skipped": true,
+        "storage_mode": "import"
+      },
+      "name": "scratch",
+      "node_type": "pbi_table",
+      "schema_name": "sales",
+      "source_file": "Sales.SemanticModel/definition/tables/scratch.tmdl"
+    },
+    "pbi_table:sales.weblog": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "int64",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "weblog",
+      "id": "pbi_table:sales.weblog",
+      "metadata": {
+        "external_source": true,
+        "partition_source": {
+          "object": "weblog",
+          "raw_kind": "sql_database",
+          "schema": "dbo"
+        },
+        "storage_mode": "import"
+      },
+      "name": "weblog",
+      "node_type": "pbi_table",
+      "schema_name": "sales",
+      "source_file": "Sales.SemanticModel/definition/tables/weblog.tmdl"
+    },
+    "semantic_model:sales": {
+      "columns": [],
+      "display_name": "Sales",
+      "id": "semantic_model:sales",
+      "metadata": {},
+      "name": "sales",
+      "node_type": "semantic_model",
+      "schema_name": "",
+      "source_file": "Sales.SemanticModel/definition/model.tmdl"
+    },
+    "silver_table:dbo.v_customers_raw": {
+      "columns": [],
+      "display_name": "",
+      "id": "silver_table:dbo.v_customers_raw",
+      "metadata": {
+        "layer": "silver"
+      },
+      "name": "v_customers_raw",
+      "node_type": "silver_table",
+      "schema_name": "dbo",
+      "source_file": ""
+    },
+    "silver_table:dbo.v_orders_2024_raw": {
+      "columns": [],
+      "display_name": "",
+      "id": "silver_table:dbo.v_orders_2024_raw",
+      "metadata": {
+        "layer": "silver"
+      },
+      "name": "v_orders_2024_raw",
+      "node_type": "silver_table",
+      "schema_name": "dbo",
+      "source_file": ""
+    },
+    "silver_table:dbo.v_orders_2025_raw": {
+      "columns": [],
+      "display_name": "",
+      "id": "silver_table:dbo.v_orders_2025_raw",
+      "metadata": {
+        "layer": "silver"
+      },
+      "name": "v_orders_2025_raw",
+      "node_type": "silver_table",
+      "schema_name": "dbo",
+      "source_file": ""
+    },
+    "silver_table:dbo.v_products_raw": {
+      "columns": [],
+      "display_name": "",
+      "id": "silver_table:dbo.v_products_raw",
+      "metadata": {
+        "layer": "silver"
+      },
+      "name": "v_products_raw",
+      "node_type": "silver_table",
+      "schema_name": "dbo",
+      "source_file": ""
+    },
+    "view:sales.v_customers": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "v_customers",
+      "id": "view:sales.v_customers",
+      "metadata": {
+        "column_lineage": {
+          "id": [
+            "dbo.v_customers_raw.id"
+          ]
+        }
+      },
+      "name": "v_customers",
+      "node_type": "view",
+      "schema_name": "sales",
+      "source_file": "views/v_customers.sql"
+    },
+    "view:sales.v_orders_2024": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "v_orders_2024",
+      "id": "view:sales.v_orders_2024",
+      "metadata": {
+        "column_lineage": {
+          "id": [
+            "dbo.v_orders_2024_raw.id"
+          ]
+        }
+      },
+      "name": "v_orders_2024",
+      "node_type": "view",
+      "schema_name": "sales",
+      "source_file": "views/v_orders_2024.sql"
+    },
+    "view:sales.v_orders_2025": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "v_orders_2025",
+      "id": "view:sales.v_orders_2025",
+      "metadata": {
+        "column_lineage": {
+          "id": [
+            "dbo.v_orders_2025_raw.id"
+          ]
+        }
+      },
+      "name": "v_orders_2025",
+      "node_type": "view",
+      "schema_name": "sales",
+      "source_file": "views/v_orders_2025.sql"
+    },
+    "view:sales.v_products": {
+      "columns": [
+        {
+          "constraints": [],
+          "data_type": "",
+          "description": "",
+          "name": "id",
+          "nullable": null
+        }
+      ],
+      "display_name": "v_products",
+      "id": "view:sales.v_products",
+      "metadata": {
+        "column_lineage": {
+          "id": [
+            "dbo.v_products_raw.id"
+          ]
+        }
+      },
+      "name": "v_products",
+      "node_type": "view",
+      "schema_name": "sales",
+      "source_file": "views/v_products.sql"
+    }
+  }
+}
