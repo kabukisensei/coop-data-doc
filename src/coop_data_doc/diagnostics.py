@@ -62,6 +62,7 @@ _SEVERITY: dict[str, str] = {
     "cache_pruned": "warning",
     "cache_source_changed": "warning",
     "cache_source_unverified": "warning",
+    "cache_key_unmatched": "warning",
     # a locked/read-only .lineage-cache.json couldn't be written (Windows
     # OneDrive/Defender lock small JSON files transiently). The answers stay in
     # memory and each subsequent write re-attempts the whole file, so a transient

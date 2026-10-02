@@ -745,9 +745,14 @@ scope. SQL/M partitions accumulate their observed dependencies; SQL set operatio
 and CTAS retain every table dependency, with unsupported column lineage marked
 unresolved. Mapping decisions can carry a `source_signature` from `resolve`; a
 changed source requires explicit review even when the previous target still exists.
-Unsigned legacy decisions remain readable, but are marked unverified unless a
-previous published generation supplies a matching source signature. `resolve`
-exposes changed-source review choices; preserve its signature in `resolve-apply`.
+Unsigned legacy (pre-1.3.0) decisions are applied and marked unverified. When
+the previous published graph shows their source has since changed, they raise
+`cache_source_changed` instead, and that review need is recorded in the graph so
+later builds keep asking until a human answers. A saved decision whose key no
+current source uses (for example one table-level answer for a table now keyed per
+partition) is kept on disk, never applied, and named by `cache_key_unmatched`.
+`resolve` exposes changed-source review choices; preserve its signature in
+`resolve-apply`.
 
 Stakeholder CSV exports neutralize formula-like source values for spreadsheet
 opening. JSONL setup always uses UTF-8 for both input and output, including

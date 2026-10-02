@@ -8,10 +8,6 @@ authored Business Intent. Each test copies one estate, builds it with the
 current code and checks the contract from master plan row DD3: identity
 changes produce diagnostics, nothing is merged silently, and no decision or
 intent is lost.
-
-Tests marked ``xfail(strict=True)`` pin known migration bugs (described in
-the PR that added this file); they start passing, and must be unmarked, once
-the bug is fixed.
 """
 
 from __future__ import annotations
@@ -124,17 +120,19 @@ def test_same_shape_legacy_decisions_are_applied_or_diagnosed(tmp_path, builds):
         assert _applied(graph, key, target) or _named(issues, key), key
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="bug: a v1.2.0 table-level key is stranded when its sources split per partition, with no diagnostic",
-)
 @pytest.mark.parametrize("builds", [1, 2])
-def test_split_legacy_key_is_diagnosed(tmp_path, builds):
+def test_split_legacy_key_is_diagnosed_not_guessed(tmp_path, builds):
     root = _estate(tmp_path, "mixed")
     for _ in range(builds):
         result, graph, issues = _build(root)
         assert result.exit_code == 0, result.output
-    assert _applied(graph, SPLIT_KEY, LEGACY_DECISIONS[SPLIT_KEY]) or _named(issues, SPLIT_KEY)
+    # Which of the two partitions the table-level answer meant is unknowable:
+    # name it and the new per-source keys, apply it to neither.
+    [issue] = [i for i in issues if i["category"] == "cache_key_unmatched"]
+    assert repr(SPLIT_KEY) in issue["message"]
+    assert "'pbi_table:sales.orders#sales.ord24'" in issue["message"]
+    assert "'pbi_table:sales.orders#sales.ord25'" in issue["message"]
+    assert not graph["nodes"][SPLIT_KEY]["metadata"].get("source_resolutions")
 
 
 def test_legacy_decisions_are_flagged_unverified_not_dropped(tmp_path):
@@ -147,10 +145,6 @@ def test_legacy_decisions_are_flagged_unverified_not_dropped(tmp_path):
         assert _named(issues, key, "cache_source_unverified"), key
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="bug: the first build after upgrading reports every unchanged v1.2.0 source as changed",
-)
 def test_first_upgrade_build_does_not_report_unchanged_sources_as_changed(tmp_path):
     root = _estate(tmp_path, "mixed")
     result, graph, issues = _build(root)
@@ -158,21 +152,10 @@ def test_first_upgrade_build_does_not_report_unchanged_sources_as_changed(tmp_pa
     assert not [i for i in issues if i["category"] == "cache_source_changed"]
     for key, target in SAME_SHAPE_DECISIONS.items():
         assert _applied(graph, key, target), key
+        assert _named(issues, key, "cache_source_unverified"), key
 
 
-@pytest.mark.parametrize(
-    "builds",
-    [
-        1,
-        pytest.param(
-            2,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="bug: a source change found on the first build is forgotten on the next build",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("builds", [1, 2, 3])
 def test_source_changed_since_legacy_answer_stays_flagged(tmp_path, builds):
     root = _estate(tmp_path, "mixed")
     table = root / "pbi/Sales.SemanticModel/definition/tables/customer.tmdl"
@@ -201,3 +184,31 @@ def test_same_name_models_from_1_2_0_stop_without_touching_anything(tmp_path):
     assert _tree_bytes(root) == before
     for page, intent in AUTHORED_INTENT["collision"].items():
         assert _intent(root / "data-docs" / page).startswith(intent)
+
+
+def test_reanswering_a_changed_legacy_decision_clears_the_review(tmp_path):
+    root = _estate(tmp_path, "mixed")
+    table = root / "pbi/Sales.SemanticModel/definition/tables/customer.tmdl"
+    table.write_text(table.read_text().replace('Item="customer"', 'Item="client"'))
+    key = "pbi_table:sales.customer"
+    _build(root)
+    config = str(root / "coop-data-doc.yml")
+    pending = json.loads(CliRunner().invoke(cli, ["resolve", "--config", config]).output)["unresolved"]
+    [item] = [i for i in pending if i["cache_key"] == key]
+    decision = {
+        "cache_key": key,
+        "target": "view:sales.v_customers",
+        "source_signature": item["source_signature"],
+    }
+    result = CliRunner().invoke(
+        cli,
+        ["resolve-apply", "--config", config, "--from-json", "-"],
+        input=json.dumps({"decisions": [decision]}),
+    )
+    assert result.exit_code == 0, result.output
+    for _ in range(2):
+        result, graph, issues = _build(root)
+        assert result.exit_code == 0, result.output
+        assert _applied(graph, key, "view:sales.v_customers")
+        assert not _named(issues, key)
+        assert "cache_review_required" not in graph["nodes"][key]["metadata"]

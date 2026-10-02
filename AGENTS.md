@@ -358,6 +358,7 @@ tags:
 | `dynamic_sql_untraced: true` | Proc builds SQL in strings; some reads/writes knowingly missing. |
 | `unresolved: true` | Human hasn't mapped this source yet. |
 | `skipped: true` | Human chose "skip for now". |
+| `cache_review_required` | `{cache_key: signature}`: a pre-1.3.0 decision whose source changed; stays until a human re-answers it (`resolve` → `resolve-apply`). |
 | `external_source: true` | Deliberately outside these repos. |
 | `columns_unresolved: true` | Column list couldn't be derived (e.g. `SELECT *`). |
 | `pbix_model_opaque: true` | `.pbix` model couldn't be extracted. |

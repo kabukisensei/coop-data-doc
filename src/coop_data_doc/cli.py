@@ -218,8 +218,14 @@ def resolve_graph(
         try:
             previous = LineageGraph.model_validate(json.loads(previous_path.read_text(encoding="utf-8")))
             cache.prior_signatures = {
-                item.cache_key: item.source_signature for item in _collect_items(previous)
+                item.cache_key: item.legacy_signature for item in _collect_items(previous)
             }
+            # A change already found stays found: compare against the source the
+            # legacy answer was given for, not the previous build's changed one.
+            for node_id in sorted(previous.nodes):
+                cache.prior_signatures.update(
+                    previous.nodes[node_id].metadata.get("cache_review_required", {})
+                )
         except (OSError, ValueError):
             pass  # legacy cache remains explicitly unverified
 

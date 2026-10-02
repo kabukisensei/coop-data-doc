@@ -14,9 +14,9 @@ class GraphDiff:
 
 # Metadata the linker rewrites from run to run without the object changing: how a
 # cached answer was applied ("interactive" on the run that asked, "cache" after) and
-# whether a legacy decision carried a source signature. Comparing them would report
+# whether a legacy decision carried a source signature or awaits review. Comparing them would report
 # every mapped table as changed on the first build after answering the wizard.
-_RUN_BOOKKEEPING = frozenset({"source_resolutions", "cache_source_unverified"})
+_RUN_BOOKKEEPING = frozenset({"source_resolutions", "cache_source_unverified", "cache_review_required"})
 
 
 def _stable_metadata(node: Node) -> dict:

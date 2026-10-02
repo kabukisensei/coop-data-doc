@@ -59,6 +59,9 @@ class _Item(BaseModel):
     object_name: str
     raw_kind: str
     source_signature: str
+    # The signature over only the fields v1.2.0 graphs recorded (no
+    # expression_hash): what an unsigned legacy decision is checked against.
+    legacy_signature: str
 
 
 def _collect_items(graph: LineageGraph) -> list[_Item]:
@@ -90,6 +93,13 @@ def _collect_items(graph: LineageGraph) -> list[_Item]:
             source = definitions[0]
             canonical = sorted(json.dumps(d, sort_keys=True) for d in definitions)
             signature = hashlib.sha256(json.dumps(canonical).encode("utf-8")).hexdigest()
+            legacy = sorted(
+                {
+                    json.dumps({k: v for k, v in d.items() if k != "expression_hash"}, sort_keys=True)
+                    for d in definitions
+                }
+            )
+            legacy_signature = hashlib.sha256(json.dumps(legacy).encode("utf-8")).hexdigest()
             items.append(
                 _Item(
                     cache_key=node.id if len(grouped) == 1 else f"{node.id}#{qualified}",
@@ -98,9 +108,45 @@ def _collect_items(graph: LineageGraph) -> list[_Item]:
                     object_name=source.get("object", ""),
                     raw_kind=source.get("raw_kind", ""),
                     source_signature=signature,
+                    legacy_signature=legacy_signature,
                 )
             )
     return items
+
+
+def _unmatched_cache_warnings(
+    graph: LineageGraph, cache: LineageCache, items: list[_Item]
+) -> list[ParseWarning]:
+    """Name every saved decision whose table still exists but whose key no
+    current source uses (e.g. a v1.2.0 table-level answer for a table whose
+    partitions are now keyed one source at a time). The decision stays on disk
+    and is never applied to the new keys: which source it meant is a guess.
+    """
+    keys_by_node: dict[str, list[str]] = {}
+    for item in items:
+        keys_by_node.setdefault(item.node_id, []).append(item.cache_key)
+    warnings: list[ParseWarning] = []
+    for key in sorted(cache.mappings):
+        node_id = key.partition("#")[0]
+        if key in cache._ignored or node_id not in graph.nodes:
+            continue
+        current = keys_by_node.get(node_id, [])
+        if key in current:
+            continue
+        entry = cache.mappings[key]
+        answer = entry.target if entry.target is not None else entry.method
+        warnings.append(
+            ParseWarning(
+                file=graph.nodes[node_id].source_file,
+                category="cache_key_unmatched",
+                message=(
+                    f"saved decision {key!r} ({answer}) matches no current source of {node_id}"
+                    + (f" (now {', '.join(repr(k) for k in sorted(current))})" if current else "")
+                    + "; kept on disk, not applied: answer each current source to replace it"
+                ),
+            )
+        )
+    return warnings
 
 
 def _candidate_ids(graph: LineageGraph) -> list[str]:
@@ -202,14 +248,27 @@ def link_graph(
     candidates = _candidate_ids(graph)
     items = _collect_items(graph)
     pending_interactive: list[tuple[_Item, list[tuple[str, float]]]] = []
+    warnings += _unmatched_cache_warnings(graph, cache, items)
 
     for item in items:
         node = graph.nodes[item.node_id]
 
         cached = cache.get(item.cache_key)
         if cached is not None:
-            old_signature = cached.source_signature or cache.prior_signatures.get(item.cache_key)
-            if old_signature is not None and old_signature != item.source_signature:
+            # A signed decision is checked against the full source signature. An
+            # unsigned (pre-1.3.0) one can only be checked against what an earlier
+            # published graph recorded, in the fields every version recorded.
+            if cached.source_signature is not None:
+                old_signature, current_signature = cached.source_signature, item.source_signature
+            else:
+                old_signature = cache.prior_signatures.get(item.cache_key)
+                current_signature = item.legacy_signature
+            if old_signature is not None and old_signature != current_signature:
+                if cached.source_signature is None:
+                    # Remember the source the answer was given for in the published
+                    # graph, so the next build still compares against it rather
+                    # than against this build's (already changed) source.
+                    node.metadata.setdefault("cache_review_required", {})[item.cache_key] = old_signature
                 if interactive_mode:
                     pending_interactive.append(
                         (item, _fuzzy_candidates(candidates, item.schema_name, item.object_name))
@@ -325,6 +384,10 @@ def link_graph(
                     handled.add(item.cache_key)
                     entry.source_signature = item.source_signature
                     cache.put(item.cache_key, entry)  # immediately — crash-safe
+                    review = node.metadata.get("cache_review_required", {})
+                    review.pop(item.cache_key, None)
+                    if not review:
+                        node.metadata.pop("cache_review_required", None)
                     if entry.target is not None:
                         _apply(graph, item, entry.target, "interactive", result)
                     elif entry.method == "external":
