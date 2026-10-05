@@ -208,7 +208,16 @@ and retains layer declarations on reruns; `config-set` accepts this shape.
 
 `lineage` includes an `evidence` object and metadata/source provenance on its
 object/neighbors. Agents must inspect this evidence before interpreting empty
-upstream/downstream arrays. `impact --evidence` returns schema-version 2 with
+upstream/downstream arrays. It also carries `loaded_by`: the Power BI tables
+whose partition source names the queried object (exact `schema.object`, or any
+schema for a bare name), each with the `source` string the model names and
+`linked` (`true` when the graph holds the resolved feeds edge; `false` when the
+SQL object is undocumented or unresolved and only the name connects them). When
+the object matches no node at all but a model loads it, `lineage` answers with
+`object: null`, `undocumented_source: true`, `loaded_by` and the same tables as
+`downstream` (exit 0) instead of "no object matching": a SQL-less or partial
+estate still tells the agent which model tables a database view feeds. The
+ambiguous answer lists `loaded_by` too. `impact --evidence` returns schema-version 2 with
 `impacts`, current `evidence`, and `baseline_evidence`. The default legacy impact
 map is retained for existing consumers: it contains observed edges only and does
 not assert zero estate impact. Prefer `--evidence` for decisions.

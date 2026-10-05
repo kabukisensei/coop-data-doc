@@ -40,7 +40,7 @@ from coop_data_doc.folders import (
     split_excludes,
     top_level_folders,
 )
-from coop_data_doc.graph.model import LineageGraph, normalize_identifier
+from coop_data_doc.graph.model import LineageGraph, NodeType, normalize_identifier
 from coop_data_doc.graph.serialize import to_json_file
 from coop_data_doc.layering import assign_layers, prune_schemas
 from coop_data_doc.linker.cache import CacheEntry, LineageCache
@@ -1016,6 +1016,65 @@ def _node_ref(graph: LineageGraph, node_id: str) -> dict:
     }
 
 
+def _source_names(node) -> set[str]:
+    """Every database object a pbi_table's partitions name, normalized
+    (``schema.object``, or ``object`` when the M source carried no schema)."""
+    meta = node.metadata
+    sources = meta.get("partition_sources") or (
+        [meta["partition_source"]] if meta.get("partition_source") else []
+    )
+    names: set[str] = set()
+    for source in sources:
+        obj = source.get("object") or ""
+        if not obj:
+            continue
+        schema = source.get("schema") or ""
+        names.add(normalize_identifier(f"{schema}.{obj}" if schema else obj))
+    for qualified in meta.get("native_query_tables") or []:
+        names.add(normalize_identifier(qualified))
+    return names
+
+
+def _loaded_by(graph: LineageGraph, query: str) -> list[dict]:
+    """The Power BI tables whose partition source names ``query``: exact
+    ``schema.object``, or any schema when the query is a bare object name.
+
+    This is the Power BI side of an object the docs may not hold at all (a
+    view in a database that is not one of the sources): the model's own
+    partition names it, so the answer is evidence, not a guess. ``linked`` says
+    whether the graph also holds a feeds edge for it (the SQL object is
+    documented and resolved); ``False`` means the SQL side is undocumented or
+    still unresolved and only the name connects them.
+    """
+    q = normalize_identifier(query.strip())
+    if not q:
+        return []
+    bare = "." not in q
+    hits: list[dict] = []
+    for nid in sorted(graph.nodes):
+        node = graph.nodes[nid]
+        if node.node_type is not NodeType.PBI_TABLE:
+            continue
+        matched = sorted(
+            name for name in _source_names(node) if name == q or (bare and name.rsplit(".", 1)[-1] == q)
+        )
+        if not matched:
+            continue
+        resolved = {
+            normalize_identifier(r.get("source", ""))
+            for r in (node.metadata.get("source_resolutions") or {}).values()
+            if r.get("target")
+        }
+        hits.append(
+            {
+                "table": _node_ref(graph, nid),
+                "source": matched if len(matched) > 1 else matched[0],
+                "linked": any(name in resolved for name in matched),
+            }
+        )
+    return hits
+
+
 def _match_nodes(graph: LineageGraph, query: str) -> list[str]:
     """Node ids matching ``query`` — exact id, then exact name, then substring. Sorted."""
     q = query.strip().lower()
@@ -1051,8 +1110,28 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
         raise click.ClickException(f"no built graph at {graph_path} — run `coop-data-doc build` first.")
     graph = LineageGraph.model_validate(json.loads(graph_path.read_text(encoding="utf-8")))
     matches = _match_nodes(graph, object_name)
+    loaded_by = _loaded_by(graph, object_name)
     if not matches:
-        raise click.ClickException(f"no object matching '{object_name}' in the docs.")
+        if not loaded_by:
+            raise click.ClickException(f"no object matching '{object_name}' in the docs.")
+        # The object is not documented (its database is not a source), but the
+        # model's partitions name it: report the tables that load it, by name.
+        click.echo(
+            json.dumps(
+                {
+                    "query": object_name,
+                    "object": None,
+                    "undocumented_source": True,
+                    "loaded_by": loaded_by,
+                    "upstream": [],
+                    "downstream": [hit["table"] for hit in loaded_by],
+                    "evidence": evidence_summary(graph),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
     if len(matches) > 1:
         click.echo(
             json.dumps(
@@ -1060,6 +1139,7 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
                     "query": object_name,
                     "ambiguous": True,
                     "matches": [_node_ref(graph, n) for n in matches],
+                    "loaded_by": loaded_by,
                 },
                 indent=2,
                 sort_keys=True,
@@ -1147,6 +1227,7 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
                 "upstream": [_node_ref(graph, x) for x in graph.upstream(nid, depth=depth)],
                 "downstream": [_node_ref(graph, x) for x in graph.downstream(nid, depth=depth)],
                 "relationships": node.metadata.get("relationships", []),
+                "loaded_by": loaded_by,
                 "evidence": evidence_summary(graph, node),
             },
             indent=2,

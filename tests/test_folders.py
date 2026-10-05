@@ -409,3 +409,29 @@ def test_resolve_apply_fails_loud_on_unwritable_cache(tmp_path: Path, monkeypatc
     assert res.exit_code == 1
     assert "Applied" not in res.output
     assert "lineage cache" in res.output
+
+
+def test_lineage_loaded_by_links_a_documented_view(tmp_path: Path):
+    """With the SQL side documented, `loaded_by` names the Power BI tables whose
+    partition loads the object and reports each link as resolved."""
+    _workspace(tmp_path)
+    _scan(tmp_path)
+    res = _run(["lineage", "sales.v_orders_star"], tmp_path)
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["object"]["id"] == "view:sales.v_orders_star"
+    assert [(hit["table"]["id"], hit["source"], hit["linked"]) for hit in data["loaded_by"]] == [
+        ("pbi_table:sales.orders_native", "sales.v_orders_star", True),
+        ("pbi_table:sales.orders_query_option", "sales.v_orders_star", True),
+    ]
+    assert {"pbi_table:sales.orders_native", "pbi_table:sales.orders_query_option"} <= {
+        node["id"] for node in data["downstream"]
+    }
+    # a bare name shared by the view and the model table is ambiguous, but the
+    # loaders are still named so the caller need not query twice
+    res = _run(["lineage", "sales.dim_customer"], tmp_path)
+    data = json.loads(res.output)
+    assert data["ambiguous"] is True
+    assert [(hit["table"]["id"], hit["linked"]) for hit in data["loaded_by"]] == [
+        ("pbi_table:sales.dim_customer", True)
+    ]

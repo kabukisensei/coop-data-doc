@@ -581,7 +581,7 @@ Beyond the commands above, the CLI exposes a non-interactive surface for agents 
 | --- | --- |
 | `coop-data-doc folders` | list each repo's top-level folders + whether they're documented (JSON, with a per-repo `mode` of `allowlist`/`legacy`) |
 | `coop-data-doc set-folders --repo KEY --include A,B` | set which top-level folders a repo documents (writes folder-scoped include globs; the non-interactive twin of the wizard's checkbox) |
-| `coop-data-doc lineage OBJECT [--depth N]` | print one object's lineage from the built `graph.json` (JSON) |
+| `coop-data-doc lineage OBJECT [--depth N]` | print one object's lineage from the built `graph.json` (JSON), with `loaded_by`: the Power BI tables whose partition names the object, even when the SQL side is not documented |
 | `coop-data-doc show-config` | print the current config as JSON (the shape `config-set` accepts) |
 | `coop-data-doc config-set --from-json -` | apply a JSON patch to `coop-data-doc.yml` non-interactively; arbitrary repo keys are supported, `{"repos":{}}` selects discovery mode, and a repo value of `null` removes that repo |
 | `coop-data-doc resolve` | list ambiguous cross-repo links + their candidates (JSON) |
