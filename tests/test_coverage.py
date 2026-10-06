@@ -199,3 +199,33 @@ def test_resolution_bookkeeping_is_not_a_change():
     assert diff_graphs(old, new).changed_nodes == []
     new.nodes[node.id].metadata["definition_hash"] = "changed"
     assert [n.id for n in diff_graphs(old, new).changed_nodes] == [node.id]
+
+
+def test_lineage_names_the_tables_that_load_an_undocumented_view(tmp_path):
+    """A SQL-less estate: the view the model's partition names is not documented,
+    so `lineage dbo.orders` matches no node; it still answers with the Power BI
+    tables that load it, by name, flagged as an undocumented source."""
+    config = workspace(tmp_path)
+    assert CliRunner().invoke(cli, ["scan", "--config", str(config), "--non-interactive"]).exit_code == 0
+    res = CliRunner().invoke(cli, ["lineage", "dbo.orders", "--config", str(config)])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["object"] is None
+    assert data["undocumented_source"] is True
+    assert [hit["table"]["id"] for hit in data["loaded_by"]] == ["pbi_table:sales.orders"]
+    assert data["loaded_by"][0] == {
+        "table": data["downstream"][0],
+        "source": "dbo.orders",
+        "linked": False,
+    }
+    assert data["upstream"] == []
+    assert data["evidence"]["complete"] is False
+    # the bare name resolves to the pbi_table itself, which still reports the view it loads
+    bare = json.loads(CliRunner().invoke(cli, ["lineage", "orders", "--config", str(config)]).output)
+    assert bare["object"]["id"] == "pbi_table:sales.orders"
+    assert [hit["source"] for hit in bare["loaded_by"]] == ["dbo.orders"]
+    assert bare["loaded_by"][0]["linked"] is False
+    # a name nothing loads is still an error
+    missing = CliRunner().invoke(cli, ["lineage", "dbo.nothing", "--config", str(config)])
+    assert missing.exit_code != 0
+    assert "no object matching" in missing.output
