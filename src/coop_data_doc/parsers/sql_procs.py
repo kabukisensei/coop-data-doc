@@ -1,5 +1,12 @@
 """Stored-procedure DML lineage extraction (Module 2).
 
+Triggers and scalar / multi-statement table-valued functions are proc-shaped
+too (a header, then a body of statements), so this pass traces them the same
+way: each becomes a ``stored_proc`` node tagged ``object_kind`` (``trigger``,
+``scalar_function``, ``table_function``), mirroring how an inline TVF becomes
+a ``view`` tagged ``inline_tvf``. A DML trigger also gets a ``reads`` edge from
+the table it fires on, since the rows it handles come from that table.
+
 T-SQL proc bodies routinely defeat full-batch AST parsing (cursors, WHILE
 blocks, TRY/CATCH), so the strategy is uniform per-statement processing:
 split the body on ';' (string/comment aware), try sqlglot on each chunk,
@@ -31,10 +38,12 @@ from coop_data_doc.parsers.sql_common import (
     DYNAMIC_SQL_RE,
     EXEC_CALL_RE,
     EXEC_RE,
-    PROC_HEADER_RE,
+    ModuleHeader,
     StatementLineage,
     blank_comments_and_strings,
     collect_source_tables,
+    extract_column_lineage,
+    find_module_header,
     is_temp_table,
     original_name,
     parse_batch,
@@ -63,14 +72,32 @@ _AS_RE = re.compile(r"\bAS\b", re.IGNORECASE)
 # `AS` here — reject it (and the context words, defensively) so no phantom proc node appears.
 _EXEC_AS_KEYWORDS = {"AS", "USER", "LOGIN", "CALLER", "OWNER", "SELF"}
 _BEGIN_END_LINE_RE = re.compile(r"^\s*(?:BEGIN|END)\s*;?\s*$", re.IGNORECASE | re.MULTILINE)
+# `EXECUTE AS <context>` in a module header (`WITH EXECUTE AS OWNER`) — its AS is
+# never the one that introduces the body.
+_EXECUTE_BEFORE_RE = re.compile(r"\bEXEC(?:UTE)?\s*$", re.IGNORECASE)
+# a function body's `RETURN <expr>` statement; sqlglot can't parse the keyword
+# followed by an expression, so the expression is parsed on its own.
+_RETURN_RE = re.compile(r"\s*RETURN\b", re.IGNORECASE)
+# A trigger's `inserted` / `deleted` pseudo-tables are the changed rows of the
+# table it is ON (already a reads edge), never real tables of their own.
+_TRIGGER_PSEUDO_TABLES = frozenset({("dbo", "inserted"), ("dbo", "deleted")})
+# sqlglot's key for a statement's CTE block (`with` before sqlglot 28)
+_WITH_ARG = "with_" if "with_" in exp.Insert.arg_types else "with"
+_KIND_LABELS = {
+    "procedure": "CREATE PROCEDURE",
+    "trigger": "CREATE TRIGGER",
+    "scalar_function": "CREATE FUNCTION",
+    "table_function": "CREATE FUNCTION",
+}
 
 # statement types we trust the AST extraction for; anything else falls
 # through to the regex layer
-_USABLE = (exp.Insert, exp.Merge, exp.Update, exp.Delete, exp.Select, exp.Create, exp.Drop)
+_USABLE = (exp.Insert, exp.Merge, exp.Update, exp.Delete, exp.Select, exp.Create, exp.Drop, exp.TruncateTable)
 
 
-def _find_proc(batch: str) -> tuple[str, str] | None:
-    """Return (qualified_name, body) if the batch creates a procedure.
+def _find_module(batch: str) -> tuple[ModuleHeader, str] | None:
+    """Return (header, body) if the batch creates a procedure, trigger, or
+    scalar / multi-statement function.
 
     Header and body-AS detection run on a length-preserving scrub (comments
     and strings blanked to spaces), so a header named in a doc comment can't
@@ -79,17 +106,17 @@ def _find_proc(batch: str) -> tuple[str, str] | None:
     offset (the scrub preserves offsets 1:1).
     """
     scrubbed = blank_comments_and_strings(batch)
-    header = PROC_HEADER_RE.search(scrubbed)
+    header = find_module_header(scrubbed)
     if not header:
         return None
     # The body-introducing `AS` must be at top level (paren depth 0); an `AS`
     # inside a parenthesized parameter default — e.g. `@D = CAST(GETDATE() AS
     # DATE)` — must not be mistaken for it, which would slice the body
     # mid-parameter-list and corrupt the first statement's lineage.
-    as_match = _find_body_as(scrubbed, header.end())
+    as_match = _find_body_as(scrubbed, header.end)
     if not as_match:
         return None
-    return header.group(1), batch[as_match:]
+    return header, batch[as_match:]
 
 
 def _find_body_as(scrubbed: str, start: int) -> int | None:
@@ -99,10 +126,11 @@ def _find_body_as(scrubbed: str, start: int) -> int | None:
     comment/string-blanked text (blank_comments_and_strings) — counting parens
     on raw text lets `-- 1) rebuild` or N'(' corrupt the depth forever."""
     depth = 0
+    origin = start
     for match in _AS_RE.finditer(scrubbed, start):
         depth += scrubbed.count("(", start, match.start()) - scrubbed.count(")", start, match.start())
         start = match.start()
-        if depth == 0:
+        if depth == 0 and not _EXECUTE_BEFORE_RE.search(scrubbed, origin, match.start()):
             return match.end()
     return None
 
@@ -122,6 +150,13 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
     creates: list[exp.Create] = []
 
     if isinstance(statement, exp.Drop):
+        return lineage, creates
+
+    if isinstance(statement, exp.TruncateTable):
+        # TRUNCATE empties the table: a write, like DELETE
+        for target in statement.expressions:
+            if isinstance(target, exp.Table) and not is_temp_table(target):
+                lineage.writes.add(table_parts(target))
         return lineage, creates
 
     if isinstance(statement, exp.Create):
@@ -144,36 +179,32 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
         # `reads -= writes`, mirroring the Merge branch.
         lineage.reads |= collect_source_tables(statement)
 
-        # Extract column lineage for INSERT ... SELECT
-        if isinstance(statement.expression, exp.Select):
-            from coop_data_doc.graph.model import normalize_identifier
-            from coop_data_doc.parsers.sql_common import extract_column_lineage
-
-            target_schema, target_name = table_parts(target)
-            target_key = (target_schema, target_name)
-
-            # Map select expression aliases to explicit target columns if available
-            target_cols = []
-            if isinstance(statement.this, exp.Schema):
-                target_cols = [normalize_identifier(e.name) for e in statement.this.expressions]
-
-            # Use a dummy Select to trace against (since statement.expression might not have proper aliases)
-            # wait, extract_column_lineage expects aliases to be the target column names.
-            # If target_cols are explicit, we need to map them:
-            col_lineage = extract_column_lineage(statement.expression, dialect)
+        # Column lineage for INSERT … SELECT. The SELECT is traced with the
+        # Insert's own CTE block attached, so a `WITH c AS (…) INSERT … SELECT …
+        # FROM c` traces through c to its base tables instead of naming c itself.
+        select = statement.expression
+        if isinstance(select, exp.Select) and isinstance(target, exp.Table) and not is_temp_table(target):
+            ctes = statement.args.get(_WITH_ARG)
+            if ctes is not None and not select.args.get(_WITH_ARG):
+                select = select.copy()
+                select.set(_WITH_ARG, ctes.copy())
+            col_lineage = extract_column_lineage(select, dialect)
             if col_lineage:
-                if target_cols and len(target_cols) == len(statement.expression.expressions):
-                    # Map positional source lineage to explicit target columns
-                    mapped_lineage = {}
-                    for target_col, src_expr in zip(target_cols, statement.expression.expressions):
+                target_cols = []
+                if isinstance(statement.this, exp.Schema):
+                    target_cols = [normalize_identifier(e.name) for e in statement.this.expressions]
+                if target_cols and len(target_cols) == len(select.expressions):
+                    # explicit column list: map the SELECT's columns to it by position
+                    mapped = {}
+                    for target_col, src_expr in zip(target_cols, select.expressions):
                         src_name = normalize_identifier(src_expr.alias_or_name or "")
                         if src_name in col_lineage:
-                            mapped_lineage[target_col] = col_lineage[src_name]
-                    if mapped_lineage:
-                        lineage.dml_column_lineage[target_key] = mapped_lineage
-                else:
-                    # SELECT ... INTO or INSERT without explicit columns: the SELECT aliases are the target columns
-                    lineage.dml_column_lineage[target_key] = col_lineage
+                            mapped[target_col] = col_lineage[src_name]
+                    if mapped:
+                        lineage.dml_column_lineage[table_parts(target)] = mapped
+                elif not target_cols:
+                    # no column list: the SELECT's aliases are the target columns
+                    lineage.dml_column_lineage[table_parts(target)] = col_lineage
 
     elif isinstance(statement, exp.Merge):
         target = statement.this
@@ -231,9 +262,7 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
             if isinstance(target, exp.Table) and not is_temp_table(target):
                 lineage.writes.add(table_parts(target))
 
-                # Extract column lineage for SELECT ... INTO
-                from coop_data_doc.parsers.sql_common import extract_column_lineage
-
+                # column lineage for SELECT … INTO: the aliases are the new table's columns
                 target_schema, target_name = table_parts(target)
                 target_key = (target_schema, target_name)
                 col_lineage = extract_column_lineage(statement, dialect)
@@ -252,7 +281,33 @@ def _apply_lineage(
     lineage: StatementLineage,
     evidence_file: str,
     contribution: _Contribution | None = None,
+    trigger_on: str | None = None,
+    in_trigger: bool = False,
 ) -> None:
+    """Add one statement's edges (and column lineage) to the module's node.
+
+    In a trigger (``in_trigger``) the ``inserted``/``deleted`` pseudo-tables are
+    never tables: they get no node or edge, and a column read from them is a
+    column of the table the trigger is ON (``trigger_on``, ``schema.name``),
+    or dropped for a DDL trigger, which is ON no table.
+    """
+    if in_trigger:
+        lineage.writes -= _TRIGGER_PSEUDO_TABLES
+        lineage.reads -= _TRIGGER_PSEUDO_TABLES
+        pseudo_prefixes = tuple(f"{schema}.{name}." for schema, name in sorted(_TRIGGER_PSEUDO_TABLES))
+        for columns in lineage.dml_column_lineage.values():
+            for col, sources in list(columns.items()):
+                kept = set()
+                for source in sources:
+                    prefix = next((p for p in pseudo_prefixes if source.startswith(p)), None)
+                    if prefix is None:
+                        kept.add(source)
+                    elif trigger_on is not None:
+                        kept.add(f"{trigger_on}.{source[len(prefix) :]}")
+                if kept:
+                    columns[col] = sorted(kept)
+                else:
+                    del columns[col]
     for schema, name in sorted(lineage.writes):
         table = stub_table(graph, schema, name, contribution)
         _add_edge(
@@ -297,26 +352,27 @@ def _parse_procs_entry(
     warnings: list[ParseWarning],
     contribution: _Contribution | None,
 ) -> None:
-    """Parse ONE SQL file's CREATE PROCEDURE batches into the graph. Split out
+    """Parse ONE SQL file's CREATE PROCEDURE / TRIGGER / FUNCTION batches into the graph. Split out
     from the entry loop so a cache MISS calls exactly this (recording the file's
     contribution) and a HIT replays the cached contribution instead."""
     for batch in split_batches(text):
-        found = _find_proc(batch)
+        found = _find_module(batch)
         if found is None:
-            header = PROC_HEADER_RE.search(blank_comments_and_strings(batch))
+            header = find_module_header(blank_comments_and_strings(batch))
             if header:
                 # a real header with no top-level body AS (truncated file,
                 # unsupported layout): skipping must be loud, never silent
                 warning = ParseWarning(
                     file=entry.path,
-                    message=(f"CREATE PROCEDURE {header.group(1)}: no body AS found — batch skipped"),
+                    message=(f"{_KIND_LABELS[header.kind]} {header.name}: no body AS found — batch skipped"),
                     category="proc_body_not_found",
                 )
                 warnings.append(warning)
                 if contribution is not None:
                     contribution.record_warning(warning)
             continue
-        raw_name, body = found
+        header, body = found
+        raw_name = header.name
         schema, name = qualify(raw_name)
         # Keep a handle on the PRISTINE node as passed to add_node: when an
         # earlier-sorted file already stubbed this proc (an EXEC callee), the
@@ -333,8 +389,27 @@ def _parse_procs_entry(
             source_code=batch,
             metadata={"parse_quality": "ast"},
         )
+        if header.kind != "procedure":
+            pristine.metadata["object_kind"] = header.kind
         proc = _add_node(graph, pristine, contribution)
         fallback_used = False
+        in_trigger = header.kind == "trigger"
+        trigger_on = None
+        if header.on is not None:
+            # a DML trigger handles the rows changed in the table it is ON
+            on_schema, on_name = qualify(header.on)
+            trigger_on = f"{on_schema}.{on_name}"
+            table = stub_table(graph, on_schema, on_name, contribution)
+            _add_edge(
+                graph,
+                Edge(
+                    source_id=proc.id,
+                    target_id=table.id,
+                    edge_type=EdgeType.READS,
+                    evidence=f"{entry.path}: trigger ON {on_schema}.{on_name}",
+                ),
+                contribution,
+            )
 
         for chunk in split_statements(body):
             chunk = _BEGIN_END_LINE_RE.sub("", chunk).strip()
@@ -414,6 +489,25 @@ def _parse_procs_entry(
             if exec_callees and not non_exec_present:
                 continue
 
+            returned = _RETURN_RE.match(chunk)
+            if returned is not None:
+                # `RETURN (SELECT … FROM t)` in a function body: the value's tables are
+                # read. A bare RETURN or a table-free expression reads nothing.
+                expression = chunk[returned.end() :].strip()
+                if not expression:
+                    continue
+                parsed = parse_batch(expression, dialect, error_level=sqlglot.ErrorLevel.RAISE)
+                if parsed:
+                    lineage = StatementLineage()
+                    for value in parsed:
+                        lineage.reads |= collect_source_tables(value)
+                else:
+                    lineage = regex_extract(expression)
+                    if lineage.writes or lineage.reads:
+                        fallback_used = True
+                _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
+                continue
+
             # RAISE, not IGNORE: a chunk sqlglot can't fully parse (e.g. a
             # legacy semicolon-less multi-statement body, which IGNORE
             # silently mangles into ONE statement, losing most lineage)
@@ -427,7 +521,7 @@ def _parse_procs_entry(
             if usable:
                 for statement in usable:
                     lineage, creates = _extract_statement(statement, dialect)
-                    _apply_lineage(graph, proc, lineage, entry.path, contribution)
+                    _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
                     for create in creates:
                         target = create.this
                         schema_expr = target if isinstance(target, exp.Schema) else None
@@ -466,7 +560,7 @@ def _parse_procs_entry(
                 lineage = regex_extract(chunk)
                 if lineage.writes or lineage.reads:
                     fallback_used = True
-                _apply_lineage(graph, proc, lineage, entry.path, contribution)
+                _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
 
         if fallback_used:
             proc.metadata["parse_quality"] = "regex_fallback"

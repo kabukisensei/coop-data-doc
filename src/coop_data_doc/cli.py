@@ -19,7 +19,7 @@ from pathlib import Path
 import click
 import questionary
 
-from coop_data_doc import __version__
+from coop_data_doc import __version__, catalog_deps
 from coop_data_doc.config import (
     DEFAULT_PBI_INCLUDE,
     DEFAULT_SQL_EXCLUDE,
@@ -273,6 +273,10 @@ def run_pipeline(
         return graph, ResolutionResult(), warnings
     result, link_warnings = resolve_graph(graph, config, interactive, progress, pending_out, deferred_caches)
     warnings += link_warnings
+    if config.catalog_dependencies:
+        # the database's own dependency list: report what the parse missed (never adds edges)
+        entries, dep_warnings = catalog_deps.load(config)
+        warnings += dep_warnings + catalog_deps.check(graph, config, entries)
     _log.debug(
         "done: %d nodes, %d edges, %d cross-repo links, %d unresolved, %d warnings",
         len(graph.nodes),
@@ -891,6 +895,7 @@ def _render_kwargs_from_config(config: Config) -> dict:
         "site_dir": config.output.site_dir,
         "sql_dialect": config.sql_dialect,
         "reviews": list(config.reviews),
+        "catalog_dependencies": list(config.catalog_dependencies),
         "coverage": {k: v.model_dump() for k, v in sorted(config.coverage.items())},
     }
 
@@ -1250,6 +1255,7 @@ _DEFAULT_CONFIG_DICT = {
     "branding": {},
     "sql_dialect": "tsql",
     "reviews": [],
+    "catalog_dependencies": [],
 }
 
 
@@ -1278,6 +1284,7 @@ def _default_render_kwargs() -> dict:
         "site_dir": "./data-docs-site",
         "sql_dialect": "tsql",
         "reviews": [],
+        "catalog_dependencies": [],
     }
 
 
@@ -1308,6 +1315,7 @@ def _config_to_dict(config: Config) -> dict:
         "branding": branding,
         "sql_dialect": config.sql_dialect,
         "reviews": list(config.reviews),
+        "catalog_dependencies": list(config.catalog_dependencies),
         "coverage": {k: v.model_dump() for k, v in sorted(config.coverage.items())},
     }
 
@@ -1387,6 +1395,8 @@ def _apply_config_patch(kwargs: dict, patch: dict) -> None:
         kwargs["sql_dialect"] = patch["sql_dialect"]
     if "reviews" in patch:
         kwargs["reviews"] = [str(p) for p in patch["reviews"]]
+    if "catalog_dependencies" in patch:
+        kwargs["catalog_dependencies"] = [str(p) for p in patch["catalog_dependencies"]]
 
 
 @cli.command("show-config")

@@ -136,7 +136,7 @@ the always-dropped system schemas (`sys`, `information_schema`, `tempdb`,
 `guest`, `db_*`) still win. The setup wizard writes it as the union of the
 schemas checked in its layer questions, so wizard-produced configs are strictly
 opt-in. `config-set` accepts it like any other key.
-| `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON) | `--depth`, `--config` |
+| `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON); `--column COL` traces one column back to its source columns through views, procs and triggers | `--depth`, `--column`, `--config` |
 | `coop-data-doc show-config` | Print the current config as JSON (the `config-set` shape) | `--config` |
 | `coop-data-doc config-set` | Apply a JSON patch to the config, non-interactively | `--from-json` (file or `-`), `--config` |
 | `coop-data-doc resolve` | List ambiguous cross-repo links + candidates (JSON) | `--config` |
@@ -331,6 +331,21 @@ Otherwise the trees legitimately differ (`findings.md`, chips, index) and
 Re-running the `setup` wizard carries an existing `reviews:` list through
 unchanged (like `config-set` and `set-folders`); it never prompts for one.
 
+## Catalog Dependency Check (`catalog_dependencies`)
+
+The config key `catalog_dependencies` (list of paths, relative to the config file)
+names the database's own dependency lists: `Dependencies.json` from
+coop-sql-source-control's `sqlsc dependencies` (version 1; what each view, proc,
+function and trigger references per `sys.sql_expression_dependencies`). After
+linking, every listed reference whose two objects the graph does not connect
+(either direction, any edge type) becomes a `catalog_dependency_unparsed` warning on
+the referencing object's file; an unusable file becomes
+`catalog_dependencies_unreadable`. Both are advisory warnings: no exit code or gate
+changes. The check **never adds an edge** (the list has no read/write direction).
+Skipped: referencing objects not in the graph, referenced objects in ignored or
+not-included schemas, sequences, `#temp` tables and table variables. Neither the
+list nor the parser sees inside dynamic SQL.
+
 ## Page Front-Matter Contract
 
 Every generated `.md` page starts with strict YAML:
@@ -372,6 +387,7 @@ tags:
 | `columns_unresolved: true` | Column list couldn't be derived (e.g. `SELECT *`). |
 | `pbix_model_opaque: true` | `.pbix` model couldn't be extracted. |
 | `dax_refs_heuristic: true` | Present on **every** measure and calculated table. Check `unmatched_dax_refs` for discriminating signal. |
+| `object_kind` (stored_proc, view) | What a SQL module really is when it shares a node type: `trigger`, `scalar_function`, `table_function` (multi-statement TVF) on `stored_proc` nodes; `inline_tvf` on `view` nodes. A DML trigger `reads` the table it is `ON`. |
 | `partition_calculated: true` (pbi_table) | A DAX calculated table: upstream comes from heuristic `references` edges extracted from its expression (`calculated_dax`). |
 | `measure_table: true` (pbi_table) | A measure/calculation "home" table: hosts measures, has no visible data columns. |
 | `declared_model` (report) | The model a report's `definition.pbir` authoritatively binds it to; `declared_model_unresolved: true` when that model isn't in the repos. |

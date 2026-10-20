@@ -1336,3 +1336,21 @@ def test_description_with_pipe_does_not_break_contract_table(tmp_path: Path):
     row = next(ln for ln in page.splitlines() if ln.startswith("| c "))
     assert "a \\| b second line" in row  # pipe escaped, newline collapsed to a space
     assert row.count(" | ") == 3  # exactly 4 cells (3 interior separators)
+
+
+def test_module_kind_shown_on_page(tmp_path: Path):
+    # triggers and functions share the stored_proc node type; the page says what they are
+    g = LineageGraph()
+    g.add_node(
+        make_node(
+            NodeType.STORED_PROC,
+            "dbo",
+            "tr_audit",
+            source_file="Triggers/dbo.tr_audit.sql",
+            metadata={"object_kind": "trigger"},
+        )
+    )
+    g.add_node(make_node(NodeType.STORED_PROC, "dbo", "usp_load", source_file="procs/usp_load.sql"))
+    render_markdown(g, tmp_path, "Test Estate")
+    assert "**Kind:** Trigger" in page_path(tmp_path, "stored_proc:dbo.tr_audit").read_text(encoding="utf-8")
+    assert "**Kind:**" not in page_path(tmp_path, "stored_proc:dbo.usp_load").read_text(encoding="utf-8")

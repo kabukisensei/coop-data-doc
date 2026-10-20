@@ -162,6 +162,10 @@ class Config(BaseModel):
     # `--format json`) composed into the portal at render time (issue #38).
     # Paths resolve against this file's folder; `--reviews` extends the list.
     reviews: list[str] = Field(default_factory=list)
+    # database dependency lists (`sqlsc dependencies` → Dependencies.json) the
+    # parsed lineage is checked against; a missed reference becomes a
+    # catalog_dependency_unparsed warning. Paths resolve against this file's folder.
+    catalog_dependencies: list[str] = Field(default_factory=list)
 
     @field_validator("layers")
     @classmethod
@@ -369,7 +373,7 @@ ignore_schemas: {ignore_schemas}
 # to this file; colors as hex). Leave empty for the default theme.
 {branding_block}
 
-{reviews_block}output:
+{reviews_block}{catalog_dependencies_block}output:
   dir: {output_dir}        # markdown docs (for agents)
   site_dir: {site_dir}     # html portal (for humans)
 
@@ -399,6 +403,7 @@ def render_config_yaml(
     sql_dialect: str = "tsql",
     reviews: list[str] | None = None,
     coverage: dict[str, dict] | None = None,
+    catalog_dependencies: list[str] | None = None,
 ) -> str:
     """Render a commented coop-data-doc.yml from values.
 
@@ -492,6 +497,18 @@ def render_config_yaml(
     else:
         reviews_block = ""
 
+    if catalog_dependencies:
+        lines = [
+            "# The database's own dependency lists (`sqlsc dependencies` writes",
+            "# Dependencies.json): each reference the parse missed becomes a warning.",
+            "# Paths are relative to this file.",
+            "catalog_dependencies:",
+        ]
+        lines.extend(f"  - {json.dumps(p)}" for p in catalog_dependencies)
+        catalog_dependencies_block = "\n".join(lines) + "\n\n"
+    else:
+        catalog_dependencies_block = ""
+
     coverage_block = ""
     if coverage:
         coverage_block = "\n# Declared coverage within the selected source/layer scope; omitted = unknown.\n"
@@ -510,4 +527,5 @@ def render_config_yaml(
         site_dir=json.dumps(site_dir),
         sql_dialect=json.dumps(sql_dialect),
         reviews_block=reviews_block,
+        catalog_dependencies_block=catalog_dependencies_block,
     )

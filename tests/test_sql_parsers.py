@@ -73,6 +73,10 @@ def test_expected_nodes():
         "gold_table:db.base_table",
         "view:db.view_hop_1",
         "view:db.view_hop_2",
+        # proc-shaped modules traced by the proc pass, tagged object_kind
+        "stored_proc:dbo.tr_fact_sales_audit",  # trigger ON dbo.fact_sales
+        "stored_proc:dbo.fn_customer_sales",  # scalar function
+        "gold_table:audit.fact_sales_log",  # written by the trigger, never defined
     }
     assert set(graph.nodes) == expected
 
@@ -191,16 +195,13 @@ def test_unqualified_table_functions_never_become_sources(tmp_path: Path):
 
 def test_sql_no_objects_safety_net(tmp_path: Path):
     # issue #31: a classified .sql file yielding zero nodes and zero warnings
-    # (a scalar function, a GRANT script, an empty file) is flagged — never a
-    # silent coverage gap. Files that contribute a node or a warning are not.
+    # (a sequence, a GRANT script, an empty file) is flagged — never a silent
+    # coverage gap. Files that contribute a node or a warning are not.
     from coop_data_doc.parsers.sql_objects import flag_silent_sql_files
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "fn_scalar.sql").write_text(
-        "CREATE FUNCTION dbo.fn_add (@a INT) RETURNS INT AS BEGIN RETURN @a + 1; END;",
-        encoding="utf-8",
-    )
+    (repo / "sequence.sql").write_text("CREATE SEQUENCE dbo.order_no START WITH 1;", encoding="utf-8")
     (repo / "grants.sql").write_text("GRANT SELECT ON SCHEMA::sales TO reporting_role;", encoding="utf-8")
     (repo / "table.sql").write_text("CREATE TABLE dbo.t (id INT);", encoding="utf-8")
     config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
@@ -210,7 +211,7 @@ def test_sql_no_objects_safety_net(tmp_path: Path):
     warnings = parse_sql_objects(entries, graph)
     warnings += parse_sql_procs(entries, graph)
     flagged = flag_silent_sql_files(entries, graph, warnings)
-    assert [w.file for w in flagged] == ["fn_scalar.sql", "grants.sql"]
+    assert [w.file for w in flagged] == ["grants.sql", "sequence.sql"]
     assert all(w.category == "sql_no_objects" for w in flagged)
 
 
@@ -416,13 +417,13 @@ def test_proc_body_as_after_parenthesized_default():
     """_find_proc must locate the body-introducing AS at top level, not an AS
     inside a parenthesized parameter default (e.g. CAST(GETDATE() AS DATE)),
     which would slice the body mid-parameter-list and corrupt lineage."""
-    from coop_data_doc.parsers.sql_procs import _find_proc
+    from coop_data_doc.parsers.sql_procs import _find_module
 
-    name, body = _find_proc(
+    header, body = _find_module(
         "CREATE PROCEDURE dbo.MyProc @D DATETIME = CAST(GETDATE() AS DATE) "
         "AS INSERT INTO dbo.target SELECT col FROM dbo.src"
     )
-    assert name == "dbo.MyProc"
+    assert header.name == "dbo.MyProc"
     assert body.strip() == "INSERT INTO dbo.target SELECT col FROM dbo.src"
 
 
@@ -743,9 +744,9 @@ def test_proc_header_parens_in_comments_and_strings_do_not_drop_proc():
 
 
 def test_find_proc_ignores_parens_in_comments_and_strings():
-    from coop_data_doc.parsers.sql_procs import _find_proc
+    from coop_data_doc.parsers.sql_procs import _find_module
 
-    found = _find_proc(
+    found = _find_module(
         "CREATE PROCEDURE dbo.usp_LoadSales\n"
         "    @Year INT = 2024, -- fiscal year (see wiki\n"
         "    @Prefix NVARCHAR(5) = N'('\n"
@@ -753,8 +754,8 @@ def test_find_proc_ignores_parens_in_comments_and_strings():
         "INSERT INTO dbo.fact_sales SELECT col FROM stg.sales"
     )
     assert found is not None
-    name, body = found
-    assert name == "dbo.usp_LoadSales"
+    header, body = found
+    assert header.name == "dbo.usp_LoadSales"
     assert "INSERT INTO dbo.fact_sales" in body
 
 
@@ -908,3 +909,132 @@ def test_sql_file_read_exactly_once_across_both_parsers(tmp_path: Path, monkeypa
     parse_sql_procs(entries, graph, read_cache=cache)
     sql_reads = [n for p, n in counts.items() if p.endswith("a.sql")]
     assert sql_reads == [1], counts  # one file, two parser passes, ONE read
+
+
+# -- triggers, scalar and multi-statement functions, TRUNCATE ----------------
+# Proc-shaped modules (a header, then a body of statements) are traced by the
+# proc pass and tagged object_kind; the objects pass leaves them alone.
+
+
+def _parse_both_sql(tmp_path: Path, sql: str) -> tuple[LineageGraph, list]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "module.sql").write_text(sql, encoding="utf-8")
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    entries = inventory.by_kind(FileKind.SQL_FILE)
+    graph = LineageGraph()
+    warnings = parse_sql_objects(entries, graph)
+    warnings += parse_sql_procs(entries, graph)
+    return graph, warnings
+
+
+def test_fixture_trigger_reads_its_table_and_writes_audit():
+    graph, _ = parse_all()
+    trigger = graph.nodes["stored_proc:dbo.tr_fact_sales_audit"]
+    assert trigger.metadata["object_kind"] == "trigger"
+    assert trigger.metadata["parse_quality"] == "ast"  # EXECUTE AS was not taken for the body AS
+    keys = edge_keys(graph)
+    assert ("stored_proc:dbo.tr_fact_sales_audit", "gold_table:dbo.fact_sales", "reads") in keys
+    assert ("stored_proc:dbo.tr_fact_sales_audit", "gold_table:audit.fact_sales_log", "writes") in keys
+    # the inserted pseudo-table is the changed rows of dbo.fact_sales, never a node
+    assert not any(node_id.endswith(".inserted") for node_id in graph.nodes)
+
+
+def test_fixture_scalar_function_reads_through_return():
+    graph, _ = parse_all()
+    fn = graph.nodes["stored_proc:dbo.fn_customer_sales"]
+    assert fn.metadata["object_kind"] == "scalar_function"
+    assert fn.metadata["parse_quality"] == "ast"
+    assert ("stored_proc:dbo.fn_customer_sales", "gold_table:dbo.fact_sales", "reads") in edge_keys(graph)
+
+
+def test_multi_statement_tvf_traced_without_table_variable(tmp_path: Path):
+    graph, warnings = _parse_both_sql(
+        tmp_path,
+        "CREATE FUNCTION dbo.fn_regions (@r INT)\n"
+        "RETURNS @out TABLE (id INT, region NVARCHAR(50))\n"
+        "AS\nBEGIN\n"
+        "    INSERT INTO @out (id, region)\n"
+        "    SELECT c.id, r.name FROM dbo.customer c JOIN dbo.region r ON r.id = c.region_id;\n"
+        "    RETURN;\nEND\nGO\n",
+    )
+    assert set(graph.nodes) == {
+        "stored_proc:dbo.fn_regions",
+        "gold_table:dbo.customer",
+        "gold_table:dbo.region",
+    }
+    assert graph.nodes["stored_proc:dbo.fn_regions"].metadata["object_kind"] == "table_function"
+    assert {(e.target_id, e.edge_type.value) for e in graph.edges} == {
+        ("gold_table:dbo.customer", "reads"),
+        ("gold_table:dbo.region", "reads"),
+    }
+    assert warnings == []
+
+
+def test_table_variable_with_column_list_is_not_a_table(tmp_path: Path):
+    # `INSERT INTO @t (cols)` parses the @variable as a Parameter, which used to
+    # become a phantom dbo.t table written by the proc.
+    graph, _ = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE dbo.p AS\nDECLARE @t TABLE (id INT);\n"
+        "INSERT INTO @t (id) SELECT id FROM dbo.src;\n",
+    )
+    assert set(graph.nodes) == {"stored_proc:dbo.p", "gold_table:dbo.src"}
+
+
+def test_inline_tvf_still_a_view_not_a_module(tmp_path: Path):
+    graph, _ = _parse_both_sql(
+        tmp_path,
+        "CREATE FUNCTION dbo.fn_by_region (@r INT) RETURNS TABLE AS\n"
+        "RETURN SELECT id FROM dbo.customer WHERE region_id = @r\nGO\n",
+    )
+    assert graph.nodes["view:dbo.fn_by_region"].metadata["object_kind"] == "inline_tvf"
+    assert "stored_proc:dbo.fn_by_region" not in graph.nodes
+
+
+def test_ddl_trigger_has_no_table(tmp_path: Path):
+    graph, _ = _parse_both_sql(
+        tmp_path,
+        "CREATE TRIGGER tr_ddl_log ON DATABASE FOR CREATE_TABLE AS\n"
+        "INSERT INTO dbo.ddl_log (event_data) SELECT EVENTDATA();\nGO\n",
+    )
+    assert graph.nodes["stored_proc:dbo.tr_ddl_log"].metadata["object_kind"] == "trigger"
+    assert {(e.target_id, e.edge_type.value) for e in graph.edges} == {("gold_table:dbo.ddl_log", "writes")}
+
+
+def test_trigger_body_create_table_is_not_an_object(tmp_path: Path):
+    # the objects pass must skip a trigger batch: a #temp CREATE TABLE inside it
+    # (or one the regex fallback would see) never becomes a table node
+    graph, _ = _parse_both_sql(
+        tmp_path,
+        "CREATE TRIGGER dbo.tr_x ON dbo.t AFTER DELETE AS\n"
+        "CREATE TABLE dbo.scratch (id INT);\n"
+        "INSERT INTO dbo.scratch (id) SELECT id FROM deleted;\nGO\n",
+    )
+    assert graph.nodes["gold_table:dbo.scratch"].source_file == "module.sql"
+    keys = {(e.source_id, e.target_id, e.edge_type.value) for e in graph.edges}
+    assert ("stored_proc:dbo.tr_x", "gold_table:dbo.scratch", "defines") in keys
+    assert ("stored_proc:dbo.tr_x", "gold_table:dbo.t", "reads") in keys
+    assert not any(node_id.endswith(".deleted") for node_id in graph.nodes)
+
+
+def test_truncate_is_an_ast_write_not_a_regex_fallback(tmp_path: Path):
+    graph, warnings = _parse_proc_sql(
+        tmp_path,
+        "CREATE PROCEDURE rpt.usp_reload AS\nBEGIN\n    SET NOCOUNT ON;\n"
+        "    TRUNCATE TABLE rpt.summary;\n"
+        "    INSERT INTO rpt.summary (id) SELECT id FROM dbo.src;\nEND\n",
+    )
+    proc = graph.nodes["stored_proc:rpt.usp_reload"]
+    assert proc.metadata["parse_quality"] == "ast"
+    assert not [w for w in warnings if w.category == "regex_fallback"]
+    keys = {(e.target_id, e.edge_type.value) for e in graph.edges}
+    assert keys == {("gold_table:rpt.summary", "writes"), ("gold_table:dbo.src", "reads")}
+
+
+def test_module_without_body_as_names_its_kind(tmp_path: Path):
+    _, warnings = _parse_proc_sql(tmp_path, "CREATE TRIGGER dbo.tr_cut ON dbo.t AFTER INSERT\n")
+    assert [(w.category, w.message) for w in warnings] == [
+        ("proc_body_not_found", "CREATE TRIGGER dbo.tr_cut: no body AS found — batch skipped")
+    ]

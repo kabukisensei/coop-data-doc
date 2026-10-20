@@ -14,9 +14,9 @@ coop-data-doc.yml ──► [crawler] ──► FileInventory (classified files)
    [SQL parsers (M2)]            [Power BI parsers (M3)]
    sql_objects: CREATE           tmdl: tables/columns/measures/partitions
      TABLE/VIEW + columns        bim:  same, from model.bim JSON
-   sql_procs: proc DML           mcode: partition M ──► SourceRef
-     (INSERT/MERGE/UPDATE/       dax:  measure ──► measure/table refs
-      SELECT INTO/EXEC)          pbir: report/page/visual + field bindings
+   sql_procs: proc/trigger/      mcode: partition M ──► SourceRef
+     function DML (INSERT/       dax:  measure ──► measure/table refs
+     MERGE/UPDATE/TRUNCATE/EXEC) pbir: report/page/visual + field bindings
                                        (PBIR folders AND legacy report.json)
                                  pbix: best-effort zip extraction
              │                             │

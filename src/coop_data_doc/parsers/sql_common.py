@@ -30,6 +30,52 @@ _IDENT = r"(?:\[[^\]]+\]|[#@\w]+)(?:\.(?:\[[^\]]+\]|[#@\w]+))*"
 PROC_HEADER_RE = re.compile(rf"\bCREATE\s+(?:OR\s+ALTER\s+)?PROC(?:EDURE)?\s+({_IDENT})", re.IGNORECASE)
 DYNAMIC_SQL_RE = re.compile(r"\bsp_executesql\b|\bEXEC(?:UTE)?\s*\(", re.IGNORECASE)
 
+# Triggers and non-inline functions are proc-shaped (a body of statements), so
+# the proc pass traces them; see find_module_header. A DML trigger is `ON` a table
+# or view; a DDL trigger is `ON DATABASE` / `ON ALL SERVER` and fires on no table.
+TRIGGER_HEADER_RE = re.compile(
+    rf"\bCREATE\s+(?:OR\s+ALTER\s+)?TRIGGER\s+({_IDENT})\s+ON\s+(ALL\s+SERVER\b|DATABASE\b|{_IDENT})",
+    re.IGNORECASE,
+)
+FUNCTION_HEADER_RE = re.compile(rf"\bCREATE\s+(?:OR\s+ALTER\s+)?FUNCTION\s+({_IDENT})", re.IGNORECASE)
+# `RETURNS TABLE` (no @variable) is an inline TVF: view-shaped, so the objects pass
+# owns it. A multi-statement TVF says `RETURNS @t TABLE (...)` and never matches.
+_INLINE_TVF_RE = re.compile(r"\bRETURNS\s+TABLE\b", re.IGNORECASE)
+_MULTI_TVF_RE = re.compile(r"\bRETURNS\s+@\w+\s+TABLE\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ModuleHeader:
+    """The header of a proc-shaped module: a procedure, a trigger, or a scalar or
+    multi-statement table-valued function. ``kind`` is ``procedure``, ``trigger``,
+    ``scalar_function`` or ``table_function``; ``on`` is a DML trigger's table
+    (None otherwise); ``end`` is the offset just past the header."""
+
+    kind: str
+    name: str
+    on: str | None
+    end: int
+
+
+def find_module_header(scrubbed: str) -> ModuleHeader | None:
+    """The first proc-shaped module header in a comment/string-scrubbed batch, or
+    None. Inline TVFs are NOT modules here (the objects pass makes them views)."""
+    found: list[tuple[int, ModuleHeader]] = []
+    proc = PROC_HEADER_RE.search(scrubbed)
+    if proc:
+        found.append((proc.start(), ModuleHeader("procedure", proc.group(1), None, proc.end())))
+    trigger = TRIGGER_HEADER_RE.search(scrubbed)
+    if trigger:
+        target = trigger.group(2)
+        on = None if re.match(r"(?:ALL\s+SERVER|DATABASE)$", target, re.IGNORECASE) else target
+        found.append((trigger.start(), ModuleHeader("trigger", trigger.group(1), on, trigger.end())))
+    function = FUNCTION_HEADER_RE.search(scrubbed)
+    if function and not _INLINE_TVF_RE.search(scrubbed, function.end()):
+        kind = "table_function" if _MULTI_TVF_RE.search(scrubbed, function.end()) else "scalar_function"
+        found.append((function.start(), ModuleHeader(kind, function.group(1), None, function.end())))
+    return min(found, key=lambda item: item[0])[1] if found else None
+
+
 # Capture the callee after EXEC, tolerating an optional `@var =` return-status
 # assignment (EXEC @rc = dbo.Proc) so `@rc` isn't mistaken for the callee.
 EXEC_RE = re.compile(rf"^\s*EXEC(?:UTE)?\s+(?:@\w+\s*=\s*)?({_IDENT})", re.IGNORECASE)
@@ -336,6 +382,8 @@ def is_temp_table(table: exp.Table) -> bool:
     if is_temp(table.name):
         return True
     ident = table.this
+    if isinstance(ident, exp.Parameter):
+        return True  # `INSERT INTO @t (cols)`: sqlglot parses the @variable as a Parameter
     return bool(isinstance(ident, exp.Identifier) and ident.args.get("temporary"))
 
 
@@ -590,6 +638,12 @@ def parse_worker_both_passes(
 
 
 def extract_column_lineage(select: exp.Select, dialect: str) -> dict[str, list[str]]:
+    """Each output column of a SELECT → the sorted ``schema.table.column`` source
+    columns it is computed from, traced through CTEs, subqueries and expressions.
+
+    A column whose trace fails, or that reads no table column (a literal,
+    GETDATE()), is left out: never guessed. ``SELECT *`` yields nothing.
+    """
     from sqlglot.lineage import lineage
 
     col_lineage = {}
@@ -600,20 +654,29 @@ def extract_column_lineage(select: exp.Select, dialect: str) -> dict[str, list[s
         if not name or name == "*":
             continue
         try:
-            node = lineage(name, select, dialect=dialect)
+            # schema is keyword-passed: sqlglot 30 made it a required positional
+            # argument, and a positional-less call raised (and was swallowed) on
+            # every column, so no column lineage was ever recorded.
+            node = lineage(name, select, schema=None, dialect=dialect)
         except Exception:  # noqa: BLE001, S112 — a column whose lineage fails is skipped, never guessed
             continue
 
         sources = set()
-        for d in node.downstream:
-            if isinstance(d.source, exp.Table):
-                schema, table_name = table_parts(d.source)
-                col_name = d.name.split(".")[-1]
-                schema = normalize_identifier(schema) if schema else ""
-                table_name = normalize_identifier(table_name)
-                col_name = normalize_identifier(col_name)
-                prefix = f"{schema}.{table_name}" if schema else table_name
-                sources.add(f"{prefix}.{col_name}")
+        # the leaves of the trace are the base-table columns; intermediate
+        # nodes (CTE/subquery columns) carry their own derived sources
+        for d in node.walk():
+            if d.downstream or not isinstance(d.source, exp.Table) or is_temp_table(d.source):
+                continue
+            if isinstance(d.source.this, exp.Func):
+                continue  # a table-valued function call is not a column source
+            schema, table_name = table_parts(d.source)
+            col_name = normalize_identifier(d.name.split(".")[-1])
+            if not col_name or col_name == "*":
+                continue
+            schema = normalize_identifier(schema) if schema else ""
+            table_name = normalize_identifier(table_name)
+            prefix = f"{schema}.{table_name}" if schema else table_name
+            sources.add(f"{prefix}.{col_name}")
         if sources:
             col_lineage[name] = sorted(sources)
     return col_lineage

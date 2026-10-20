@@ -417,6 +417,27 @@ upstream link.
 | `output.site_dir` | string | Where the HTML site is built. **Must be a separate folder from `output.dir`** — not the same folder and not nested inside it (each build wipes `site_dir`, which would clobber your Markdown). Side-by-side like `./data-docs` + `./data-docs-site` is the convention. |
 | `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
 | `reviews` | list of paths | `coop-sql-review` / `coop-dax-review` `--format json` reports to compose into the portal (see [Compose review findings into the portal](#compose-review-findings-into-the-portal)); paths relative to this file. The `--reviews` flag extends the list. Advisory — never affects exit codes. |
+| `catalog_dependencies` | list of paths | The database's own dependency lists (`Dependencies.json`, written by `sqlsc dependencies` from [coop-sql-source-control](https://github.com/kabukisensei/coop-sql-source-control)); paths relative to this file. Each reference the parse did not link becomes a `catalog_dependency_unparsed` warning on the referencing object's script. Never adds an edge, never affects exit codes. See [SQL from coop-sql-source-control](#sql-from-coop-sql-source-control). |
+
+### SQL from coop-sql-source-control
+
+A repo that `sqlsc` keeps (`Tables/`, `Views/`, `Stored Procedures/`, `Functions/`,
+`Triggers/`) is a ready SQL source. Point a repo at its scripts folder and leave out
+the folders that hold no lineage:
+
+```yaml
+repos:
+  sql:
+    path: "../warehouse/database"
+    include: ["**/*.sql"]
+    exclude: ["Data/**", "Migrations/**", "Security/**"]
+catalog_dependencies:
+  - "../warehouse/database/Dependencies.json"   # only when `sqlsc dependencies` has written it
+```
+
+Triggers and scalar / multi-statement functions are `stored_proc` nodes with an
+`object_kind` (`trigger`, `scalar_function`, `table_function`); a trigger reads the
+table it is `ON`.
 
 ### include / exclude — choosing what gets crawled
 
@@ -581,7 +602,7 @@ Beyond the commands above, the CLI exposes a non-interactive surface for agents 
 | --- | --- |
 | `coop-data-doc folders` | list each repo's top-level folders + whether they're documented (JSON, with a per-repo `mode` of `allowlist`/`legacy`) |
 | `coop-data-doc set-folders --repo KEY --include A,B` | set which top-level folders a repo documents (writes folder-scoped include globs; the non-interactive twin of the wizard's checkbox) |
-| `coop-data-doc lineage OBJECT [--depth N]` | print one object's lineage from the built `graph.json` (JSON), with `loaded_by`: the Power BI tables whose partition names the object, even when the SQL side is not documented |
+| `coop-data-doc lineage OBJECT [--depth N] [--column COL]` | print one object's lineage from the built `graph.json` (JSON), with `loaded_by`: the Power BI tables whose partition names the object, even when the SQL side is not documented; `--column` traces one column back to its source columns through views, procs and triggers |
 | `coop-data-doc show-config` | print the current config as JSON (the shape `config-set` accepts) |
 | `coop-data-doc config-set --from-json -` | apply a JSON patch to `coop-data-doc.yml` non-interactively; arbitrary repo keys are supported, `{"repos":{}}` selects discovery mode, and a repo value of `null` removes that repo |
 | `coop-data-doc resolve` | list ambiguous cross-repo links + their candidates (JSON) |
