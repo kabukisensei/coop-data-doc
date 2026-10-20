@@ -331,6 +331,21 @@ Otherwise the trees legitimately differ (`findings.md`, chips, index) and
 Re-running the `setup` wizard carries an existing `reviews:` list through
 unchanged (like `config-set` and `set-folders`); it never prompts for one.
 
+## Catalog Dependency Check (`catalog_dependencies`)
+
+The config key `catalog_dependencies` (list of paths, relative to the config file)
+names the database's own dependency lists: `Dependencies.json` from
+coop-sql-source-control's `sqlsc dependencies` (version 1; what each view, proc,
+function and trigger references per `sys.sql_expression_dependencies`). After
+linking, every listed reference whose two objects the graph does not connect
+(either direction, any edge type) becomes a `catalog_dependency_unparsed` warning on
+the referencing object's file; an unusable file becomes
+`catalog_dependencies_unreadable`. Both are advisory warnings: no exit code or gate
+changes. The check **never adds an edge** (the list has no read/write direction).
+Skipped: referencing objects not in the graph, referenced objects in ignored or
+not-included schemas, sequences, `#temp` tables and table variables. Neither the
+list nor the parser sees inside dynamic SQL.
+
 ## Page Front-Matter Contract
 
 Every generated `.md` page starts with strict YAML:

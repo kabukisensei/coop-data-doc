@@ -81,6 +81,10 @@ _SEVERITY: dict[str, str] = {
     # these categories).
     "reviews_unreadable": "warning",
     "reviews_schema_mismatch": "warning",
+    # the database's own dependency list (sqlsc's Dependencies.json) names a
+    # reference the parse did not link: a lineage gap made visible, never a gate
+    "catalog_dependency_unparsed": "warning",
+    "catalog_dependencies_unreadable": "warning",
     # a classified .sql file that contributed zero nodes and zero warnings
     # (unsupported DDL, empty file) — a coverage gap, never silent (issue #31)
     "sql_no_objects": "warning",

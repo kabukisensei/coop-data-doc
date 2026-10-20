@@ -417,6 +417,27 @@ upstream link.
 | `output.site_dir` | string | Where the HTML site is built. **Must be a separate folder from `output.dir`** — not the same folder and not nested inside it (each build wipes `site_dir`, which would clobber your Markdown). Side-by-side like `./data-docs` + `./data-docs-site` is the convention. |
 | `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
 | `reviews` | list of paths | `coop-sql-review` / `coop-dax-review` `--format json` reports to compose into the portal (see [Compose review findings into the portal](#compose-review-findings-into-the-portal)); paths relative to this file. The `--reviews` flag extends the list. Advisory — never affects exit codes. |
+| `catalog_dependencies` | list of paths | The database's own dependency lists (`Dependencies.json`, written by `sqlsc dependencies` from [coop-sql-source-control](https://github.com/kabukisensei/coop-sql-source-control)); paths relative to this file. Each reference the parse did not link becomes a `catalog_dependency_unparsed` warning on the referencing object's script. Never adds an edge, never affects exit codes. See [SQL from coop-sql-source-control](#sql-from-coop-sql-source-control). |
+
+### SQL from coop-sql-source-control
+
+A repo that `sqlsc` keeps (`Tables/`, `Views/`, `Stored Procedures/`, `Functions/`,
+`Triggers/`) is a ready SQL source. Point a repo at its scripts folder and leave out
+the folders that hold no lineage:
+
+```yaml
+repos:
+  sql:
+    path: "../warehouse/database"
+    include: ["**/*.sql"]
+    exclude: ["Data/**", "Migrations/**", "Security/**"]
+catalog_dependencies:
+  - "../warehouse/database/Dependencies.json"   # only when `sqlsc dependencies` has written it
+```
+
+Triggers and scalar / multi-statement functions are `stored_proc` nodes with an
+`object_kind` (`trigger`, `scalar_function`, `table_function`); a trigger reads the
+table it is `ON`.
 
 ### include / exclude — choosing what gets crawled
 
