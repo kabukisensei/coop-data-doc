@@ -136,7 +136,7 @@ the always-dropped system schemas (`sys`, `information_schema`, `tempdb`,
 `guest`, `db_*`) still win. The setup wizard writes it as the union of the
 schemas checked in its layer questions, so wizard-produced configs are strictly
 opt-in. `config-set` accepts it like any other key.
-| `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON) | `--depth`, `--config` |
+| `coop-data-doc lineage OBJECT` | Print one object's lineage from the built `graph.json` (JSON); `--column COL` traces one column back to its source columns through views, procs and triggers | `--depth`, `--column`, `--config` |
 | `coop-data-doc show-config` | Print the current config as JSON (the `config-set` shape) | `--config` |
 | `coop-data-doc config-set` | Apply a JSON patch to the config, non-interactively | `--from-json` (file or `-`), `--config` |
 | `coop-data-doc resolve` | List ambiguous cross-repo links + candidates (JSON) | `--config` |

@@ -42,6 +42,7 @@ from coop_data_doc.parsers.sql_common import (
     StatementLineage,
     blank_comments_and_strings,
     collect_source_tables,
+    extract_column_lineage,
     find_module_header,
     is_temp_table,
     original_name,
@@ -79,7 +80,9 @@ _EXECUTE_BEFORE_RE = re.compile(r"\bEXEC(?:UTE)?\s*$", re.IGNORECASE)
 _RETURN_RE = re.compile(r"\s*RETURN\b", re.IGNORECASE)
 # A trigger's `inserted` / `deleted` pseudo-tables are the changed rows of the
 # table it is ON (already a reads edge), never real tables of their own.
-_TRIGGER_PSEUDO_TABLES = {("dbo", "inserted"), ("dbo", "deleted")}
+_TRIGGER_PSEUDO_TABLES = frozenset({("dbo", "inserted"), ("dbo", "deleted")})
+# sqlglot's key for a statement's CTE block (`with` before sqlglot 28)
+_WITH_ARG = "with_" if "with_" in exp.Insert.arg_types else "with"
 _KIND_LABELS = {
     "procedure": "CREATE PROCEDURE",
     "trigger": "CREATE TRIGGER",
@@ -176,36 +179,32 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
         # `reads -= writes`, mirroring the Merge branch.
         lineage.reads |= collect_source_tables(statement)
 
-        # Extract column lineage for INSERT ... SELECT
-        if isinstance(statement.expression, exp.Select):
-            from coop_data_doc.graph.model import normalize_identifier
-            from coop_data_doc.parsers.sql_common import extract_column_lineage
-
-            target_schema, target_name = table_parts(target)
-            target_key = (target_schema, target_name)
-
-            # Map select expression aliases to explicit target columns if available
-            target_cols = []
-            if isinstance(statement.this, exp.Schema):
-                target_cols = [normalize_identifier(e.name) for e in statement.this.expressions]
-
-            # Use a dummy Select to trace against (since statement.expression might not have proper aliases)
-            # wait, extract_column_lineage expects aliases to be the target column names.
-            # If target_cols are explicit, we need to map them:
-            col_lineage = extract_column_lineage(statement.expression, dialect)
+        # Column lineage for INSERT … SELECT. The SELECT is traced with the
+        # Insert's own CTE block attached, so a `WITH c AS (…) INSERT … SELECT …
+        # FROM c` traces through c to its base tables instead of naming c itself.
+        select = statement.expression
+        if isinstance(select, exp.Select) and isinstance(target, exp.Table) and not is_temp_table(target):
+            ctes = statement.args.get(_WITH_ARG)
+            if ctes is not None and not select.args.get(_WITH_ARG):
+                select = select.copy()
+                select.set(_WITH_ARG, ctes.copy())
+            col_lineage = extract_column_lineage(select, dialect)
             if col_lineage:
-                if target_cols and len(target_cols) == len(statement.expression.expressions):
-                    # Map positional source lineage to explicit target columns
-                    mapped_lineage = {}
-                    for target_col, src_expr in zip(target_cols, statement.expression.expressions):
+                target_cols = []
+                if isinstance(statement.this, exp.Schema):
+                    target_cols = [normalize_identifier(e.name) for e in statement.this.expressions]
+                if target_cols and len(target_cols) == len(select.expressions):
+                    # explicit column list: map the SELECT's columns to it by position
+                    mapped = {}
+                    for target_col, src_expr in zip(target_cols, select.expressions):
                         src_name = normalize_identifier(src_expr.alias_or_name or "")
                         if src_name in col_lineage:
-                            mapped_lineage[target_col] = col_lineage[src_name]
-                    if mapped_lineage:
-                        lineage.dml_column_lineage[target_key] = mapped_lineage
-                else:
-                    # SELECT ... INTO or INSERT without explicit columns: the SELECT aliases are the target columns
-                    lineage.dml_column_lineage[target_key] = col_lineage
+                            mapped[target_col] = col_lineage[src_name]
+                    if mapped:
+                        lineage.dml_column_lineage[table_parts(target)] = mapped
+                elif not target_cols:
+                    # no column list: the SELECT's aliases are the target columns
+                    lineage.dml_column_lineage[table_parts(target)] = col_lineage
 
     elif isinstance(statement, exp.Merge):
         target = statement.this
@@ -263,9 +262,7 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
             if isinstance(target, exp.Table) and not is_temp_table(target):
                 lineage.writes.add(table_parts(target))
 
-                # Extract column lineage for SELECT ... INTO
-                from coop_data_doc.parsers.sql_common import extract_column_lineage
-
+                # column lineage for SELECT … INTO: the aliases are the new table's columns
                 target_schema, target_name = table_parts(target)
                 target_key = (target_schema, target_name)
                 col_lineage = extract_column_lineage(statement, dialect)
@@ -284,10 +281,33 @@ def _apply_lineage(
     lineage: StatementLineage,
     evidence_file: str,
     contribution: _Contribution | None = None,
-    skip: set[tuple[str, str]] | frozenset[tuple[str, str]] = frozenset(),
+    trigger_on: str | None = None,
+    in_trigger: bool = False,
 ) -> None:
-    lineage.writes -= skip
-    lineage.reads -= skip
+    """Add one statement's edges (and column lineage) to the module's node.
+
+    In a trigger (``in_trigger``) the ``inserted``/``deleted`` pseudo-tables are
+    never tables: they get no node or edge, and a column read from them is a
+    column of the table the trigger is ON (``trigger_on``, ``schema.name``),
+    or dropped for a DDL trigger, which is ON no table.
+    """
+    if in_trigger:
+        lineage.writes -= _TRIGGER_PSEUDO_TABLES
+        lineage.reads -= _TRIGGER_PSEUDO_TABLES
+        pseudo_prefixes = tuple(f"{schema}.{name}." for schema, name in sorted(_TRIGGER_PSEUDO_TABLES))
+        for columns in lineage.dml_column_lineage.values():
+            for col, sources in list(columns.items()):
+                kept = set()
+                for source in sources:
+                    prefix = next((p for p in pseudo_prefixes if source.startswith(p)), None)
+                    if prefix is None:
+                        kept.add(source)
+                    elif trigger_on is not None:
+                        kept.add(f"{trigger_on}.{source[len(prefix) :]}")
+                if kept:
+                    columns[col] = sorted(kept)
+                else:
+                    del columns[col]
     for schema, name in sorted(lineage.writes):
         table = stub_table(graph, schema, name, contribution)
         _add_edge(
@@ -373,10 +393,12 @@ def _parse_procs_entry(
             pristine.metadata["object_kind"] = header.kind
         proc = _add_node(graph, pristine, contribution)
         fallback_used = False
-        skip = _TRIGGER_PSEUDO_TABLES if header.kind == "trigger" else frozenset()
+        in_trigger = header.kind == "trigger"
+        trigger_on = None
         if header.on is not None:
             # a DML trigger handles the rows changed in the table it is ON
             on_schema, on_name = qualify(header.on)
+            trigger_on = f"{on_schema}.{on_name}"
             table = stub_table(graph, on_schema, on_name, contribution)
             _add_edge(
                 graph,
@@ -483,7 +505,7 @@ def _parse_procs_entry(
                     lineage = regex_extract(expression)
                     if lineage.writes or lineage.reads:
                         fallback_used = True
-                _apply_lineage(graph, proc, lineage, entry.path, contribution, skip)
+                _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
                 continue
 
             # RAISE, not IGNORE: a chunk sqlglot can't fully parse (e.g. a
@@ -499,7 +521,7 @@ def _parse_procs_entry(
             if usable:
                 for statement in usable:
                     lineage, creates = _extract_statement(statement, dialect)
-                    _apply_lineage(graph, proc, lineage, entry.path, contribution, skip)
+                    _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
                     for create in creates:
                         target = create.this
                         schema_expr = target if isinstance(target, exp.Schema) else None
@@ -538,7 +560,7 @@ def _parse_procs_entry(
                 lineage = regex_extract(chunk)
                 if lineage.writes or lineage.reads:
                     fallback_used = True
-                _apply_lineage(graph, proc, lineage, entry.path, contribution, skip)
+                _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
 
         if fallback_used:
             proc.metadata["parse_quality"] = "regex_fallback"

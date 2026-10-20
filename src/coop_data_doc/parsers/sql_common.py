@@ -638,6 +638,12 @@ def parse_worker_both_passes(
 
 
 def extract_column_lineage(select: exp.Select, dialect: str) -> dict[str, list[str]]:
+    """Each output column of a SELECT → the sorted ``schema.table.column`` source
+    columns it is computed from, traced through CTEs, subqueries and expressions.
+
+    A column whose trace fails, or that reads no table column (a literal,
+    GETDATE()), is left out: never guessed. ``SELECT *`` yields nothing.
+    """
     from sqlglot.lineage import lineage
 
     col_lineage = {}
@@ -648,20 +654,29 @@ def extract_column_lineage(select: exp.Select, dialect: str) -> dict[str, list[s
         if not name or name == "*":
             continue
         try:
-            node = lineage(name, select, dialect=dialect)
+            # schema is keyword-passed: sqlglot 30 made it a required positional
+            # argument, and a positional-less call raised (and was swallowed) on
+            # every column, so no column lineage was ever recorded.
+            node = lineage(name, select, schema=None, dialect=dialect)
         except Exception:  # noqa: BLE001, S112 — a column whose lineage fails is skipped, never guessed
             continue
 
         sources = set()
-        for d in node.downstream:
-            if isinstance(d.source, exp.Table):
-                schema, table_name = table_parts(d.source)
-                col_name = d.name.split(".")[-1]
-                schema = normalize_identifier(schema) if schema else ""
-                table_name = normalize_identifier(table_name)
-                col_name = normalize_identifier(col_name)
-                prefix = f"{schema}.{table_name}" if schema else table_name
-                sources.add(f"{prefix}.{col_name}")
+        # the leaves of the trace are the base-table columns; intermediate
+        # nodes (CTE/subquery columns) carry their own derived sources
+        for d in node.walk():
+            if d.downstream or not isinstance(d.source, exp.Table) or is_temp_table(d.source):
+                continue
+            if isinstance(d.source.this, exp.Func):
+                continue  # a table-valued function call is not a column source
+            schema, table_name = table_parts(d.source)
+            col_name = normalize_identifier(d.name.split(".")[-1])
+            if not col_name or col_name == "*":
+                continue
+            schema = normalize_identifier(schema) if schema else ""
+            table_name = normalize_identifier(table_name)
+            prefix = f"{schema}.{table_name}" if schema else table_name
+            sources.add(f"{prefix}.{col_name}")
         if sources:
             col_lineage[name] = sorted(sources)
     return col_lineage
