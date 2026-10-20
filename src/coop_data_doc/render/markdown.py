@@ -43,6 +43,14 @@ _CONTRACT_TYPES = frozenset(
 # Power BI storage mode, shown on table pages — the defining trait of a
 # composite model (Import cached vs. DirectQuery live vs. Dual).
 _STORAGE_LABELS = {"import": "Import", "directquery": "DirectQuery", "dual": "Dual"}
+# what a SQL module really is when its node type is shared: an inline TVF is a
+# view node, and triggers/functions are stored_proc nodes (see parsers/sql_procs.py)
+_OBJECT_KIND_LABELS = {
+    "inline_tvf": "Inline table-valued function",
+    "trigger": "Trigger",
+    "scalar_function": "Scalar function",
+    "table_function": "Multi-statement table-valued function",
+}
 
 # Relationship-grid cell markers. Literal codepoints (not Material emoji
 # shortcodes) so they render over file:// with no icon-font/CDN fetch — same
@@ -829,6 +837,11 @@ def render_node_page(
         *(
             [f"**Storage mode:** {_STORAGE_LABELS.get(mode, mode.title())}", ""]
             if node.node_type is NodeType.PBI_TABLE and (mode := node.metadata.get("storage_mode"))
+            else []
+        ),
+        *(
+            [f"**Kind:** {_OBJECT_KIND_LABELS[kind]}", ""]
+            if (kind := node.metadata.get("object_kind")) in _OBJECT_KIND_LABELS
             else []
         ),
         # a dedicated measure/calculation "home" table (no data columns) — issue #27

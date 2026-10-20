@@ -30,6 +30,52 @@ _IDENT = r"(?:\[[^\]]+\]|[#@\w]+)(?:\.(?:\[[^\]]+\]|[#@\w]+))*"
 PROC_HEADER_RE = re.compile(rf"\bCREATE\s+(?:OR\s+ALTER\s+)?PROC(?:EDURE)?\s+({_IDENT})", re.IGNORECASE)
 DYNAMIC_SQL_RE = re.compile(r"\bsp_executesql\b|\bEXEC(?:UTE)?\s*\(", re.IGNORECASE)
 
+# Triggers and non-inline functions are proc-shaped (a body of statements), so
+# the proc pass traces them; see find_module_header. A DML trigger is `ON` a table
+# or view; a DDL trigger is `ON DATABASE` / `ON ALL SERVER` and fires on no table.
+TRIGGER_HEADER_RE = re.compile(
+    rf"\bCREATE\s+(?:OR\s+ALTER\s+)?TRIGGER\s+({_IDENT})\s+ON\s+(ALL\s+SERVER\b|DATABASE\b|{_IDENT})",
+    re.IGNORECASE,
+)
+FUNCTION_HEADER_RE = re.compile(rf"\bCREATE\s+(?:OR\s+ALTER\s+)?FUNCTION\s+({_IDENT})", re.IGNORECASE)
+# `RETURNS TABLE` (no @variable) is an inline TVF: view-shaped, so the objects pass
+# owns it. A multi-statement TVF says `RETURNS @t TABLE (...)` and never matches.
+_INLINE_TVF_RE = re.compile(r"\bRETURNS\s+TABLE\b", re.IGNORECASE)
+_MULTI_TVF_RE = re.compile(r"\bRETURNS\s+@\w+\s+TABLE\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ModuleHeader:
+    """The header of a proc-shaped module: a procedure, a trigger, or a scalar or
+    multi-statement table-valued function. ``kind`` is ``procedure``, ``trigger``,
+    ``scalar_function`` or ``table_function``; ``on`` is a DML trigger's table
+    (None otherwise); ``end`` is the offset just past the header."""
+
+    kind: str
+    name: str
+    on: str | None
+    end: int
+
+
+def find_module_header(scrubbed: str) -> ModuleHeader | None:
+    """The first proc-shaped module header in a comment/string-scrubbed batch, or
+    None. Inline TVFs are NOT modules here (the objects pass makes them views)."""
+    found: list[tuple[int, ModuleHeader]] = []
+    proc = PROC_HEADER_RE.search(scrubbed)
+    if proc:
+        found.append((proc.start(), ModuleHeader("procedure", proc.group(1), None, proc.end())))
+    trigger = TRIGGER_HEADER_RE.search(scrubbed)
+    if trigger:
+        target = trigger.group(2)
+        on = None if re.match(r"(?:ALL\s+SERVER|DATABASE)$", target, re.IGNORECASE) else target
+        found.append((trigger.start(), ModuleHeader("trigger", trigger.group(1), on, trigger.end())))
+    function = FUNCTION_HEADER_RE.search(scrubbed)
+    if function and not _INLINE_TVF_RE.search(scrubbed, function.end()):
+        kind = "table_function" if _MULTI_TVF_RE.search(scrubbed, function.end()) else "scalar_function"
+        found.append((function.start(), ModuleHeader(kind, function.group(1), None, function.end())))
+    return min(found, key=lambda item: item[0])[1] if found else None
+
+
 # Capture the callee after EXEC, tolerating an optional `@var =` return-status
 # assignment (EXEC @rc = dbo.Proc) so `@rc` isn't mistaken for the callee.
 EXEC_RE = re.compile(rf"^\s*EXEC(?:UTE)?\s+(?:@\w+\s*=\s*)?({_IDENT})", re.IGNORECASE)
@@ -336,6 +382,8 @@ def is_temp_table(table: exp.Table) -> bool:
     if is_temp(table.name):
         return True
     ident = table.this
+    if isinstance(ident, exp.Parameter):
+        return True  # `INSERT INTO @t (cols)`: sqlglot parses the @variable as a Parameter
     return bool(isinstance(ident, exp.Identifier) and ident.args.get("temporary"))
 
 

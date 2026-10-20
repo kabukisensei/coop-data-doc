@@ -27,9 +27,9 @@ from coop_data_doc.parsers.parse_cache import (
 )
 from coop_data_doc.parsers.sql_common import (
     _IDENT,
-    PROC_HEADER_RE,
     collect_source_tables,
     decode_text,
+    find_module_header,
     original_name,
     parse_batch,
     qualify,
@@ -375,9 +375,9 @@ def _handle_create_function(
     """An inline table-valued function (``CREATE FUNCTION … RETURNS TABLE AS
     RETURN SELECT …``) is a view-shaped object — a name, a column contract, and
     reads — so it becomes a ``view`` node tagged ``object_kind: inline_tvf``
-    (issue #31). Returns False for anything else under CREATE FUNCTION (scalar
-    functions, multi-statement TVFs — proc-shaped, out of scope); those files
-    are caught by the ``sql_no_objects`` safety net instead of vanishing.
+    (issue #31). Returns False for anything else under CREATE FUNCTION; scalar
+    functions and multi-statement TVFs are proc-shaped, so parse_sql_procs
+    traces them and the objects pass skips their batches.
     """
     target = create.this
     if isinstance(target, exp.UserDefinedFunction):
@@ -446,8 +446,9 @@ def _parse_objects_entry(
         # identifiers + casing, so name extraction from the scrubbed match stays exact.
         scrubbed = scrub(batch, strip_strings=True)
         # a doc comment mentioning "CREATE PROCEDURE dbo.x" must not make us drop a
-        # CREATE TABLE/VIEW batch as "handled by parse_sql_procs"
-        if PROC_HEADER_RE.search(scrubbed):
+        # CREATE TABLE/VIEW batch as "handled by parse_sql_procs"; procedures,
+        # triggers and scalar/multi-statement functions all belong to that pass
+        if find_module_header(scrubbed):
             continue  # handled by parse_sql_procs
         creates = [
             expression
@@ -511,7 +512,7 @@ def flag_silent_sql_files(
 ) -> list[ParseWarning]:
     """Safety net (issue #31): a classified ``.sql`` file that contributed zero
     nodes and zero warnings across both SQL passes is invisible — unsupported
-    DDL (scalar functions, multi-statement TVFs, GRANT scripts…) or an
+    DDL (GRANT scripts, sequences, a data-only MERGE script…) or an
     accidentally-empty file. Emit one ``sql_no_objects`` warning per such file
     so a coverage gap is never silent (hard rule 4).
 
@@ -525,8 +526,8 @@ def flag_silent_sql_files(
         ParseWarning(
             file=entry.path,
             message=(
-                "no documentable objects found (no CREATE TABLE/VIEW/PROCEDURE "
-                "or inline TVF, and no diagnostics) — the file contributes nothing"
+                "no documentable objects found (no CREATE TABLE/VIEW/PROCEDURE/"
+                "FUNCTION/TRIGGER, and no diagnostics) — the file contributes nothing"
             ),
             category="sql_no_objects",
         )
