@@ -39,7 +39,9 @@ _NOT_LINEAGE = frozenset({"sequence"})
 SUPPORTED_VERSION = 1
 
 
-def _key(schema: str | None, name: str, database: str | None = None, server: str | None = None) -> tuple[str, str]:
+def _key(
+    schema: str | None, name: str, database: str | None = None, server: str | None = None
+) -> tuple[str, str]:
     """(schema, name) the way the parsers qualify names: lowercase, and a
     cross-database reference keeps its database (and server) in the schema."""
     parts = [p for p in (server, database, schema or "dbo") if p]
@@ -118,7 +120,9 @@ def check(graph: LineageGraph, config: Config, entries: list[tuple[str, dict]]) 
         if not sources:
             continue  # the referencing object is not documented here
         if ref.get("schema"):
-            ref_key: tuple[str, str] | str = _key(ref["schema"], ref["name"], ref.get("database"), ref.get("server"))
+            ref_key: tuple[str, str] | str = _key(
+                ref["schema"], ref["name"], ref.get("database"), ref.get("server")
+            )
             if out_of_scope(ref_key[0]):
                 continue
             targets = by_key.get(ref_key, [])
