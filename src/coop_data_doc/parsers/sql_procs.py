@@ -275,6 +275,17 @@ def _extract_statement(statement: exp.Expression, dialect: str) -> tuple[Stateme
     return lineage, creates
 
 
+def _merge_dml_lineage(node: Node, table_id: str, mapping: dict[str, list[str]]) -> None:
+    """Merge one DML target's column mapping into ``node``'s metadata, unioning
+    source columns for a target column already mapped by an earlier statement."""
+    target_lineage = node.metadata.setdefault("dml_column_lineage", {}).setdefault(table_id, {})
+    for col, sources in mapping.items():
+        if col not in target_lineage:
+            target_lineage[col] = list(sources)
+        else:
+            target_lineage[col] = sorted(set(target_lineage[col] + sources))
+
+
 def _apply_lineage(
     graph: LineageGraph,
     proc: Node,
@@ -283,8 +294,12 @@ def _apply_lineage(
     contribution: _Contribution | None = None,
     trigger_on: str | None = None,
     in_trigger: bool = False,
+    own: Node | None = None,
 ) -> None:
     """Add one statement's edges (and column lineage) to the module's node.
+
+    ``own`` is the module's pristine (pre-merge) node, which the parse cache
+    records: its DML column lineage must match the graph node's.
 
     In a trigger (``in_trigger``) the ``inserted``/``deleted`` pseudo-tables are
     never tables: they get no node or edge, and a column read from them is a
@@ -321,15 +336,13 @@ def _apply_lineage(
             contribution,
         )
         if lineage.dml_column_lineage and (schema, name) in lineage.dml_column_lineage:
-            if "dml_column_lineage" not in proc.metadata:
-                proc.metadata["dml_column_lineage"] = {}
-            target_lineage = proc.metadata["dml_column_lineage"].setdefault(table.id, {})
-            # Merge dictionary (union source columns for same target column)
-            for col, sources in lineage.dml_column_lineage[(schema, name)].items():
-                if col not in target_lineage:
-                    target_lineage[col] = list(sources)
-                else:
-                    target_lineage[col] = sorted(set(target_lineage[col] + sources))
+            # The graph node AND the file's pristine node both get the mapping:
+            # when an earlier EXEC stubbed this proc they are different objects,
+            # and the cache records the pristine one (issue #71).
+            mapping = lineage.dml_column_lineage[(schema, name)]
+            _merge_dml_lineage(proc, table.id, mapping)
+            if own is not None and own is not proc:
+                _merge_dml_lineage(own, table.id, mapping)
     for schema, name in sorted(lineage.reads):
         table = stub_table(graph, schema, name, contribution)
         _add_edge(
@@ -505,7 +518,9 @@ def _parse_procs_entry(
                     lineage = regex_extract(expression)
                     if lineage.writes or lineage.reads:
                         fallback_used = True
-                _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
+                _apply_lineage(
+                    graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger, pristine
+                )
                 continue
 
             # RAISE, not IGNORE: a chunk sqlglot can't fully parse (e.g. a
@@ -521,7 +536,9 @@ def _parse_procs_entry(
             if usable:
                 for statement in usable:
                     lineage, creates = _extract_statement(statement, dialect)
-                    _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
+                    _apply_lineage(
+                        graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger, pristine
+                    )
                     for create in creates:
                         target = create.this
                         schema_expr = target if isinstance(target, exp.Schema) else None
@@ -560,7 +577,9 @@ def _parse_procs_entry(
                 lineage = regex_extract(chunk)
                 if lineage.writes or lineage.reads:
                     fallback_used = True
-                _apply_lineage(graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger)
+                _apply_lineage(
+                    graph, proc, lineage, entry.path, contribution, trigger_on, in_trigger, pristine
+                )
 
         if fallback_used:
             proc.metadata["parse_quality"] = "regex_fallback"

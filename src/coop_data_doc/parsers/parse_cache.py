@@ -60,7 +60,9 @@ from coop_data_doc.config import ParseWarning
 # v2: cache keys gained the file path (identical-content files at different
 # paths previously shared one entry, mis-attributing warnings/evidence) — the
 # bump drops pathless v1 entries instead of carrying them as dead weight.
-CACHE_VERSION = 3
+# v4: a proc stubbed by an earlier EXEC now caches its own DML column lineage
+# (issue #71); the bump drops v3 entries that were recorded without it.
+CACHE_VERSION = 4
 
 
 class ParseCacheEntry(BaseModel):
