@@ -85,6 +85,9 @@ _SEVERITY: dict[str, str] = {
     # reference the parse did not link: a lineage gap made visible, never a gate
     "catalog_dependency_unparsed": "warning",
     "catalog_dependencies_unreadable": "warning",
+    # an sqlsc file (its name is the database's name) whose CREATE declares another
+    # object, e.g. one renamed after it was scripted: documented as declared, never a gate
+    "sqlsc_declaration_mismatch": "warning",
     # a classified .sql file that contributed zero nodes and zero warnings
     # (unsupported DDL, empty file) — a coverage gap, never silent (issue #31)
     "sql_no_objects": "warning",

@@ -346,6 +346,17 @@ Skipped: referencing objects not in the graph, referenced objects in ignored or
 not-included schemas, sequences, `#temp` tables and table variables. Neither the
 list nor the parser sees inside dynamic SQL.
 
+## sqlsc File Names (`sqlsc_declaration_mismatch`)
+
+In a repo kept by coop-sql-source-control (a `sqlsc.yml` at, above, or up to three
+levels below a configured repo path names the scripts folder), each object file under
+`Tables/`, `Views/`, `Stored Procedures/`, `Functions/` or `Triggers/` is named
+`<schema>.<name>.sql` (`%XX` escapes) after the database's name for it. When the
+objects a file defines do not include that name (a module renamed with `sp_rename`
+keeps its old `CREATE`), the file gets an advisory `sqlsc_declaration_mismatch`
+warning. Nodes are never renamed or redirected from the file name (never guess
+lineage); no exit code or gate changes. Outside an sqlsc repo file names are not read.
+
 ## Page Front-Matter Contract
 
 Every generated `.md` page starts with strict YAML:
