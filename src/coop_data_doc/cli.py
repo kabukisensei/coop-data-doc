@@ -19,7 +19,7 @@ from pathlib import Path
 import click
 import questionary
 
-from coop_data_doc import __version__, catalog_deps
+from coop_data_doc import __version__, catalog_deps, sqlsc_layout
 from coop_data_doc.config import (
     DEFAULT_PBI_INCLUDE,
     DEFAULT_SQL_EXCLUDE,
@@ -277,6 +277,8 @@ def run_pipeline(
         # the database's own dependency list: report what the parse missed (never adds edges)
         entries, dep_warnings = catalog_deps.load(config)
         warnings += dep_warnings + catalog_deps.check(graph, config, entries)
+    # an sqlsc repo's file name is the database's name: report a CREATE that names another
+    warnings += sqlsc_layout.check(graph, config)
     _log.debug(
         "done: %d nodes, %d edges, %d cross-repo links, %d unresolved, %d warnings",
         len(graph.nodes),

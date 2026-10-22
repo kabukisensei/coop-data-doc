@@ -439,6 +439,14 @@ Triggers and scalar / multi-statement functions are `stored_proc` nodes with an
 `object_kind` (`trigger`, `scalar_function`, `table_function`); a trigger reads the
 table it is `ON`.
 
+In such a repo (a `sqlsc.yml` names the scripts folder, at, above or below the repo
+path) a file name is the database's name for its object. A file whose `CREATE`
+declares another object, such as a module renamed with `sp_rename` after sqlsc
+before 1.0.4 scripted it, becomes an `sqlsc_declaration_mismatch` warning. The
+object stays documented under its declared name and nothing is redirected; the
+warning never affects exit codes. Script the object again with sqlsc 1.0.4 or later
+to correct the file.
+
 ### include / exclude — choosing what gets crawled
 
 Patterns are matched against each file's path **relative to its repo**, forward-slashed:
