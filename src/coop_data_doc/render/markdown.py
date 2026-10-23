@@ -167,15 +167,18 @@ def _contract_section(node: Node, graph: LineageGraph) -> str:
         col_lineage = node.metadata.get("column_lineage")
         has_lineage = col_lineage is not None
         if not col_lineage:
-            # Check upstream stored procedures for DML column lineage
+            # A table's columns are mapped by the procs/triggers that load it:
+            # union every writer's mapping per column (#78), never the first's.
+            merged: dict[str, list[str]] = {}
             for up_id in graph.upstream(node.id, depth=1):
                 up_node = graph.nodes.get(up_id)
-                if up_node and "dml_column_lineage" in up_node.metadata:
-                    dml_lineage = up_node.metadata["dml_column_lineage"]
-                    if node.id in dml_lineage:
-                        col_lineage = dml_lineage[node.id]
-                        has_lineage = True
-                        break
+                dml_lineage = up_node.metadata.get("dml_column_lineage") if up_node else None
+                if isinstance(dml_lineage, dict) and node.id in dml_lineage:
+                    for col, sources in dml_lineage[node.id].items():
+                        merged[col] = sorted(set(merged.get(col, [])) | set(sources))
+            if merged:
+                col_lineage = merged
+                has_lineage = True
         if not col_lineage:
             col_lineage = {}
 

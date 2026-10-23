@@ -475,6 +475,7 @@ Use `--strict` to make unresolved items fatal (exit 2).
 |----------|--------|
 | `COOP_DATA_DOC_CONFIG` | Default config file path (overrides `./coop-data-doc.yml`) |
 | `COOP_DATA_DOC_JOBS` | Default SQL-parse worker count when `--jobs` is omitted (capped at 8, floored at 1; a non-integer is ignored). An explicit `--jobs N` always wins. Set `1` for pool-free, fully in-process runs. |
+| `COOP_DATA_DOC_DISCOVERY_ROOTS` | Fence for upward config discovery: `os.pathsep`-separated directories; only folders at or below one of them are searched for `coop-data-doc.yml`. Set it in a test suite, CI job or review sandbox so a run inside a disposable folder can never pick up a config above it and scan a real estate. `--config` and `COOP_DATA_DOC_CONFIG` are unaffected. The test suite's `conftest.py` sets it for every test. |
 
 ## Python API (Advanced)
 

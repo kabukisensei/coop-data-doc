@@ -261,8 +261,40 @@ class LineageGraph(BaseModel):
         self.edges = list(deduped.values())
         self._edge_index = deduped
         self._adj_cache = {}  # endpoints were rewritten; drop the adjacency cache
+        # Node ids are also embedded in metadata: a proc's/trigger's
+        # ``dml_column_lineage`` is keyed by the TARGET table's id, written by the
+        # parser as a gold table before layering retyped it (#77). Rewrite those
+        # keys too, or every column trace into a silver/bronze target misses.
+        for other in self.nodes.values():
+            dml = other.metadata.get("dml_column_lineage")
+            if isinstance(dml, dict) and node_id in dml:
+                moved = dml.pop(node_id)
+                existing = dml.get(new_id)
+                if isinstance(existing, dict):
+                    for col, sources in moved.items():
+                        existing[col] = sorted(set(existing.get(col, [])) | set(sources))
+                else:
+                    dml[new_id] = moved
         # merge if a node with the new id already existed
         return self.add_node(node).id
+
+    def dml_column_sources(self, node_id: str, column: str) -> list[str]:
+        """The source columns every direct upstream writer (proc, trigger) maps
+        into ``column`` of ``node_id`` through its ``dml_column_lineage``: the
+        sorted union over ALL writers, never only the first found (#78: a table
+        loaded by two procs has both sets of origins). ``column`` is the
+        normalized column name. Empty when no writer maps it."""
+        found: set[str] = set()
+        for up_id in self.upstream(node_id, depth=1):
+            up_node = self.nodes.get(up_id)
+            if up_node is None:
+                continue
+            dml = up_node.metadata.get("dml_column_lineage")
+            if isinstance(dml, dict):
+                sources = (dml.get(node_id) or {}).get(column)
+                if sources:
+                    found.update(sources)
+        return sorted(found)
 
     # -- traversal ----------------------------------------------------------
 

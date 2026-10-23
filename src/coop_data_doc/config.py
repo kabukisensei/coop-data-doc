@@ -138,6 +138,36 @@ class CoverageDeclaration(BaseModel):
     scope: str = ""
 
 
+def _discovery_roots() -> list[Path] | None:
+    """The fence for upward config discovery (``COOP_DATA_DOC_DISCOVERY_ROOTS``),
+    resolved; None when unset or empty (no fence)."""
+    raw = os.environ.get("COOP_DATA_DOC_DISCOVERY_ROOTS")
+    if not raw:
+        return None
+    roots: list[Path] = []
+    for item in raw.split(os.pathsep):
+        item = item.strip()
+        if item:
+            try:
+                roots.append(Path(item).expanduser().resolve())
+            except OSError:
+                continue
+    return roots
+
+
+def _within_discovery_roots(directory: Path) -> bool:
+    """True when ``directory`` may be examined: no fence, or it is one of the
+    discovery roots or below one."""
+    roots = _discovery_roots()
+    if roots is None:
+        return True
+    try:
+        resolved = directory.resolve()
+    except OSError:
+        return False
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
 class Config(BaseModel):
     """Validated coop-data-doc.yml. Relative paths resolve against the
     config file's directory, not the current working directory.
@@ -226,6 +256,12 @@ class Config(BaseModel):
         2. start_dir / DEFAULT_CONFIG (or cwd if start_dir is None)
         3. Walk up parent directories until found or filesystem root
 
+        ``COOP_DATA_DOC_DISCOVERY_ROOTS`` (``os.pathsep``-separated directories)
+        fences step 3: when set, only directories at or below one of those roots
+        are examined, so a run inside a disposable folder (a test suite, a CI
+        job, a review sandbox) can never pick up a config above it and scan
+        someone's real estate. Unset, discovery walks to the filesystem root.
+
         Returns the absolute selected path, or None when normal discovery finds
         no config. An unset or empty environment variable permits normal
         discovery. Raises ConfigError when an authoritative path cannot be
@@ -240,6 +276,8 @@ class Config(BaseModel):
             start = start.parent
 
         for directory in [start, *start.parents]:
+            if not _within_discovery_roots(directory):
+                break
             candidate = directory / DEFAULT_CONFIG
             if candidate.is_file():
                 return candidate.resolve()

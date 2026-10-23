@@ -33,7 +33,7 @@ from coop_data_doc.graph.model import (
     NodeType,
     normalize_identifier,
 )
-from coop_data_doc.parsers.parse_cache import ParseCache, cache_key
+from coop_data_doc.parsers.parse_cache import ParseCache, cache_key, cache_path
 from coop_data_doc.parsers.sql_common import (
     DYNAMIC_SQL_RE,
     EXEC_CALL_RE,
@@ -641,7 +641,7 @@ def parse_sql_procs(
         # (the pipeline runs both parsers over the same entries), so no
         # warnings list is passed here — that would duplicate the diagnostic.
         text = read_sql_file(entry, None, read_cache)
-        key = cache_key(dialect, text, "procs", entry.path) if parse_cache is not None else ""
+        key = cache_key(dialect, text, "procs", cache_path(entry)) if parse_cache is not None else ""
         cached = None if (parse_cache is None or no_parse_cache) else parse_cache.get(key)
         if cached is not None:
             _replay_entry(graph, cached, warnings)

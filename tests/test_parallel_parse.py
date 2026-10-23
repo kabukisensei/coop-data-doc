@@ -434,7 +434,7 @@ def test_worker_error_never_aborts_build_unit(tmp_path: Path, monkeypatch):
     entries = _sql_entries(repo)
 
     def _all_error(misses, texts_, dialect, jobs, on_result=parallel._noop_tick):
-        return {e.path: (None, None, "boom") for e in misses}
+        return {parallel.file_id(e): (None, None, "boom") for e in misses}
 
     monkeypatch.setattr(parallel, "_run_pool", _all_error)
     graph = LineageGraph()
@@ -527,7 +527,7 @@ def test_on_file_tick_per_merge(tmp_path: Path, monkeypatch):
     def _reversed_results(misses, texts_, dialect, jobs, on_result=parallel._noop_tick):
         out: dict = {}
         for e in reversed(misses):
-            out[e.path] = parallel._parse_one_serial(e, texts_[e.path], dialect)
+            out[parallel.file_id(e)] = parallel._parse_one_serial(e, texts_[parallel.file_id(e)], dialect)
         return out
 
     monkeypatch.setattr(parallel, "_run_pool", _reversed_results)
@@ -557,7 +557,7 @@ def test_pool_progress_ticks_during_pool_phase(tmp_path: Path, monkeypatch):
     def _fake_pool(misses, texts_, dialect, jobs, on_result=parallel._noop_tick):
         out: dict = {}
         for e in misses:  # tick per result, like the real executor.map loop
-            out[e.path] = parallel._parse_one_serial(e, texts_[e.path], dialect)
+            out[parallel.file_id(e)] = parallel._parse_one_serial(e, texts_[parallel.file_id(e)], dialect)
             on_result(e.path)
         return out
 

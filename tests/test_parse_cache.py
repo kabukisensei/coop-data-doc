@@ -19,6 +19,7 @@ from coop_data_doc.parsers.parse_cache import (
     CACHE_VERSION,
     ParseCache,
     cache_key,
+    cache_path,
     file_sha256,
 )
 from coop_data_doc.parsers.sql_objects import parse_sql_objects
@@ -362,7 +363,8 @@ def test_procs_cache_entry_holds_pristine_node_not_merged(tmp_path: Path):
     # the graph node merged the earlier stub (existing display_name wins)...
     assert graph.nodes["stored_proc:dbo.load_thing"].display_name == "LOAD_THING"
     # ...but the cached contribution holds the pristine node with its own flags
-    key = cache_key("tsql", b_text, "procs", "b_def.sql")
+    # the key names the repo as well as the path (#76: two repos can share a path)
+    key = cache_key("tsql", b_text, "procs", cache_path(next(e for e in entries if e.path == "b_def.sql")))
     cached_node = cache.entries[key].nodes["stored_proc:dbo.load_thing"]
     assert cached_node["display_name"] == "Load_Thing"
     assert cached_node["metadata"]["dynamic_sql_untraced"] is True

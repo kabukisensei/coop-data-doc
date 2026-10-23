@@ -24,6 +24,7 @@ from coop_data_doc.parsers.parse_cache import (
     ParseCache,
     ParseCacheEntry,
     cache_key,
+    cache_path,
 )
 from coop_data_doc.parsers.sql_common import (
     _IDENT,
@@ -565,7 +566,7 @@ def parse_sql_objects(
         if on_file:
             on_file(entry.path)
         text = read_sql_file(entry, warnings, read_cache)
-        key = cache_key(dialect, text, "objects", entry.path) if parse_cache is not None else ""
+        key = cache_key(dialect, text, "objects", cache_path(entry)) if parse_cache is not None else ""
         cached = None if (parse_cache is None or no_parse_cache) else parse_cache.get(key)
         if cached is not None:
             _replay_entry(graph, cached, warnings)
