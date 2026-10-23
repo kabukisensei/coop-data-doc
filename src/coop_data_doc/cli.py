@@ -1176,15 +1176,9 @@ def lineage(object_name: str, column_name: str | None, config_path: str | None, 
             sources = col_lineage.get(curr_col)
 
             if not sources:
-                # Check if an upstream stored procedure populates this column
-                upstreams = graph.upstream(curr_nid, depth=1)
-                for up_id in upstreams:
-                    up_node = graph.nodes.get(up_id)
-                    if up_node and "dml_column_lineage" in up_node.metadata:
-                        dml_lineage = up_node.metadata["dml_column_lineage"]
-                        if curr_nid in dml_lineage and curr_col in dml_lineage[curr_nid]:
-                            sources = dml_lineage[curr_nid][curr_col]
-                            break
+                # A table has no column_lineage of its own: the procs/triggers that
+                # load it do. Union every writer's mapping (#78), never the first.
+                sources = graph.dml_column_sources(curr_nid, curr_col) or None
 
             if sources:
                 upstreams = graph.upstream(curr_nid, depth=2)

@@ -48,11 +48,15 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from coop_data_doc import __version__
 from coop_data_doc.config import ParseWarning
+
+if TYPE_CHECKING:
+    from coop_data_doc.crawler import FileEntry
 
 # Bump when the cached shape or the merge semantics change so old caches are
 # ignored rather than mis-replayed. Independent of the tool version (which is
@@ -91,6 +95,16 @@ def file_sha256(text: str) -> str:
     already folded in.
     """
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def cache_path(entry: FileEntry) -> str:
+    """The ``path`` a file's cache key carries: ``<repo_key>/<repo-relative path>``.
+
+    Two configured repos can hold a file at the same relative path (#76); the
+    repo key keeps their entries apart so one never replays the other's
+    contribution (a contribution carries its own repo in evidence/source_file).
+    """
+    return f"{entry.repo_key}/{entry.path}"
 
 
 def cache_key(dialect: str, text: str, pass_tag: str, path: str) -> str:

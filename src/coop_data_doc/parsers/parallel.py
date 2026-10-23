@@ -43,7 +43,7 @@ from contextlib import AbstractContextManager, nullcontext
 from coop_data_doc.config import ParseWarning
 from coop_data_doc.crawler import FileEntry
 from coop_data_doc.graph.model import LineageGraph
-from coop_data_doc.parsers.parse_cache import ParseCache, ParseCacheEntry, cache_key
+from coop_data_doc.parsers.parse_cache import ParseCache, ParseCacheEntry, cache_key, cache_path
 from coop_data_doc.parsers.sql_common import parse_worker_both_passes
 from coop_data_doc.parsers.sql_objects import _replay_entry, parse_sql_objects, read_sql_file
 from coop_data_doc.parsers.sql_procs import parse_sql_procs
@@ -57,6 +57,12 @@ _MIN_FILES_FOR_POOL = 4
 # Hard cap on worker processes: more than this rarely helps SQL parsing (the
 # merge is serial) and just multiplies spawn cost / memory.
 _MAX_WORKERS = 8
+
+
+def file_id(entry: FileEntry) -> tuple[str, str]:
+    """The identity every per-file map is keyed by: ``(repo_key, path)``. The
+    repo-relative ``path`` alone is NOT unique across configured repos (#76)."""
+    return (entry.repo_key, entry.path)
 
 
 def _init_worker_logging(sqlglot_level: int) -> None:
@@ -159,21 +165,29 @@ def parse_sql_parallel(
     # see a different encoding / a mid-build edit). This mirrors the serial
     # path, which reads via parse_sql_objects (with warnings) then reuses the
     # cache for parse_sql_procs (no warnings).
-    texts: dict[str, str] = {}
+    #
+    # Every temporary map below is keyed by the file's full identity
+    # ``(repo_key, path)`` (``file_id``), never by the repo-relative path alone:
+    # two configured SQL repos can hold a file at the same relative path (issue
+    # #76: ``a/shared.sql`` and ``b/shared.sql``), and a path-keyed map let the
+    # second silently overwrite the first's text and result, dropping its
+    # objects from the graph with no warning.
+    texts: dict[tuple[str, str], str] = {}
     for entry in entries:
-        texts[entry.path] = read_sql_file(entry, warnings, read_cache)
+        texts[file_id(entry)] = read_sql_file(entry, warnings, read_cache)
 
     # Partition into cache hits (replay in-parent) and misses (dispatch to the
     # pool). Keyed per pass because the two passes have distinct cache keys.
     misses: list[FileEntry] = []
-    obj_keys: dict[str, str] = {}
-    proc_keys: dict[str, str] = {}
+    obj_keys: dict[tuple[str, str], str] = {}
+    proc_keys: dict[tuple[str, str], str] = {}
     for entry in entries:
-        text = texts[entry.path]
-        obj_keys[entry.path] = cache_key(dialect, text, "objects", entry.path)
-        proc_keys[entry.path] = cache_key(dialect, text, "procs", entry.path)
-        obj_hit = None if no_parse_cache else parse_cache.get(obj_keys[entry.path])
-        proc_hit = None if no_parse_cache else parse_cache.get(proc_keys[entry.path])
+        fid = file_id(entry)
+        text = texts[fid]
+        obj_keys[fid] = cache_key(dialect, text, "objects", cache_path(entry))
+        proc_keys[fid] = cache_key(dialect, text, "procs", cache_path(entry))
+        obj_hit = None if no_parse_cache else parse_cache.get(obj_keys[fid])
+        proc_hit = None if no_parse_cache else parse_cache.get(proc_keys[fid])
         # A file is a miss unless BOTH passes are cached (both are stored
         # together on a serial miss, so this is all-or-nothing in practice).
         if obj_hit is None or proc_hit is None:
@@ -182,7 +196,7 @@ def parse_sql_parallel(
     # Dispatch ONLY the misses to the pool; try/except the whole pool lifecycle
     # so any bootstrap failure (no fork/spawn support, restricted sandbox,
     # pickling error) degrades to a serial re-parse of the misses.
-    results: dict[str, tuple[dict | None, dict | None, str | None]] = {}
+    results: dict[tuple[str, str], tuple[dict | None, dict | None, str | None]] = {}
     if misses:
         with pool_progress(len(misses)) if pool_progress is not None else nullcontext() as pool_tick:
             tick = pool_tick if pool_tick is not None else _noop_tick
@@ -192,7 +206,7 @@ def parse_sql_parallel(
                 # graphs so we still populate the cache + get the entries. Keeps the
                 # deterministic sorted merge below unchanged.
                 for entry in misses:
-                    results[entry.path] = _parse_one_serial(entry, texts[entry.path], dialect)
+                    results[file_id(entry)] = _parse_one_serial(entry, texts[file_id(entry)], dialect)
                     tick(entry.path)
             else:
                 results = pool_results
@@ -214,7 +228,7 @@ def parse_sql_parallel(
             entry,
             warnings,
             results,
-            cached_key=obj_keys[entry.path],
+            cached_key=obj_keys[file_id(entry)],
             worker_index=0,
             parse_cache=parse_cache,
             count=True,
@@ -226,7 +240,7 @@ def parse_sql_parallel(
             entry,
             warnings,
             results,
-            cached_key=proc_keys[entry.path],
+            cached_key=proc_keys[file_id(entry)],
             worker_index=1,
             parse_cache=parse_cache,
             count=False,
@@ -239,7 +253,7 @@ def _merge_pass(
     graph: LineageGraph,
     entry: FileEntry,
     warnings: list[ParseWarning],
-    results: dict[str, tuple[dict | None, dict | None, str | None]],
+    results: dict[tuple[str, str], tuple[dict | None, dict | None, str | None]],
     *,
     cached_key: str,
     worker_index: int,
@@ -253,7 +267,7 @@ def _merge_pass(
     objects pass so the hit/miss counters count each unique file once (matching
     the serial parsers). A worker error degrades the file to a warning on the
     objects pass (emitted once) and contributes nothing on either pass."""
-    result = results.get(entry.path)
+    result = results.get(file_id(entry))
     if result is not None:
         obj_dump, proc_dump, error = result
         if error is not None:
@@ -290,14 +304,17 @@ def _noop_tick(*_args: object, **_kwargs: object) -> None:
 
 def _run_pool(
     misses: list[FileEntry],
-    texts: dict[str, str],
+    texts: dict[tuple[str, str], str],
     dialect: str,
     jobs: int,
     on_result: Callable[..., None] = _noop_tick,
-) -> dict[str, tuple[dict | None, dict | None, str | None]] | None:
+) -> dict[tuple[str, str], tuple[dict | None, dict | None, str | None]] | None:
     """Fan the miss files out to a ProcessPoolExecutor, returning
-    ``{path: (objects_dump, procs_dump, error)}`` or ``None`` if the pool could
-    not even be created (caller then falls back to serial).
+    ``{(repo_key, path): (objects_dump, procs_dump, error)}`` or ``None`` if the
+    pool could not even be created (caller then falls back to serial).
+    ``executor.map`` yields results in submission order, so each result is
+    paired with its ``FileEntry`` by position (the worker only echoes the
+    repo-relative path, which two repos can share).
 
     ``on_result`` (display-only) is ticked once per file as each
     ``executor.map`` result arrives — submission (= sorted miss) order.
@@ -311,7 +328,7 @@ def _run_pool(
     from concurrent.futures import ProcessPoolExecutor
 
     workers = min(jobs, _MAX_WORKERS, len(misses))
-    payloads = [(entry.model_dump(), texts[entry.path], dialect) for entry in misses]
+    payloads = [(entry.model_dump(), texts[file_id(entry)], dialect) for entry in misses]
     # Capture the parent's effective sqlglot level HERE (in the parent process)
     # so the workers inherit it — a fresh worker's logging is unconfigured and
     # would otherwise flood stderr with sqlglot fallback WARNINGs (issue #23).
@@ -327,9 +344,11 @@ def _run_pool(
         return None
     try:
         with executor:
-            results: dict[str, tuple[dict | None, dict | None, str | None]] = {}
-            for path, obj_dump, proc_dump, error in executor.map(parse_worker_both_passes, payloads):
-                results[path] = (obj_dump, proc_dump, error)
+            results: dict[tuple[str, str], tuple[dict | None, dict | None, str | None]] = {}
+            for entry, (path, obj_dump, proc_dump, error) in zip(
+                misses, executor.map(parse_worker_both_passes, payloads), strict=True
+            ):
+                results[file_id(entry)] = (obj_dump, proc_dump, error)
                 on_result(path)
         return results
     except Exception as exc:  # noqa: BLE001 — a pool that dies mid-run => serial
