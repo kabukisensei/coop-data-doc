@@ -134,4 +134,4 @@ config/output changes.
 
 Publishing is automated via trusted publishing (`.github/workflows/publish.yml`):
 push a matching tag — `git tag vX.Y.Z && git push origin vX.Y.Z` — and the release
-builds and uploads to PyPI on its own (no tokens).
+builds and uploads to PyPI on its own (no tokens). After the release is published, the workflow calls coop-website's `sync-release.yml`, which opens the site's sync pull request (badge, pins, changelog) for review; it needs a `COOP_WEBSITE_TOKEN` secret in this repository, and without one it prints the command to run by hand.

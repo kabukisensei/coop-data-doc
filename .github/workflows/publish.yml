@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -15,6 +17,7 @@ jobs:
       - name: Verify the tag matches the package version
         # guards against tagging/publishing the wrong commit: the pushed v* tag
         # must equal __version__ (single source of truth) or the release stops.
+        id: version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           ver="$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/coop_data_doc/__init__.py').read_text()).group(1))")"
@@ -23,6 +26,7 @@ jobs:
             echo "::error::Tag v$tag does not match package version $ver — bump __version__ or retag."
             exit 1
           fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
       - run: pip install build
       - run: python -m build
       - name: Smoke-test the wheel
@@ -63,3 +67,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+
+  website:
+    # Open the coop-website pull request that moves the site's badges, pins and
+    # changelog to this release (coop-website/.github/workflows/sync-release.yml;
+    # needs the COOP_WEBSITE_TOKEN secret here, else it prints the command to run
+    # by hand and succeeds). A person reviews and merges that PR and pulls on the VPS.
+    needs: [release]
+    uses: kabukisensei/coop-website/.github/workflows/sync-release.yml@main
+    with:
+      product: coop-data-doc
+      version: ${{ needs.build.outputs.version }}
+    secrets: inherit
