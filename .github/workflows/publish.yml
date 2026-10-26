@@ -69,13 +69,16 @@ jobs:
         run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
 
   website:
-    # Open the coop-website pull request that moves the site's badges, pins and
-    # changelog to this release (coop-website/.github/workflows/sync-release.yml;
-    # needs the COOP_WEBSITE_TOKEN secret here, else it prints the command to run
-    # by hand and succeeds). A person reviews and merges that PR and pulls on the VPS.
+    # The coop-website sync (its .github/workflows/sync-release.yml, which moves the
+    # site's badges, pins and changelog and opens the PR) is a reusable workflow in a
+    # PRIVATE repository, and GitHub lets only private repositories call those; this
+    # repository is public, so a `uses:` of it fails at planning and the tag's run
+    # never starts. This job prints the command a person runs in a coop-website clone.
     needs: [build, release]
-    uses: kabukisensei/coop-website/.github/workflows/sync-release.yml@main
-    with:
-      product: coop-data-doc
-      version: ${{ needs.build.outputs.version }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say how to sync the site
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          echo "::warning::sync the site by hand in a coop-website clone:  bash scripts/sync-release.sh coop-data-doc $VERSION"
