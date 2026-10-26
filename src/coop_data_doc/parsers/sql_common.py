@@ -176,8 +176,46 @@ def decode_text(data: bytes) -> str:
 
 
 def split_batches(sql_text: str) -> list[str]:
-    """Split a script on GO separators into trimmed, non-empty batches."""
-    return [batch.strip() for batch in GO_RE.split(strip_bom(sql_text)) if batch.strip()]
+    """Split a script on GO separators into trimmed, non-empty batches.
+
+    A GO line counts only in plain code, the way SSMS and sqlcmd read it: one
+    inside a block or line comment, a string literal or a bracket-quoted name is
+    that comment's, literal's or name's text and stays in its batch (issue #81:
+    a `GO` inside an archived ``/* ... */`` block used to split the comment open
+    and the DDL after it became a phantom object). The separators are found on
+    a length-preserving blank of the text (``blank_comments_and_strings``, with
+    bracketed names blanked too), and the original text is sliced, so every
+    batch keeps its own bytes.
+    """
+    text = strip_bom(sql_text)
+    masked = _blank_bracketed(blank_comments_and_strings(text))
+    batches: list[str] = []
+    start = 0
+    for match in GO_RE.finditer(masked):
+        batches.append(text[start : match.start()])
+        start = match.end()
+    batches.append(text[start:])
+    return [batch.strip() for batch in batches if batch.strip()]
+
+
+def _blank_bracketed(sql: str) -> str:
+    """``[...]`` names overwritten with spaces (newlines kept): a line reading
+    ``GO`` inside one is the name's text, not a separator."""
+    if "[" not in sql:
+        return sql
+    chars = list(sql)
+    i, n = 0, len(sql)
+    while i < n:
+        if sql[i] == "[":
+            j = sql.find("]", i + 1)
+            end = n if j == -1 else j + 1
+            for k in range(i, end):
+                if chars[k] != "\n":
+                    chars[k] = " "
+            i = end
+        else:
+            i += 1
+    return "".join(chars)
 
 
 def parse_batch(

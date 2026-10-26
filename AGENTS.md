@@ -77,7 +77,7 @@ All commands exit with these codes:
 
 ### Commands
 
-- **`coop-data-doc impact`**: Computes the downstream impact of changed nodes against a baseline graph (either via `--baseline PATH` or `--git REF`). Can also seed impact from specific files using `--files`. Outputs JSON or markdown.
+- **`coop-data-doc impact`**: Computes the downstream impact of changed nodes against a baseline graph (either via `--baseline PATH` or `--git REF`). Can also seed impact from specific files using `--files`. Outputs JSON or markdown. With `--git REF` the committed graph is read at the built graph's path relative to the git worktree that holds the config (so a config below the worktree root, or an output folder beside it, reads its own baseline); an output folder outside that worktree is a clear error.
   - JSON shape: `{"<node_id>": ["<downstream_node_id_1>", "<downstream_node_id_2>", ...]}`. It maps seeded/changed node IDs to their downstream node IDs.
 
 

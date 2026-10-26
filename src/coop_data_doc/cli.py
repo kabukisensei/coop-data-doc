@@ -1993,7 +1993,26 @@ def impact(
     if baseline_path:
         old_graph = LineageGraph.model_validate(json.loads(Path(baseline_path).read_text(encoding="utf-8")))
     elif git_ref:
-        rel_path = current_graph_path.relative_to(config.base_dir).as_posix()
+        # `git show REF:PATH` names PATH from the worktree root whatever the cwd,
+        # while the output folder is config-relative (issue #82): resolve the
+        # graph against the worktree that holds the config, never against the
+        # config folder, so a nested project reads its own committed graph and
+        # a sibling output folder (`../data-docs`) still works.
+        try:
+            toplevel = subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"], cwd=config.base_dir, stderr=subprocess.DEVNULL
+            )
+        except (subprocess.CalledProcessError, OSError):
+            raise click.ClickException(
+                f"{config.base_dir} is not inside a git worktree, so --git {git_ref} has no baseline to read"
+            )
+        worktree = Path(toplevel.decode("utf-8").strip()).resolve()
+        try:
+            rel_path = current_graph_path.resolve().relative_to(worktree).as_posix()
+        except ValueError:
+            raise click.ClickException(
+                f"the built graph {current_graph_path} is outside the git worktree {worktree}, so --git {git_ref} cannot read its committed baseline"
+            )
         try:
             old_json_bytes = subprocess.check_output(
                 ["git", "show", f"{git_ref}:{rel_path}"], cwd=config.base_dir, stderr=subprocess.DEVNULL
