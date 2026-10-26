@@ -1038,3 +1038,53 @@ def test_module_without_body_as_names_its_kind(tmp_path: Path):
     assert [(w.category, w.message) for w in warnings] == [
         ("proc_body_not_found", "CREATE TRIGGER dbo.tr_cut: no body AS found — batch skipped")
     ]
+
+
+def test_go_inside_a_comment_or_literal_is_not_a_batch_break(tmp_path: Path):
+    # issue #81: GO_RE.split ran on the RAW text, so a `GO` line inside an archived
+    # /* ... */ block cut the comment open and the CREATE TABLE after it parsed as a
+    # standalone batch: a phantom object (hard rule 4). The splitter is lexical now.
+    from coop_data_doc.parsers.sql_common import split_batches
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    archived = (
+        "/* Retired example, not executable:\n"
+        "GO\n"
+        "CREATE TABLE dbo.retired_example (id INT);\n"
+        "GO\n"
+        "*/\n"
+        "GO\n"
+        "CREATE TABLE dbo.live_table (id INT);\n"
+        "GO\n"
+    )
+    (repo / "archive.sql").write_text(archived, encoding="utf-8")
+    (repo / "crlf.sql").write_bytes(
+        archived.replace("live_table", "crlf_table").replace("\n", "\r\n").encode("utf-8")
+    )
+    (repo / "literal.sql").write_text(
+        "CREATE VIEW dbo.v_label AS\nSELECT N'first\nGO\nlast' AS label, id FROM dbo.live_table;\nGO\n"
+        "CREATE VIEW dbo.v_bracket AS SELECT 1 AS [odd\nGO\nname];\nGO\n"
+        "-- a line comment, then a real separator\nGO\nCREATE VIEW dbo.v_after AS SELECT id FROM dbo.live_table;\n",
+        encoding="utf-8",
+    )
+    config = Config(repos={"sql": RepoConfig(path=str(repo), include=["**/*.sql"])})
+    inventory, _ = crawl(config)
+    graph = LineageGraph()
+    parse_sql_objects(inventory.by_kind(FileKind.SQL_FILE), graph)
+    assert "gold_table:dbo.retired_example" not in graph.nodes
+    assert {
+        "gold_table:dbo.live_table",
+        "gold_table:dbo.crlf_table",
+        "view:dbo.v_label",
+        "view:dbo.v_bracket",
+        "view:dbo.v_after",
+    } <= set(graph.nodes)
+    assert ("view:dbo.v_label", "gold_table:dbo.live_table", "reads") in edge_keys(graph)
+    # The batches keep their own bytes: the whole literal, nested comments included.
+    assert split_batches("CREATE VIEW dbo.v AS SELECT 'it''s\nGO\nhere' AS x") == [
+        "CREATE VIEW dbo.v AS SELECT 'it''s\nGO\nhere' AS x"
+    ]
+    nested = "CREATE VIEW dbo.v AS /* a /* b\nGO\n */ c\nGO\n */ SELECT 1"
+    assert split_batches(nested) == [nested]
+    assert split_batches("SELECT 1\nGO\nSELECT 2\ngo;\nSELECT 3") == ["SELECT 1", "SELECT 2", "SELECT 3"]

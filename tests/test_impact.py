@@ -292,3 +292,61 @@ def test_impact_markdown(tmp_path: pathlib.Path):
     )
     assert res.exit_code == 0
     assert "### sales.v_orders_star" in res.output
+
+
+def _git(cwd: pathlib.Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _fixture_worktree(root: pathlib.Path, output_dir: str = "./data-docs") -> tuple[pathlib.Path, Node, Node]:
+    """A git worktree whose coop-data-doc project sits BELOW the root (issue #82), with
+    a distractor graph at the root-level data-docs/ that holds only `b`."""
+    project = root / "nested project"
+    project.mkdir(parents=True)
+    (project / "coop-data-doc.yml").write_text(
+        f"project_name: fixture\nrepos: {{}}\noutput:\n  dir: {output_dir}\n", encoding="utf-8"
+    )
+    a, b = _node("a"), _node("b")
+    graph_path = (project / output_dir / "graph.json").resolve()
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    to_json_file(_graph([a, b], [_edge("a", "b")]), graph_path)
+    (root / "data-docs").mkdir()
+    to_json_file(
+        _graph([b]), root / "data-docs/graph.json"
+    )  # the distractor: equal to the CURRENT nested graph
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "test")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "baseline")
+    to_json_file(_graph([b]), graph_path)  # `a` removed since the commit
+    return project, a, b
+
+
+def test_impact_git_baseline_below_the_worktree_root(tmp_path: pathlib.Path):
+    root = tmp_path / "wörk tree"
+    project, a, b = _fixture_worktree(root)
+    # From the worktree root, from the project folder, and from an unrelated cwd.
+    for cwd in (root, project, tmp_path):
+        result = run(["impact", "--config", str(project / "coop-data-doc.yml"), "--git", "HEAD"], cwd)
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == {a.id: [b.id]}, (
+            "the nested project's own baseline, not the root-level distractor"
+        )
+
+
+def test_impact_git_baseline_sibling_output_folder(tmp_path: pathlib.Path):
+    root = tmp_path / "work"
+    project, a, b = _fixture_worktree(root, output_dir="../data-docs-nested")
+    result = run(["impact", "--config", str(project / "coop-data-doc.yml"), "--git", "HEAD"], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {a.id: [b.id]}
+
+
+def test_impact_git_baseline_outside_the_worktree_is_a_clear_error(tmp_path: pathlib.Path):
+    root = tmp_path / "work"
+    project, _, _ = _fixture_worktree(root, output_dir="../../outside-docs")
+    result = run(["impact", "--config", str(project / "coop-data-doc.yml"), "--git", "HEAD"], tmp_path)
+    assert result.exit_code == 1, result.output
+    assert "outside the git worktree" in result.output
+    assert "Traceback" not in result.output
