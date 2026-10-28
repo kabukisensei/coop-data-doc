@@ -27,7 +27,7 @@ from coop_data_doc.graph.model import (
     normalize_identifier,
 )
 from coop_data_doc.parsers.dax import link_calculated_tables, link_measures
-from coop_data_doc.parsers.mcode import extract_source
+from coop_data_doc.parsers.mcode import extract_source, extract_sources
 from coop_data_doc.parsers.sql_common import collect_source_tables, decode_text, parse_batch
 
 _TABLE_RE = re.compile(r"^table\s+(.+?)\s*$")
@@ -201,33 +201,39 @@ def _mark_partition_unresolved(
 def _attach_partition_source(
     table_node: Node, m_text: str, source_file: str, warnings: list[ParseWarning]
 ) -> None:
-    ref, native_sql = extract_source(m_text)
+    refs, native_sql = extract_sources(m_text)
     if native_sql:
         _attach_native_sql(table_node, native_sql, source_file, warnings)
-        return
-    if ref is not None and ref.raw_kind == "static":
+        # A query that also navigates to a table (a native query joined to a
+        # navigation) keeps every source: the navigation refs are recorded below.
+    kinds = {ref.raw_kind for ref in refs}
+    if kinds == {"static"}:
         # inline/calculation/parameter table — no database lineage by design
         table_node.metadata["partition_static"] = True
         return
-    if ref is not None and ref.raw_kind == "as_model":
+    if kinds == {"as_model"}:
         # DirectQuery chain to another semantic model — resolved later, against
         # the model graph (not SQL), by link_composite_models.
-        source = {"model": ref.object_name}
+        source = {"model": refs[0].object_name}
         sources = table_node.metadata.setdefault("model_sources", [])
         if source not in sources:
             sources.append(source)
         table_node.metadata["model_source"] = source
         return
-    if ref is not None and ref.raw_kind != "native_query":
+    expression_hash = hashlib.sha256(m_text.encode("utf-8")).hexdigest()
+    for ref in refs:
+        # Every navigation source the result depends on (a join or append of two
+        # tables gives two, #88); each is resolved separately by the linker.
         _record_partition_source(
             table_node,
             {
                 "schema": ref.schema_name,
                 "object": ref.object_name,
                 "raw_kind": ref.raw_kind,
-                "expression_hash": hashlib.sha256(m_text.encode("utf-8")).hexdigest(),
+                "expression_hash": expression_hash,
             },
         )
+    if refs or native_sql:
         return
     _mark_partition_unresolved(table_node, "M source not traceable", source_file, warnings)
 
