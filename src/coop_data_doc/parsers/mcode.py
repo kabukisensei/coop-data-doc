@@ -130,13 +130,130 @@ def _resolve(match: re.Match | None, bindings: dict[str, str]) -> str | None:
     return bindings.get(match.group(2))  # identifier -> bound literal (or None)
 
 
-def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
-    """Return (source-ref-or-None, raw SQL strings from NativeQuery calls)."""
+_IDENT_RE = re.compile(r'#"((?:[^"]|"")*)"|\b([A-Za-z_][\w.]*)')
+
+
+def _let_steps(text: str) -> tuple[dict[str, str], str] | None:
+    """A ``let … in …`` expression as ({step name: step expression}, the final
+    expression), or None when the text is not one (or cannot be split). Steps
+    are cut at top-level commas and the final expression at the top-level
+    ``in``; string literals and ``#"quoted"`` names are skipped whole so a comma
+    or an ``in`` inside them never cuts."""
+    stripped = text.strip()
+    head = re.match(r"let\b", stripped)
+    if head is None:
+        return None
+    body = stripped[head.end() :]
+    depth, i, n, start = 0, 0, len(body), 0
+    parts: list[str] = []
+    final: str | None = None
+    while i < n:
+        ch = body[i]
+        if ch == '"' or body.startswith('#"', i):
+            j = i + (2 if ch == "#" else 1)
+            while j < n:
+                if body[j] == '"':
+                    if j + 1 < n and body[j + 1] == '"':
+                        j += 2
+                        continue
+                    break
+                j += 1
+            i = min(j + 1, n)
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and ch == ",":
+            parts.append(body[start:i])
+            start = i + 1
+        elif (
+            depth == 0
+            and body.startswith("in", i)
+            and (i == 0 or not (body[i - 1].isalnum() or body[i - 1] in "_."))
+            and (i + 2 >= n or not (body[i + 2].isalnum() or body[i + 2] in "_."))
+        ):
+            parts.append(body[start:i])
+            final = body[i + 2 :]
+            break
+        i += 1
+    if final is None or depth != 0:
+        return None
+    steps: dict[str, str] = {}
+    for part in parts:
+        item = part.strip()
+        if not item:
+            continue
+        if item.startswith('#"'):
+            close = _IDENT_RE.match(item)
+            if close is None:
+                return None
+            name, rest = close.group(1).replace('""', '"'), item[close.end() :]
+        else:
+            name, _eq, rest = item.partition("=")
+            name, rest = name.strip(), "=" + rest
+            if not re.fullmatch(r"[A-Za-z_][\w.]*", name):
+                return None
+        rest = rest.lstrip()
+        if not rest.startswith("="):
+            return None
+        steps[name] = rest[1:]
+    return steps, final
+
+
+def _identifiers(expression: str) -> list[str]:
+    """Every identifier token in an M expression, outside its string literals."""
+    found: list[str] = []
+    i, n = 0, len(expression)
+    while i < n:
+        if expression[i] == '"':
+            j = i + 1
+            while j < n:
+                if expression[j] == '"':
+                    if j + 1 < n and expression[j + 1] == '"':
+                        j += 2
+                        continue
+                    break
+                j += 1
+            i = min(j + 1, n)
+            continue
+        match = _IDENT_RE.match(expression, i)
+        if match is None:
+            i += 1
+            continue
+        found.append(match.group(1).replace('""', '"') if match.group(1) is not None else match.group(2))
+        i = match.end()
+    return found
+
+
+def _reachable_text(text: str) -> str | None:
+    """The step expressions the final ``in`` expression depends on, joined in
+    step order, or None when the text is not a ``let`` the splitter reads. A
+    step the result never uses (a leftover navigation, a renamed source) is
+    not a dependency of the table, so its records are left out (#88)."""
+    parsed = _let_steps(text)
+    if parsed is None:
+        return None
+    steps, final = parsed
+    wanted: set[str] = set()
+    pending = [name for name in _identifiers(final) if name in steps]
+    while pending:
+        name = pending.pop()
+        if name in wanted:
+            continue
+        wanted.add(name)
+        pending.extend(ref for ref in _identifiers(steps[name]) if ref in steps and ref not in wanted)
+    return "\n".join(expression for name, expression in steps.items() if name in wanted)
+
+
+def extract_sources(m_expression: str) -> tuple[list[SourceRef], list[str]]:
+    """Every source the M expression loads: (source refs, raw SQL strings from
+    native queries). A navigation source is one ``Source{[Schema=…, Item=…]}``
+    record the result depends on; a join or append of two database tables
+    gives two refs (#88). ``static`` and ``as_model`` are one ref each."""
     text = strip_m_comments(m_expression)
 
     native_sql = [m.group(1).replace('""', '"') for m in _NATIVE_QUERY_RE.finditer(text)]
-    if native_sql:
-        return SourceRef(schema_name="", object_name="", raw_kind="native_query"), native_sql
 
     # `let` variable bindings: shared by the Query= option below (a let-bound
     # query string) and the navigation records further down.
@@ -144,7 +261,6 @@ def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
 
     # Sql.Database(server, db, [Query="…"]) — native SQL in the connector's
     # options record (issue #36). Same downstream handling as Value.NativeQuery.
-    option_sql: list[str] = []
     for call in _SQL_DATABASE_CALL_RE.finditer(text):
         args = _call_args(text, call.end() - 1)
         query = _QUERY_OPTION_RE.search(args)
@@ -154,9 +270,7 @@ def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
             query.group(1).replace('""', '"') if query.group(1) is not None else bindings.get(query.group(2))
         )
         if sql:
-            option_sql.append(sql)
-    if option_sql:
-        return SourceRef(schema_name="", object_name="", raw_kind="native_query"), option_sql
+            native_sql.append(sql)
 
     # composite/DirectQuery chain to another semantic model. The string-aware
     # comment strip keeps the `powerbi://…` connection URL intact, so matching
@@ -164,36 +278,52 @@ def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
     # longer be mistaken for the live source.
     as_match = _AS_DATABASE_RE.search(text)
     if as_match:
-        return SourceRef(schema_name="", object_name=as_match.group(1), raw_kind="as_model"), []
+        return [SourceRef(schema_name="", object_name=as_match.group(1), raw_kind="as_model")], native_sql
 
     # Sql.Database navigation — works for quoted literals AND for the common
     # PBIP template that binds the schema/table to `let` variables first.
     # Anchor Schema=/Item= to an actual `{[ ... ]}` navigation record so a
-    # `let` step named Schema/Item can't poison the result.
-    for record in _NAV_RECORD_RE.findall(text):
+    # `let` step named Schema/Item can't poison the result. Only the records
+    # the final expression depends on count; outside a readable `let`, every
+    # record in the text does (the pre-#88 reading, first record included).
+    reachable = _reachable_text(text)
+    refs: list[SourceRef] = []
+    for record in _NAV_RECORD_RE.findall(text if reachable is None else reachable):
         schema = _resolve(_NAV_SCHEMA_RE.search(record), bindings)
         item = _resolve(_NAV_ITEM_RE.search(record), bindings)
         if schema and item:
-            return (
-                SourceRef(schema_name=schema.lower(), object_name=item.lower(), raw_kind="sql_database"),
-                [],
-            )
+            ref = SourceRef(schema_name=schema.lower(), object_name=item.lower(), raw_kind="sql_database")
+            if ref not in refs:
+                refs.append(ref)
+    if refs:
+        return refs, native_sql
+    if native_sql:
+        return [], native_sql
 
     if _LAKEHOUSE_RE.search(text):
         names = _NAME_NAV_RE.findall(text)
         if names:
-            return (
+            return [
                 SourceRef(
                     schema_name=names[-2].lower() if len(names) >= 2 else "",
                     object_name=names[-1].lower(),
                     raw_kind="lakehouse",
-                ),
-                [],
-            )
+                )
+            ], []
 
     # inline/static table (e.g. a DAX calculation or parameter table) — it has
     # no database source by design, so it's resolved, not "unresolved".
     if _STATIC_RE.search(text):
-        return SourceRef(schema_name="", object_name="", raw_kind="static"), []
+        return [SourceRef(schema_name="", object_name="", raw_kind="static")], []
 
-    return None, []
+    return [], []
+
+
+def extract_source(m_expression: str) -> tuple[SourceRef | None, list[str]]:
+    """Return (source-ref-or-None, raw SQL strings from NativeQuery calls): the
+    one-source view of extract_sources. Native SQL wins (its tables are read
+    from the SQL); else the first navigation source, as before #88."""
+    refs, native_sql = extract_sources(m_expression)
+    if native_sql:
+        return SourceRef(schema_name="", object_name="", raw_kind="native_query"), native_sql
+    return (refs[0] if refs else None), []

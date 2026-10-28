@@ -1432,3 +1432,160 @@ def test_fully_ambiguous_binding_warns_and_marks_report():
     assert ("report:r1", "pbi_table:b.date", "visualizes") not in keys
     report = g.nodes["report:r1"]
     assert report.metadata.get("unresolved_bindings") == [_binding("date", "year")]
+
+
+# --- issue #88: a joined or appended query keeps every navigation source ----
+
+_JOIN_M = (
+    "let\n"
+    '    Source = Sql.Database("server", "db"),\n'
+    '    Orders = Source{[Schema="sales", Item="Orders"]}[Data],\n'
+    '    Customers = Source{[Schema="sales", Item="Customers"]}[Data],\n'
+    '    Joined = Table.NestedJoin(Orders, {"CustomerId"}, Customers,\n'
+    '        {"CustomerId"}, "Customer", JoinKind.LeftOuter)\n'
+    "in Joined"
+)
+
+
+def _m_table_node(m_text: str, tmdl_name: str = "joined"):
+    """Parse one TMDL table whose single M partition is ``m_text``."""
+    from coop_data_doc.parsers.tmdl import parse_table_file
+
+    class _E:
+        path = f"M.SemanticModel/definition/tables/{tmdl_name}.tmdl"
+        repo_key = "powerbi"
+
+    g = LineageGraph()
+    body = "\n".join("\t\t\t" + line for line in m_text.splitlines())
+    tmdl = f"table {tmdl_name}\n\tpartition {tmdl_name} = m\n\t\tmode: import\n\t\tsource =\n{body}\n"
+    warnings = parse_table_file(tmdl, "M", "semantic_model:m", _E(), g)
+    return g.nodes[f"pbi_table:m.{tmdl_name}"], warnings
+
+
+def _sources(node):
+    return [(s["schema"], s["object"], s["raw_kind"]) for s in node.metadata.get("partition_sources", [])]
+
+
+def test_mcode_join_keeps_every_navigation_source():
+    from coop_data_doc.parsers.mcode import extract_sources
+
+    refs, native = extract_sources(_JOIN_M)
+    assert [(r.schema_name, r.object_name, r.raw_kind) for r in refs] == [
+        ("sales", "orders", "sql_database"),
+        ("sales", "customers", "sql_database"),
+    ]
+    assert native == []
+    # The one-source view is unchanged: the first navigation source.
+    ref, _ = extract_source(_JOIN_M)
+    assert ref is not None and ref.object_name == "orders"
+    node, warnings = _m_table_node(_JOIN_M)
+    assert _sources(node) == [("sales", "customers", "sql_database"), ("sales", "orders", "sql_database")]
+    assert "partition_source" not in node.metadata  # several sources: never the singular field
+    assert "partition_source_unresolved" not in node.metadata
+    assert not any(w.category == "unresolved_partition_source" for w in warnings)
+
+
+def test_mcode_append_keeps_every_navigation_source_in_tmdl_and_bim(tmp_path):
+    m = (
+        "let\n"
+        '    Source = Sql.Database("server", "db"),\n'
+        '    ThisYear = Source{[Schema="sales", Item="Orders2026"]}[Data],\n'
+        '    LastYear = Source{[Schema="archive", Item="Orders2025"]}[Data],\n'
+        '    #"Appended Query" = Table.Combine({ThisYear, LastYear})\n'
+        'in #"Appended Query"'
+    )
+    node, _ = _m_table_node(m, "orders")
+    assert _sources(node) == [
+        ("archive", "orders2025", "sql_database"),
+        ("sales", "orders2026", "sql_database"),
+    ]
+    # The same M as a model.bim partition lands on the same attachment path.
+    from coop_data_doc.parsers.bim import parse_bim
+
+    model = {
+        "name": "Legacy",
+        "model": {
+            "tables": [
+                {
+                    "name": "orders",
+                    "partitions": [{"name": "orders", "source": {"type": "m", "expression": m.splitlines()}}],
+                }
+            ]
+        },
+    }
+    path = tmp_path / "legacy.bim"
+    path.write_text(json.dumps(model), encoding="utf-8")
+    g = LineageGraph()
+    warnings = parse_bim(
+        [
+            FileEntry(
+                path=path.name,
+                abs_path=str(path),
+                repo_key="powerbi",
+                kind=FileKind.BIM,
+                size=path.stat().st_size,
+            )
+        ],
+        g,
+    )
+    bim_node = g.nodes["pbi_table:legacy.orders"]
+    assert _sources(bim_node) == [
+        ("archive", "orders2025", "sql_database"),
+        ("sales", "orders2026", "sql_database"),
+    ]
+    assert not any(w.category == "unresolved_partition_source" for w in warnings)
+
+
+def test_mcode_unused_navigation_step_is_no_source():
+    from coop_data_doc.parsers.mcode import extract_sources
+
+    m = (
+        "let\n"
+        '    Source = Sql.Database("server", "db"),\n'
+        '    Leftover = Source{[Schema="sales", Item="OldOrders"]}[Data],\n'
+        '    Orders = Source{[Schema="sales", Item="Orders"]}[Data],\n'
+        "    Kept = Table.SelectRows(Orders, each [Amount] > 0)\n"
+        "in Kept"
+    )
+    refs, _ = extract_sources(m)
+    assert [(r.schema_name, r.object_name) for r in refs] == [("sales", "orders")]
+    node, _ = _m_table_node(m, "orders")
+    assert _sources(node) == [("sales", "orders", "sql_database")]
+    assert node.metadata["partition_source"] == {
+        "schema": "sales",
+        "object": "orders",
+        "raw_kind": "sql_database",
+    }
+    # A string holding a comma, an `in` or a record-looking text does not cut the steps.
+    tricky = (
+        "let\n"
+        '    Source = Sql.Database("server", "db"),\n'
+        '    Note = "a, b in {[Schema=""x"", Item=""y""]}",\n'
+        '    Orders = Source{[Schema="sales", Item="Orders"]}[Data]\n'
+        "in Orders"
+    )
+    refs, _ = extract_sources(tricky)
+    assert [(r.schema_name, r.object_name) for r in refs] == [("sales", "orders")]
+
+
+def test_mcode_native_query_joined_to_a_navigation_keeps_both_families():
+    from coop_data_doc.parsers.mcode import extract_sources
+
+    m = (
+        "let\n"
+        '    Source = Sql.Database("server", "db"),\n'
+        '    Native = Value.NativeQuery(Source, "SELECT k, v FROM sales.v_star"),\n'
+        '    Dim = Source{[Schema="sales", Item="Customers"]}[Data],\n'
+        '    Joined = Table.NestedJoin(Native, {"k"}, Dim, {"k"}, "c", JoinKind.Inner)\n'
+        "in Joined"
+    )
+    refs, native = extract_sources(m)
+    assert [(r.schema_name, r.object_name) for r in refs] == [("sales", "customers")]
+    assert native == ["SELECT k, v FROM sales.v_star"]
+    node, warnings = _m_table_node(m)
+    assert node.metadata["native_query_tables"] == ["sales.v_star"]
+    assert sorted(_sources(node)) == [
+        ("sales", "customers", "sql_database"),
+        ("sales", "v_star", "native_query"),
+    ]
+    assert not any(w.category == "unresolved_partition_source" for w in warnings)
