@@ -191,3 +191,100 @@ def test_sql_expression_change_is_visible_to_impact(tmp_path):
         after,
     )
     assert "view:dbo.result" in [node.id for node in diff_graphs(before, after).changed_nodes]
+
+
+# ---- issue #90: comment-like text inside a quoted DAX name -----------------
+
+_DAX_HYPHEN = "SUM('North--South'[Amount]) + SUM('Other'[Amount])"
+
+
+def _dax_tables_graph():
+    graph = LineageGraph()
+    for name in ("North--South", "Other"):
+        graph.add_node(
+            Node(
+                id=Node.make_id(NodeType.PBI_TABLE, "fixture", name),
+                node_type=NodeType.PBI_TABLE,
+                name=name,
+                schema_name="fixture",
+            )
+        )
+    return graph
+
+
+def test_dax_comment_marker_inside_quoted_table_name_keeps_refs():
+    from coop_data_doc.parsers.dax import extract_refs
+
+    assert extract_refs(_DAX_HYPHEN) == (set(), {"north--south", "other"})
+    assert extract_refs("SUM('A//B'[x]) + SUM('C/*D'[y]) + [M]") == ({"M"}, {"a//b", "c/*d"})
+    # a bracketed name is an identifier too, and '' / ]] escapes stay inside the name
+    assert extract_refs("SUM(T[a--b]) + [M--N] + 'Bob''s'[c]]d] + [Z]") == (
+        {"M--N", "Z"},
+        {"t", "bobs"},  # normalize_identifier drops quotes, as on table nodes
+    )
+
+
+def test_dax_real_comments_and_strings_still_ignored():
+    from coop_data_doc.parsers.dax import extract_refs
+
+    text = (
+        "SUM('Real'[x]) -- SUM('Hidden'[y]) [Gone]\n"
+        "+ SUM('After'[z]) // 'Also Hidden'[q]\n"
+        "+ IF(\"--'Fake'[f]\" = \"\", [Kept], 0) /* 'Block'[b] */"
+    )
+    assert extract_refs(text) == ({"Kept"}, {"real", "after"})
+
+
+def test_dax_quoted_table_with_hyphens_links_measure():
+    from coop_data_doc.parsers.dax import link_measures
+
+    graph = _dax_tables_graph()
+    graph.add_node(
+        Node(
+            id="measure:fixture.total",
+            node_type=NodeType.MEASURE,
+            name="total",
+            schema_name="fixture",
+            metadata={"dax": _DAX_HYPHEN},
+        )
+    )
+    assert link_measures(graph, "fixture") == []
+    assert sorted((e.source_id, e.target_id) for e in graph.edges) == [
+        ("measure:fixture.total", "pbi_table:fixture.north--south"),
+        ("measure:fixture.total", "pbi_table:fixture.other"),
+    ]
+
+
+def test_dax_quoted_table_with_hyphens_links_calculated_table():
+    from coop_data_doc.parsers.dax import link_calculated_tables
+
+    graph = _dax_tables_graph()
+    graph.add_node(
+        Node(
+            id="pbi_table:fixture.combined",
+            node_type=NodeType.PBI_TABLE,
+            name="combined",
+            schema_name="fixture",
+            metadata={"partition_calculated": True, "calculated_dax": _DAX_HYPHEN},
+        )
+    )
+    link_calculated_tables(graph, "fixture")
+    assert sorted((e.source_id, e.target_id) for e in graph.edges) == [
+        ("pbi_table:fixture.combined", "pbi_table:fixture.north--south"),
+        ("pbi_table:fixture.combined", "pbi_table:fixture.other"),
+    ]
+
+
+def test_tmdl_measure_on_quoted_table_with_hyphens(tmp_path):
+    base = "Sales.SemanticModel/definition/tables/"
+    files = {
+        "north.tmdl": "table 'North--South'\n    column Amount\n        dataType: decimal\n",
+        "other.tmdl": "table Other\n    column Amount\n        dataType: decimal\n",
+        "totals.tmdl": f"table Totals\n    measure Total = {_DAX_HYPHEN}\n",
+    }
+    graph = LineageGraph()
+    parse_tmdl([entry(tmp_path, base + name, text) for name, text in files.items()], graph)
+    assert set(graph.upstream("measure:sales.total")) == {
+        "pbi_table:sales.north--south",
+        "pbi_table:sales.other",
+    }

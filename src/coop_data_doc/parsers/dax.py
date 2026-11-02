@@ -21,7 +21,7 @@ from coop_data_doc.graph.model import (
 )
 
 _BRACKET_RE = re.compile(r"\[([^\[\]]+)\]")
-_QUOTED_TABLE_RE = re.compile(r"'([^']+)'\s*\[")
+_QUOTED_TABLE_RE = re.compile(r"'((?:[^'\n]|'')+)'\s*\[")
 _BARE_TABLE_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\[")
 
 # reserved words that can directly precede a bare '[Measure]' reference
@@ -32,7 +32,8 @@ _DAX_KEYWORDS = frozenset({"return", "var", "in", "not", "and", "or"})
 
 def _clean(dax: str) -> str:
     """Blank string literals (to '""') and remove comments via one character
-    scanner. Strings are consumed FIRST — a regex pipeline that strips '//'
+    scanner. Quoted table names and bracketed names are copied verbatim, so
+    '--' or '//' inside an identifier is never read as a comment. Strings are consumed FIRST — a regex pipeline that strips '//'
     before strings would truncate a URL literal at '//', unbalancing the
     quotes and flipping which text counts as code (losing real refs and
     leaking string contents as candidates). Doubled '""' escapes are honored.
@@ -52,6 +53,29 @@ def _clean(dax: str) -> str:
                 j += 1
             out.append('""')
             i = min(j + 1, n)
+        elif ch in "'[":
+            # A quoted table name ('North--South', doubled '' escape) or a bracketed
+            # name ([a--b], doubled ]] escape) is an identifier, not code: copy it
+            # verbatim so comment-like text inside it never starts a comment. An
+            # unterminated one is left to the ordinary character path.
+            close = "'" if ch == "'" else "]"
+            j = i + 1
+            while j < n:
+                if dax[j] == close:
+                    if j + 1 < n and dax[j + 1] == close:
+                        j += 2
+                        continue
+                    break
+                if dax[j] == "\n" or (close == "]" and dax[j] == "["):
+                    j = n
+                    break
+                j += 1
+            if j < n:
+                out.append(dax[i : j + 1])
+                i = j + 1
+            else:
+                out.append(ch)
+                i += 1
         elif dax.startswith("//", i) or dax.startswith("--", i):
             j = dax.find("\n", i)
             i = n if j == -1 else j
@@ -93,7 +117,7 @@ def extract_refs(dax: str) -> tuple[set[str], set[str]]:
         if not is_column_ref or _word_before(text, j) in _DAX_KEYWORDS:
             measures.add(match.group(1).strip())
     for match in _QUOTED_TABLE_RE.finditer(text):
-        tables.add(normalize_identifier(match.group(1)))
+        tables.add(normalize_identifier(match.group(1).replace("''", "'")))
     for match in _BARE_TABLE_RE.finditer(text):
         name = normalize_identifier(match.group(1))
         if name not in _DAX_KEYWORDS:
