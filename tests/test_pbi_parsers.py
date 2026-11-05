@@ -1589,3 +1589,153 @@ def test_mcode_native_query_joined_to_a_navigation_keeps_both_families():
         ("sales", "v_star", "native_query"),
     ]
     assert not any(w.category == "unresolved_partition_source" for w in warnings)
+
+
+# --- issue #93: a navigation inside the final `in` expression is a source ---
+
+
+def test_mcode_navigation_in_final_expression_is_a_source():
+    from coop_data_doc.parsers.mcode import extract_sources
+
+    direct = 'let Source=Sql.Database("srv","db") in Source{[Schema="dbo",Item="Orders"]}[Data]'
+    refs, native = extract_sources(direct)
+    assert [(r.schema_name, r.object_name) for r in refs] == [("dbo", "orders")]
+    assert native == []
+    combined = (
+        'let Source=Sql.Database("srv","db"), '
+        'A=Source{[Schema="dbo",Item="A"]}[Data], '
+        'Unused=Source{[Schema="dbo",Item="Old"]}[Data] '
+        'in Table.Combine({A, Source{[Schema="dbo",Item="B"]}[Data]})'
+    )
+    refs, _ = extract_sources(combined)
+    # every reachable navigation, the inline one included; the unused step stays out
+    assert [(r.schema_name, r.object_name) for r in refs] == [("dbo", "a"), ("dbo", "b")]
+    joined = (
+        'let Source=Sql.Database("srv","db"), A=Source{[Schema="dbo",Item="A"]}[Data] '
+        'in Table.NestedJoin(A, {"k"}, Source{[Schema="dbo",Item="B"]}[Data], {"k"}, "b", JoinKind.Inner)'
+    )
+    refs, _ = extract_sources(joined)
+    assert [(r.schema_name, r.object_name) for r in refs] == [("dbo", "a"), ("dbo", "b")]
+    # a commented-out navigation in the final expression is not a source
+    commented = (
+        'let Source=Sql.Database("srv","db"), A=Source{[Schema="dbo",Item="A"]}[Data] '
+        'in A // Source{[Schema="dbo",Item="B"]}[Data]\n'
+    )
+    refs, _ = extract_sources(commented)
+    assert [(r.schema_name, r.object_name) for r in refs] == [("dbo", "a")]
+
+
+def test_tmdl_fixture_final_expression_sources():
+    graph, warnings = parse_all()
+    direct = graph.nodes["pbi_table:sales.daily_direct"]
+    assert _sources(direct) == [("dbo", "agg_sales_daily", "sql_database")]
+    combined = graph.nodes["pbi_table:sales.sales_combined"]
+    # the inline append source is kept; the unused `Leftover` step is not a source
+    assert _sources(combined) == [
+        ("dbo", "agg_sales_daily", "sql_database"),
+        ("dbo", "fact_sales", "sql_database"),
+    ]
+    flagged = {w.file for w in warnings if w.category == "unresolved_partition_source"}
+    assert not any("daily_direct" in f or "sales_combined" in f for f in flagged)
+
+
+# --- issue #94: a table-qualified measure reference names the measure -------
+
+
+def _dax_graph(dax: str, *, host_columns=(), other_columns=(), extra_measures=()):
+    """One model ``x``: table ``Measures`` hosting measures ``Revenue`` and
+    ``Forecast`` (= ``dax``), plus table ``Facts``."""
+    from coop_data_doc.graph.model import Column, Node, NodeType
+    from coop_data_doc.parsers.dax import link_measures
+
+    g = LineageGraph()
+    g.add_node(Node(id="semantic_model:x", node_type=NodeType.SEMANTIC_MODEL, name="x", schema_name="x"))
+    for name, cols in (("measures", host_columns), ("facts", other_columns)):
+        g.add_node(
+            Node(
+                id=f"pbi_table:x.{name}",
+                node_type=NodeType.PBI_TABLE,
+                name=name,
+                schema_name="x",
+                columns=[Column(name=c) for c in cols],
+            )
+        )
+    for name, expr in (("revenue", "1"), ("forecast", dax), *extra_measures):
+        g.add_node(
+            Node(
+                id=f"measure:x.{name}",
+                node_type=NodeType.MEASURE,
+                name=name,
+                schema_name="x",
+                metadata={"dax": expr},
+            )
+        )
+    link_measures(g, "x")
+    return g
+
+
+def _forecast_targets(g):
+    return {e.target_id for e in g.edges if e.source_id == "measure:x.forecast"}
+
+
+def test_dax_qualified_measure_matches_unqualified():
+    from coop_data_doc.parsers.dax import extract_qualified_refs
+
+    assert extract_qualified_refs("'Measures'[Revenue] * 1.1 + Facts[amount]") == {
+        ("measures", "Revenue"),
+        ("facts", "amount"),
+    }
+    bare = _forecast_targets(_dax_graph("[Revenue] * 1.1"))
+    for expr in ("'Measures'[Revenue] * 1.1", "Measures[Revenue] * 1.1", "'Measures' [Revenue] * 1.1"):
+        assert _forecast_targets(_dax_graph(expr)) == bare == {"measure:x.revenue"}, expr
+
+
+def test_dax_qualified_measure_on_another_table():
+    # DAX lets any table qualify a measure; the dependency is the measure, and
+    # a real column of that table in the same expression keeps the table edge.
+    g = _dax_graph("Facts[Revenue] + SUM(Facts[amount])", other_columns=("amount",))
+    assert _forecast_targets(g) == {"measure:x.revenue", "pbi_table:x.facts"}
+    assert "unmatched_dax_refs" not in g.nodes["measure:x.forecast"].metadata
+
+
+def test_dax_qualified_column_wins_over_same_named_measure():
+    # Facts has a column named Revenue: Facts[Revenue] is that column, never the measure
+    g = _dax_graph("SUM(Facts[Revenue])", other_columns=("revenue",))
+    assert _forecast_targets(g) == {"pbi_table:x.facts"}
+    # ...while the host-qualified name with no such column is still the measure
+    g = _dax_graph("SUM(Facts[Revenue]) + 'Measures'[Revenue]", other_columns=("revenue",))
+    assert _forecast_targets(g) == {"pbi_table:x.facts", "measure:x.revenue"}
+
+
+def test_dax_qualified_ref_on_unknown_table_is_not_guessed():
+    # the table is not in the model, so its columns cannot be checked: no measure edge
+    g = _dax_graph("'Elsewhere'[Revenue] * 2")
+    assert _forecast_targets(g) == set()
+    # a qualified member that is neither a column nor a measure stays a column ref
+    g = _dax_graph("SUM(Facts[amount])")
+    assert _forecast_targets(g) == {"pbi_table:x.facts"}
+
+
+def test_dax_qualified_measure_ignores_comments_and_strings():
+    g = _dax_graph("1 // 'Measures'[Revenue]\n + LEN(\"Measures[Revenue]\")")
+    assert _forecast_targets(g) == set()
+
+
+def test_tmdl_fixture_qualified_measure_refs_and_unused_list():
+    from coop_data_doc.render.markdown import _unused_measures_section, _used_measure_ids
+
+    graph, _ = parse_all()
+    keys = edge_keys(graph)
+    # quoted host table: 'Ad Hoc Measures'[KPI Total] is the measure, not the table
+    assert ("measure:sales.forecast", "measure:sales.kpi total", "references") in keys
+    assert ("measure:sales.forecast", "pbi_table:sales.ad hoc measures", "references") not in keys
+    # dim_customer[Total Sales] names a measure hosted on fact_sales; fact_sales[order_total] is a column
+    assert ("measure:sales.sales plan", "measure:sales.total sales", "references") in keys
+    assert ("measure:sales.sales plan", "pbi_table:sales.fact_sales", "references") in keys
+    assert ("measure:sales.sales plan", "pbi_table:sales.dim_customer", "references") not in keys
+    assert "measure:sales.forecast" in graph.downstream("measure:sales.kpi total")
+    assert "measure:sales.sales plan" in graph.downstream("measure:sales.total sales")
+    used = _used_measure_ids(graph)
+    section = _unused_measures_section(graph, graph.nodes["semantic_model:sales"], used)
+    assert "KPI Total" not in section
+    assert "Forecast" in section and "Sales Plan" in section

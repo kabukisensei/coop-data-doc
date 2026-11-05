@@ -1274,3 +1274,81 @@ def test_lenient_check_still_fails_on_error_severity(tmp_path: Path):
     setup_workspace(tmp_path)
     (tmp_path / "sql-repo" / "nobom.sql").write_bytes("SELECT 1\n".encode("utf-16-le"))
     assert run(["check", "--lenient"], tmp_path).exit_code == 2
+
+
+def _final_expression_workspace(tmp_path: Path) -> None:
+    """Only the fixture pieces of issue #93: the two dbo tables, a TMDL model
+    with the direct-navigation and inline-append tables, and the same two
+    tables from the BIM fixture."""
+    sql = tmp_path / "sql-repo"
+    shutil.copytree(FIXTURES / "repo_sql" / "tables", sql / "tables")
+    tables = tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables"
+    tables.mkdir(parents=True)
+    source = FIXTURES / "repo_pbi" / "Sales.SemanticModel" / "definition"
+    shutil.copy(source / "model.tmdl", tables.parent / "model.tmdl")
+    for name in ("daily_direct.tmdl", "sales_combined.tmdl"):
+        shutil.copy(source / "tables" / name, tables / name)
+    bim = json.loads((FIXTURES / "repo_bim" / "legacy_model.bim").read_text(encoding="utf-8"))
+    bim["model"]["tables"] = [
+        t for t in bim["model"]["tables"] if t["name"] in ("daily_direct", "sales_combined")
+    ]
+    bim["model"]["relationships"] = []
+    (tmp_path / "bim-repo").mkdir()
+    (tmp_path / "bim-repo" / "legacy_model.bim").write_text(json.dumps(bim), encoding="utf-8")
+    (tmp_path / "coop-data-doc.yml").write_text(
+        """\
+project_name: Final Expression Estate
+repos:
+  sql:
+    path: ./sql-repo
+    include: ["**/*.sql"]
+  powerbi:
+    path: ./pbi-repo
+    include: ["**/*.tmdl"]
+  bim:
+    path: ./bim-repo
+    include: ["**/*.bim"]
+output:
+  dir: ./data-docs
+  site_dir: ./site
+""",
+        encoding="utf-8",
+    )
+
+
+def test_strict_scan_links_final_expression_sources(tmp_path: Path):
+    # issue #93: a clean strict scan must publish every source the final `in`
+    # expression navigates to, in TMDL and BIM alike
+    _final_expression_workspace(tmp_path)
+    result = run(["scan", "--non-interactive", "--strict", "--no-parse-cache", "--jobs", "1"], tmp_path)
+    assert result.exit_code == 0, result.output
+    graph = json.loads((tmp_path / "data-docs" / "graph.json").read_text(encoding="utf-8"))
+    feeds = {(e["source_id"], e["target_id"]) for e in graph["edges"] if e["edge_type"] == "feeds"}
+    for model in ("sales", "legacy model"):
+        assert ("gold_table:dbo.agg_sales_daily", f"pbi_table:{model}.daily_direct") in feeds
+        assert ("gold_table:dbo.agg_sales_daily", f"pbi_table:{model}.sales_combined") in feeds
+        assert ("gold_table:dbo.fact_sales", f"pbi_table:{model}.sales_combined") in feeds
+
+
+def test_qualified_measure_ref_in_impact_and_unused_list(tmp_path: Path):
+    # issue #94: Sales Plan depends on Total Sales through dim_customer[Total Sales]
+    setup_workspace(tmp_path)
+    result = run(["build", "--non-interactive", "--skip-html"], tmp_path)
+    assert result.exit_code == 0, result.output
+    docs = tmp_path / "data-docs"
+    model_page = doc_page(docs, "semantic_model:sales").read_text(encoding="utf-8")
+    section = model_page.split("## Unused measures", 1)[1].split("\n## ", 1)[0]
+    assert "[KPI Total](" not in section  # used by Forecast via 'Ad Hoc Measures'[KPI Total]
+    assert "[Forecast](" in section
+    baseline = tmp_path / "baseline.json"
+    shutil.copy(docs / "graph.json", baseline)
+    fact = tmp_path / "pbi-repo" / "Sales.SemanticModel" / "definition" / "tables" / "fact_sales.tmdl"
+    fact.write_text(
+        fact.read_text(encoding="utf-8").replace("SUM(fact_sales[order_total])", "SUM(fact_sales[order_id])"),
+        encoding="utf-8",
+    )
+    assert run(["scan", "--non-interactive"], tmp_path).exit_code == 0
+    result = run(["impact", "--baseline", str(baseline)], tmp_path)
+    assert result.exit_code == 0, result.output
+    impact = json.loads(result.output)
+    assert "measure:sales.sales plan" in impact["measure:sales.total sales"]

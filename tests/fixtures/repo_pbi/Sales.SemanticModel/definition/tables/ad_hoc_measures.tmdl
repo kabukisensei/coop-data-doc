@@ -5,6 +5,14 @@ table 'Ad Hoc Measures'
 		formatString: $ #,0
 		lineageTag: 99999999-9999-9999-9999-999999999999
 
+	measure Forecast = 'Ad Hoc Measures'[KPI Total] * 1.1
+		formatString: $ #,0
+		lineageTag: 99999999-9999-9999-9999-999999999998
+
+	measure 'Sales Plan' = dim_customer[Total Sales] + SUM(fact_sales[order_total])
+		formatString: $ #,0
+		lineageTag: 99999999-9999-9999-9999-999999999997
+
 	column RowNumber
 		dataType: int64
 		isHidden: true

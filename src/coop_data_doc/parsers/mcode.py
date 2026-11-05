@@ -228,9 +228,11 @@ def _identifiers(expression: str) -> list[str]:
 
 def _reachable_text(text: str) -> str | None:
     """The step expressions the final ``in`` expression depends on, joined in
-    step order, or None when the text is not a ``let`` the splitter reads. A
-    step the result never uses (a leftover navigation, a renamed source) is
-    not a dependency of the table, so its records are left out (#88)."""
+    step order and followed by the final expression itself, or None when the
+    text is not a ``let`` the splitter reads. A step the result never uses (a
+    leftover navigation, a renamed source) is not a dependency of the table, so
+    its records are left out (#88); a navigation written inside the final
+    expression (``in Source{[…]}[Data]``, an inline append) is (#93)."""
     parsed = _let_steps(text)
     if parsed is None:
         return None
@@ -243,7 +245,7 @@ def _reachable_text(text: str) -> str | None:
             continue
         wanted.add(name)
         pending.extend(ref for ref in _identifiers(steps[name]) if ref in steps and ref not in wanted)
-    return "\n".join(expression for name, expression in steps.items() if name in wanted)
+    return "\n".join([*(expression for name, expression in steps.items() if name in wanted), final])
 
 
 def extract_sources(m_expression: str) -> tuple[list[SourceRef], list[str]]:
