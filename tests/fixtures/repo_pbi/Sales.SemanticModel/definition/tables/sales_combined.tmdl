@@ -1,0 +1,17 @@
+table sales_combined
+	lineageTag: cccccccc-2222-2222-2222-222222222222
+
+	column order_id
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: order_id
+
+	partition sales_combined = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("myserver.database.windows.net", "gold"),
+				    Facts = Source{[Schema="dbo",Item="fact_sales"]}[Data],
+				    Leftover = Source{[Schema="db",Item="base_table"]}[Data]
+				in
+				    Table.Combine({Facts, Source{[Schema="dbo",Item="agg_sales_daily"]}[Data]})

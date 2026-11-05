@@ -1,8 +1,9 @@
 """DAX measure dependency extraction (Module 3).
 
 Heuristic by design: bare ``[Name]`` references are matched against the
-model's known measure names after everything is loaded; ``Table[Column]``
-references become table dependencies. Comments and string literals are
+model's known measure names after everything is loaded. A ``Table[Name]``
+reference is a column of that table (a table dependency) unless the table has
+no such column and the model has a measure of that name, which it then names. Comments and string literals are
 removed before matching so they can never produce references.
 """
 
@@ -23,6 +24,8 @@ from coop_data_doc.graph.model import (
 _BRACKET_RE = re.compile(r"\[([^\[\]]+)\]")
 _QUOTED_TABLE_RE = re.compile(r"'((?:[^'\n]|'')+)'\s*\[")
 _BARE_TABLE_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\[")
+# one table-qualified member: 'Quoted Table'[Name] or Table[Name]
+_QUALIFIED_RE = re.compile(r"(?:'((?:[^'\n]|'')+)'|\b([A-Za-z_][A-Za-z0-9_]*))\s*\[([^\[\]]+)\]")
 
 # reserved words that can directly precede a bare '[Measure]' reference
 # (`RETURN [X]`, `[a] IN [b]`…); they are never table names, so an alnum
@@ -125,6 +128,44 @@ def extract_refs(dax: str) -> tuple[set[str], set[str]]:
     return measures, tables
 
 
+def extract_qualified_refs(dax: str) -> set[tuple[str, str]]:
+    """Every table-qualified ``Table[Name]`` reference as (normalized table
+    name, member name as written). DAX allows a measure to be qualified by a
+    table (``'Measures'[Revenue]``), so the member is resolved against the
+    model by the caller, not assumed to be a column (#94)."""
+    text = _clean(dax)
+    found: set[tuple[str, str]] = set()
+    for match in _QUALIFIED_RE.finditer(text):
+        if match.group(1) is not None:
+            table = match.group(1).replace("''", "'")
+        else:
+            table = match.group(2)
+            if table.lower() in _DAX_KEYWORDS:
+                continue
+        found.add((normalize_identifier(table), match.group(3).strip()))
+    return found
+
+
+def _qualified_measure(
+    table_key: str,
+    member: str,
+    measures: dict[str, Node],
+    tables: dict[str, Node],
+) -> Node | None:
+    """The measure a qualified ``Table[Name]`` names, or None when it is (or
+    may be) a column. A column of that table wins; otherwise a model measure
+    of that name is the member (measure names are model-unique, and DAX lets
+    any table qualify one). An unknown table cannot be checked for the column,
+    so it is never read as a measure (never guess)."""
+    table = tables.get(table_key)
+    if table is None:
+        return None
+    key = normalize_identifier(member)
+    if any(normalize_identifier(column.name) == key for column in table.columns):
+        return None
+    return measures.get(key)
+
+
 def _model_nodes(graph: LineageGraph, model_key: str) -> tuple[dict[str, Node], dict[str, Node]]:
     """One model's (measures, tables), keyed by normalized name."""
     measures: dict[str, Node] = {}
@@ -153,6 +194,19 @@ def _resolve_dax_refs(
     if not dax:
         return
     candidate_measures, candidate_tables = extract_refs(dax)
+    # Table-qualified members that name a measure (#94): the reference is to
+    # that measure, so its table is a dependency only when another qualified
+    # reference to it is a column.
+    qualified_measures: list[tuple[str, str, Node]] = []
+    column_tables: set[str] = set()
+    for table_key, member in sorted(extract_qualified_refs(dax)):
+        target = _qualified_measure(table_key, member, measures, tables)
+        if target is None:
+            column_tables.add(table_key)
+        else:
+            qualified_measures.append((table_key, member, target))
+    measure_only_tables = {table_key for table_key, _, _ in qualified_measures} - column_tables
+    candidate_tables = candidate_tables - measure_only_tables
     unmatched: list[str] = []
     for candidate in sorted(candidate_measures, key=str.lower):
         target = measures.get(normalize_identifier(candidate))
@@ -167,6 +221,16 @@ def _resolve_dax_refs(
             )
         elif target is None:
             unmatched.append(candidate)
+    for table_key, member, target in qualified_measures:
+        if target.id != node.id:
+            graph.add_edge(
+                Edge(
+                    source_id=node.id,
+                    target_id=target.id,
+                    edge_type=EdgeType.REFERENCES,
+                    evidence=f"{node.source_file}: DAX {table_key}[{member}]",
+                )
+            )
     for candidate in sorted(candidate_tables):
         target = tables.get(candidate)
         if target is not None and target.id != node.id:

@@ -283,3 +283,43 @@ def test_bim_determinism():
     first, _ = parse_fixture()
     second, _ = parse_fixture()
     assert to_json_str(first) == to_json_str(second)
+
+
+def _sources(node) -> list[tuple[str, str, str]]:
+    return [(s["schema"], s["object"], s["raw_kind"]) for s in node.metadata.get("partition_sources", [])]
+
+
+def test_bim_navigation_in_final_expression_is_a_source():
+    # issue #93: `in Source{[...]}[Data]` and an inline append in the final
+    # expression keep their sources; an unused navigation step does not count
+    graph, warnings = parse_fixture()
+    assert warnings == []
+    direct = graph.nodes[f"pbi_table:{MODEL_KEY}.daily_direct"]
+    assert _sources(direct) == [("dbo", "agg_sales_daily", "sql_database")]
+    combined = graph.nodes[f"pbi_table:{MODEL_KEY}.sales_combined"]
+    assert _sources(combined) == [
+        ("dbo", "agg_sales_daily", "sql_database"),
+        ("dbo", "fact_sales", "sql_database"),
+    ]
+
+
+def test_bim_qualified_measure_refs_and_unused_list():
+    # issue #94: Table[Measure] names the measure through the shared resolver
+    from coop_data_doc.render.markdown import _unused_measures_section, _used_measure_ids
+
+    graph, _ = parse_fixture()
+    keys = edge_keys(graph)
+    m = f"measure:{MODEL_KEY}"
+    assert (f"{m}.forecast", f"{m}.kpi total", "references") in keys
+    assert (f"{m}.forecast", f"pbi_table:{MODEL_KEY}.calculations", "references") not in keys
+    assert (f"{m}.sales plan", f"{m}.total sales", "references") in keys
+    assert (f"{m}.sales plan", f"pbi_table:{MODEL_KEY}.fact_sales", "references") in keys
+    assert (f"{m}.sales plan", f"pbi_table:{MODEL_KEY}.dim_customer", "references") not in keys
+    # the calculated table's fact_sales[customer_id] is still a column reference
+    assert (f"pbi_table:{MODEL_KEY}.sales summary", f"pbi_table:{MODEL_KEY}.fact_sales", "references") in keys
+    assert f"{m}.forecast" in graph.downstream(f"{m}.kpi total")
+    section = _unused_measures_section(
+        graph, graph.nodes[f"semantic_model:{MODEL_KEY}"], _used_measure_ids(graph)
+    )
+    assert "KPI Total" not in section
+    assert "Forecast" in section and "Sales Plan" in section

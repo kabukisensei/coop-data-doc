@@ -90,6 +90,14 @@
           {
             "name": "KPI Total",
             "expression": "[Total Sales] + [Order Count]"
+          },
+          {
+            "name": "Forecast",
+            "expression": "'Calculations'[KPI Total] * 1.1"
+          },
+          {
+            "name": "Sales Plan",
+            "expression": "dim_customer[Total Sales] + SUM(fact_sales[order_total])"
           }
         ]
       },
@@ -134,6 +142,56 @@
               "type": "query",
               "query": "SELECT order_id FROM sales.dim_customer",
               "dataSource": "SqlAzure gold"
+            }
+          }
+        ]
+      },
+      {
+        "name": "daily_direct",
+        "columns": [
+          {
+            "name": "sale_date",
+            "dataType": "dateTime"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "daily_direct-partition",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Sql.Database(\"srv\", \"gold\")",
+                "in",
+                "    Source{[Schema=\"dbo\",Item=\"agg_sales_daily\"]}[Data]"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "sales_combined",
+        "columns": [
+          {
+            "name": "order_id",
+            "dataType": "int64"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "sales_combined-partition",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Sql.Database(\"srv\", \"gold\"),",
+                "    Facts = Source{[Schema=\"dbo\",Item=\"fact_sales\"]}[Data],",
+                "    Leftover = Source{[Schema=\"db\",Item=\"base_table\"]}[Data]",
+                "in",
+                "    Table.Combine({Facts, Source{[Schema=\"dbo\",Item=\"agg_sales_daily\"]}[Data]})"
+              ]
             }
           }
         ]

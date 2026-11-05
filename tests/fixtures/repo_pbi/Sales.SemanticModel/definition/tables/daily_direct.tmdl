@@ -1,0 +1,15 @@
+table daily_direct
+	lineageTag: cccccccc-1111-1111-1111-111111111111
+
+	column sale_date
+		dataType: dateTime
+		summarizeBy: none
+		sourceColumn: sale_date
+
+	partition daily_direct = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("myserver.database.windows.net", "gold")
+				in
+				    Source{[Schema="dbo",Item="agg_sales_daily"]}[Data]
