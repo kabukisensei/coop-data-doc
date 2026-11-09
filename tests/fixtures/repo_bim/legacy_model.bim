@@ -195,6 +195,59 @@
             }
           }
         ]
+      },
+      {
+        "name": "native_leftover",
+        "columns": [
+          {
+            "name": "order_id",
+            "dataType": "int64"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "native_leftover-partition",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Sql.Database(\"srv\", \"gold\"),",
+                "    Dead = Value.NativeQuery(Source, \"SELECT * FROM db.base_table\"),",
+                "    Old = Sql.Database(\"srv\", \"gold\", [Query=\"SELECT * FROM db.base_table\"]),",
+                "    Facts = Source{[Schema=\"dbo\",Item=\"fact_sales\"]}[Data]",
+                "in",
+                "    Facts"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "model_leftover",
+        "columns": [
+          {
+            "name": "order_id",
+            "dataType": "int64"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "model_leftover-partition",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Sql.Database(\"srv\", \"gold\"),",
+                "    Dead = AnalysisServices.Database(\"powerbi://fixture\", \"UnusedModel\"),",
+                "    Facts = Source{[Schema=\"dbo\",Item=\"fact_sales\"]}[Data]",
+                "in",
+                "    Facts"
+              ]
+            }
+          }
+        ]
       }
     ],
     "relationships": [

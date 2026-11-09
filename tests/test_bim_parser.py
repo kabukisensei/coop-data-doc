@@ -289,6 +289,17 @@ def _sources(node) -> list[tuple[str, str, str]]:
     return [(s["schema"], s["object"], s["raw_kind"]) for s in node.metadata.get("partition_sources", [])]
 
 
+def test_bim_unused_native_or_model_steps_are_not_sources():
+    # issue #88 (November 9): an unused Value.NativeQuery, connector Query= option
+    # or AnalysisServices.Database step neither adds a source nor hides the real one
+    graph, warnings = parse_fixture()
+    assert warnings == []
+    for table in ("native_leftover", "model_leftover"):
+        node = graph.nodes[f"pbi_table:{MODEL_KEY}.{table}"]
+        assert _sources(node) == [("dbo", "fact_sales", "sql_database")], table
+        assert "native_sql" not in node.metadata and "model_sources" not in node.metadata
+
+
 def test_bim_navigation_in_final_expression_is_a_source():
     # issue #93: `in Source{[...]}[Data]` and an inline append in the final
     # expression keep their sources; an unused navigation step does not count

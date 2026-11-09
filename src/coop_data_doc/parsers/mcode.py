@@ -254,8 +254,13 @@ def extract_sources(m_expression: str) -> tuple[list[SourceRef], list[str]]:
     record the result depends on; a join or append of two database tables
     gives two refs (#88). ``static`` and ``as_model`` are one ref each."""
     text = strip_m_comments(m_expression)
+    # Only what the final `in` expression depends on is a source: an unused step
+    # (a leftover native query, connector or model connection) adds nothing and
+    # hides nothing (#88). Outside a readable `let`, the whole text counts.
+    reachable = _reachable_text(text)
+    scope = text if reachable is None else reachable
 
-    native_sql = [m.group(1).replace('""', '"') for m in _NATIVE_QUERY_RE.finditer(text)]
+    native_sql = [m.group(1).replace('""', '"') for m in _NATIVE_QUERY_RE.finditer(scope)]
 
     # `let` variable bindings: shared by the Query= option below (a let-bound
     # query string) and the navigation records further down.
@@ -263,8 +268,8 @@ def extract_sources(m_expression: str) -> tuple[list[SourceRef], list[str]]:
 
     # Sql.Database(server, db, [Query="…"]) — native SQL in the connector's
     # options record (issue #36). Same downstream handling as Value.NativeQuery.
-    for call in _SQL_DATABASE_CALL_RE.finditer(text):
-        args = _call_args(text, call.end() - 1)
+    for call in _SQL_DATABASE_CALL_RE.finditer(scope):
+        args = _call_args(scope, call.end() - 1)
         query = _QUERY_OPTION_RE.search(args)
         if query is None:
             continue
@@ -278,7 +283,7 @@ def extract_sources(m_expression: str) -> tuple[list[SourceRef], list[str]]:
     # comment strip keeps the `powerbi://…` connection URL intact, so matching
     # `text` works — and a commented-out AnalysisServices.Database line can no
     # longer be mistaken for the live source.
-    as_match = _AS_DATABASE_RE.search(text)
+    as_match = _AS_DATABASE_RE.search(scope)
     if as_match:
         return [SourceRef(schema_name="", object_name=as_match.group(1), raw_kind="as_model")], native_sql
 
@@ -288,9 +293,8 @@ def extract_sources(m_expression: str) -> tuple[list[SourceRef], list[str]]:
     # `let` step named Schema/Item can't poison the result. Only the records
     # the final expression depends on count; outside a readable `let`, every
     # record in the text does (the pre-#88 reading, first record included).
-    reachable = _reachable_text(text)
     refs: list[SourceRef] = []
-    for record in _NAV_RECORD_RE.findall(text if reachable is None else reachable):
+    for record in _NAV_RECORD_RE.findall(scope):
         schema = _resolve(_NAV_SCHEMA_RE.search(record), bindings)
         item = _resolve(_NAV_ITEM_RE.search(record), bindings)
         if schema and item:
