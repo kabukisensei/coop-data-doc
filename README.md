@@ -767,7 +767,11 @@ overwritten on the next `update`. To regenerate after source changes, run
 ### Lineage identity and export safeguards
 
 Lineage identity and mapping safeguards: duplicate semantic-model names in distinct
-source scopes raise `identity_collision` and stop generation publication. Existing
+source scopes raise `identity_collision` and stop generation publication. Each `.pbix`
+archive is its own source scope (repository and path): two archives with the same file
+name, or an archive beside a TMDL or `.bim` model of that name, collide rather than merge.
+An M expression's sources are the steps its final `in` expression depends on; an unused
+navigation, native query or `AnalysisServices.Database` step adds no source. Existing
 IDs, authored intent and committed mappings remain untouched pending an explicit
 scope-ID migration. Report `byPath` bindings require the exact repository/path
 scope. SQL/M partitions accumulate their observed dependencies; SQL set operations

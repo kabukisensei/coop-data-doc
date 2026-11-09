@@ -65,6 +65,23 @@ def _extract_mashup_m(blob: bytes) -> str | None:
     return None
 
 
+def _identity_clash(graph: LineageGraph, names: set[str], stem: str, identity: list[str]) -> str | None:
+    """'semantic model' or 'report' when this archive would add to a node another
+    source already made, else None. A model the archive could hold (DataMashup or
+    DataModel) clashes with any model of that name from another source (a .pbix,
+    TMDL or .bim); a report clashes with another .pbix's report of that name."""
+    if names & {"DataMashup", "DataModel"}:
+        model = graph.nodes.get(Node.make_id(NodeType.SEMANTIC_MODEL, "", stem))
+        if model is not None and model.metadata.get("source_identity") != identity:
+            return "semantic model"
+    if "Report/Layout" in names:
+        report = graph.nodes.get(Node.make_id(NodeType.REPORT, "", stem))
+        other = report.metadata.get("pbix_source_identity") if report is not None else None
+        if other is not None and other != identity:
+            return "report"
+    return None
+
+
 def parse_pbix(
     entries: list[FileEntry],
     graph: LineageGraph,
@@ -77,7 +94,7 @@ def parse_pbix(
     ``on_file`` (optional) is called once per entry for progress reporting.
     """
     warnings: list[ParseWarning] = []
-    for entry in sorted(entries, key=lambda e: e.path):
+    for entry in sorted(entries, key=lambda e: (e.path, e.repo_key)):
         if on_file:
             on_file(entry.path)
         stem = PurePosixPath(entry.path).stem
@@ -94,6 +111,19 @@ def parse_pbix(
             continue
         with archive:
             names = set(archive.namelist())
+            # One archive is one source: two with the same file name (in two repos,
+            # or two folders of one) must never merge into one model or report (#97).
+            identity = [entry.repo_key, entry.path]
+            clash = _identity_clash(graph, names, stem, identity)
+            if clash:
+                warnings.append(
+                    ParseWarning(
+                        file=entry.path,
+                        category="identity_collision",
+                        message=f"{clash} '{stem}' conflicts with another source scope; not merged",
+                    )
+                )
+                continue
 
             if "Report/Layout" in names:
                 layout_bytes = _safe_read(archive, "Report/Layout")
@@ -108,6 +138,8 @@ def parse_pbix(
                         # the raise funnels into the except just below
                         raise ValueError("Report/Layout is not a JSON object")  # noqa: TRY004
                     warnings += parse_layout_json(layout, stem, entry.path, graph)
+                    report_id = Node.make_id(NodeType.REPORT, "", stem)
+                    graph.nodes[report_id].metadata["pbix_source_identity"] = identity
                 except (json.JSONDecodeError, KeyError, ValueError):
                     warnings.append(
                         ParseWarning(
@@ -128,7 +160,11 @@ def parse_pbix(
                             node_type=NodeType.SEMANTIC_MODEL,
                             name=normalize_identifier(stem),
                             source_file=entry.path,
-                            metadata={"from_pbix": True},
+                            metadata={
+                                "from_pbix": True,
+                                "source_identity": identity,
+                                "repo_key": entry.repo_key,
+                            },
                         )
                     )
                     for match in _SHARED_RE.finditer(section):
@@ -161,7 +197,11 @@ def parse_pbix(
                         node_type=NodeType.SEMANTIC_MODEL,
                         name=normalize_identifier(stem),
                         source_file=entry.path,
-                        metadata={"pbix_model_opaque": True},
+                        metadata={
+                            "pbix_model_opaque": True,
+                            "source_identity": identity,
+                            "repo_key": entry.repo_key,
+                        },
                     )
                 )
                 warnings.append(
