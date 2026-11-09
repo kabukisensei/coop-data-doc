@@ -182,7 +182,8 @@ def detect_install_method() -> tuple[str, Path | None]:
 def fetch_latest_version(name: str) -> str | None:
     """Latest release on PyPI, or None when unknown (404 / no network)."""
     try:
-        with urllib.request.urlopen(
+        # PyPI JSON URL is a module constant
+        with urllib.request.urlopen(  # nosemgrep
             PYPI_JSON_URL.format(name=name), timeout=NETWORK_TIMEOUT_SECONDS
         ) as response:
             return json.load(response)["info"]["version"]
