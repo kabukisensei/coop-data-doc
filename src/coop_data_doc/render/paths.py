@@ -44,7 +44,8 @@ def slug(node_id: str) -> str:
         safe = safe[:_SLUG_MAX].strip("-. ")
     if not safe:
         safe = node_id.split(":", 1)[0]  # fall back to the node type
-    digest = hashlib.sha1(node_id.encode("utf-8")).hexdigest()[:8]
+    # sha1 used for URL-slug uniqueness, not security
+    digest = hashlib.sha1(node_id.encode("utf-8")).hexdigest()[:8]  # nosemgrep
     return f"{safe}-{digest}"
 
 

@@ -1,5 +1,5 @@
 # coop-data-doc: MAP
-Last updated: 2026-08-24 | Branch: `main` | Last commit: 2026-08-21 | ✅ Clean
+Last updated: 2026-11-09 | Branch: `main` | Last commit: 2026-11-02 | ✅ Clean
 ## Destination
 Data documentation tool for Fabric/DW estates — build lineage graphs, impact analysis, CI gates. Published to PyPI.
 ## Notes
