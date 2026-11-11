@@ -75,12 +75,9 @@ _SEVERITY: dict[str, str] = {
     # (unlike the committed .lineage-cache.json's "cache_invalid", which is an error).
     "parse_cache_invalid": "warning",
     "pbix_opaque_model": "warning",
-    # review-findings composition (issue #38): the linters are advisory, so a
-    # review file that can't be used degrades the FINDINGS pages, never the
-    # docs — a warning, never a gate failure (`build --strict` / `check` ignore
-    # these categories).
-    "reviews_unreadable": "warning",
-    "reviews_schema_mismatch": "warning",
+    # a config still listing the retired `reviews:` files (the review-findings
+    # composition was removed with coop-sql-review / coop-dax-review)
+    "reviews_retired": "warning",
     # the database's own dependency list (sqlsc's Dependencies.json) names a
     # reference the parse did not link: a lineage gap made visible, never a gate
     "catalog_dependency_unparsed": "warning",

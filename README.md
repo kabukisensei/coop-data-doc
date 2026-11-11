@@ -7,7 +7,7 @@
 
 > **Install:** `pipx install coop-data-doc` — see [Install](#install) for the one-time pipx setup.
 
-> **Part of the Cooptimize coop suite** — alongside [coop-sql-review](https://github.com/kabukisensei/coop-sql-review) and [coop-dax-review](https://github.com/kabukisensei/coop-dax-review). If your team uses [coop-agent](https://github.com/kabukisensei/coop-agent), `coop install` installs all three tools at once and `coop update` keeps them current.
+> **Part of the Cooptimize coop suite.** If your team uses [coop-agent](https://github.com/kabukisensei/coop-agent), `coop install` installs this tool and `coop update` keeps it current.
 
 **Automatic documentation for your data estate.** Point this tool at whatever source
 you have today — SQL, Power BI, selected folders from either, both, or neither yet —
@@ -36,16 +36,15 @@ generated docs can live in git and be checked in CI.
 2. [Install](#install)
 3. [First run — about 5 minutes](#first-run--about-5-minutes)
 4. [Day-to-day use](#day-to-day-use)
-5. [Compose review findings into the portal](#compose-review-findings-into-the-portal)
-6. [The config file, explained](#the-config-file-explained)
-7. [When it asks you questions](#when-it-asks-you-questions)
-8. [Adding your own notes to the docs](#adding-your-own-notes-to-the-docs)
-9. [Command reference](#command-reference)
-10. [Keeping the tool updated](#keeping-the-tool-updated)
-11. [Using it in CI](#using-it-in-ci)
-12. [🤖 For AI agents](#-for-ai-agents)
-13. [Troubleshooting](#troubleshooting)
-14. [Notes on .pbix files](#notes-on-pbix-files)
+5. [The config file, explained](#the-config-file-explained)
+6. [When it asks you questions](#when-it-asks-you-questions)
+7. [Adding your own notes to the docs](#adding-your-own-notes-to-the-docs)
+8. [Command reference](#command-reference)
+9. [Keeping the tool updated](#keeping-the-tool-updated)
+10. [Using it in CI](#using-it-in-ci)
+11. [🤖 For AI agents](#-for-ai-agents)
+12. [Troubleshooting](#troubleshooting)
+13. [Notes on .pbix files](#notes-on-pbix-files)
 
 ---
 
@@ -240,58 +239,6 @@ Pages for new objects appear, changed objects update, and pages for deleted obje
 are removed. Notes you've written in [Business Intent](#adding-your-own-notes-to-the-docs)
 blocks are preserved. Re-running is always safe.
 
-## Compose review findings into the portal
-
-If your team also runs the suite's linters —
-[coop-sql-review](https://github.com/kabukisensei/coop-sql-review) and
-[coop-dax-review](https://github.com/kabukisensei/coop-dax-review) — the portal can
-show their findings **on the object pages they're about**, so "which gold tables
-feeding this model have open SQL findings?" is answered in one place. First produce
-the machine-readable reports:
-
-```bash
-coop-sql-review check sql-repo --format json -o sql-findings.json
-coop-dax-review check pbi-repo --format json -o dax-findings.json
-```
-
-…then hand them to the build (the flag is repeatable, any number of files):
-
-```bash
-coop-data-doc build --reviews sql-findings.json --reviews dax-findings.json
-```
-
-Or list them once in `coop-data-doc.yml` (paths relative to the config file; the
-`--reviews` flag *extends* the list):
-
-```yaml
-reviews: ["sql-findings.json", "dax-findings.json"]
-```
-
-What you get, all rendered at build time (the lineage graph — `graph.json` /
-`manifest.json` — is untouched):
-
-- **Object pages** — a matched object gains a `⚠ N review findings` chip under its
-  title and a "Review findings" table (severity, rule, message, file:line).
-- **A top-level Findings page** — summary counts per tool and severity, every finding
-  grouped severity → rule with links to the object pages, and a
-  "Not matched to a documented object" section so findings about undocumented objects
-  are listed, never dropped. (`agent_review` judgment items are counted there but not
-  joined — v1 composes `findings` only.)
-- **Matching** uses the same normalized `schema.name` identity as the lineage linker:
-  SQL findings attach to SQL objects (tables/views/procs), DAX findings to the measure
-  or table in their model (a model-level finding attaches to the model's page).
-
-Two things to know:
-
-- **Advisory, always.** Findings never change exit codes — `build --strict` and
-  `check` gate on the same things they always did. An unreadable/foreign review file
-  degrades to a `reviews_unreadable` warning (the build succeeds); a `--reviews` path
-  that doesn't exist at all is a usage error (exit 2), like any bad argument.
-- **`check` needs the same inputs.** Review files are an explicit build input, so a
-  CI `coop-data-doc check` must pass the same `--reviews` arguments the build used
-  (the config's `reviews:` list is picked up automatically) — otherwise the trees
-  legitimately differ and `check` reports the docs stale.
-
 ## The config file, explained
 
 Setup writes a single file, `coop-data-doc.yml`, which you can edit by hand anytime
@@ -335,10 +282,6 @@ include_schemas: [erp_orders, erp_finance, stg, mart, common]
                                     # are documented (the wizard writes the union of
                                     # the schemas you check in its layer questions)
 
-# reviews: ["sql-findings.json"]   # optional: coop-sql-review / coop-dax-review
-                                    # --format json reports to compose into the
-                                    # portal (see "Compose review findings" above).
-                                    # setup only writes this block when non-empty.
 
 branding:                           # optional HTML-site branding (all optional)
   logo: ./assets/logo.png           # paths resolve against THIS file's folder
@@ -416,7 +359,6 @@ upstream link.
 | `output.dir` | string | Where the Markdown (agent docs) is written. Both output folders must be outside every configured source root, with no ancestor/descendant overlap, including resolved symlinks. Use sibling folders for sources and generated output. |
 | `output.site_dir` | string | Where the HTML site is built. **Must be a separate folder from `output.dir`** — not the same folder and not nested inside it (each build wipes `site_dir`, which would clobber your Markdown). Side-by-side like `./data-docs` + `./data-docs-site` is the convention. |
 | `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
-| `reviews` | list of paths | `coop-sql-review` / `coop-dax-review` `--format json` reports to compose into the portal (see [Compose review findings into the portal](#compose-review-findings-into-the-portal)); paths relative to this file. The `--reviews` flag extends the list. Advisory — never affects exit codes. |
 | `catalog_dependencies` | list of paths | The database's own dependency lists (`Dependencies.json`, written by `sqlsc dependencies` from [coop-sql-source-control](https://github.com/kabukisensei/coop-sql-source-control)); paths relative to this file. Each reference the parse did not link becomes a `catalog_dependency_unparsed` warning on the referencing object's script. Never adds an edge, never affects exit codes. See [SQL from coop-sql-source-control](#sql-from-coop-sql-source-control). |
 
 ### SQL from coop-sql-source-control

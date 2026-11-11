@@ -188,9 +188,10 @@ class Config(BaseModel):
     branding: Branding = Field(default_factory=Branding)
     output: OutputConfig = Field(default_factory=OutputConfig)
     sql_dialect: str = "tsql"
-    # review-findings JSON files (coop-sql-review / coop-dax-review
-    # `--format json`) composed into the portal at render time (issue #38).
-    # Paths resolve against this file's folder; `--reviews` extends the list.
+    # Retired: review files of coop-sql-review / coop-dax-review were once
+    # composed into the portal. Still accepted so older configs load; a
+    # non-empty list only adds a `reviews_retired` warning, and `setup` /
+    # `config-set` drop it when they rewrite the file.
     reviews: list[str] = Field(default_factory=list)
     # database dependency lists (`sqlsc dependencies` → Dependencies.json) the
     # parsed lineage is checked against; a missed reference becomes a
@@ -411,7 +412,7 @@ ignore_schemas: {ignore_schemas}
 # to this file; colors as hex). Leave empty for the default theme.
 {branding_block}
 
-{reviews_block}{catalog_dependencies_block}output:
+{catalog_dependencies_block}output:
   dir: {output_dir}        # markdown docs (for agents)
   site_dir: {site_dir}     # html portal (for humans)
 
@@ -439,17 +440,14 @@ def render_config_yaml(
     output_dir: str = "./data-docs",
     site_dir: str = "./data-docs-site",
     sql_dialect: str = "tsql",
-    reviews: list[str] | None = None,
     coverage: dict[str, dict] | None = None,
     catalog_dependencies: list[str] | None = None,
 ) -> str:
     """Render a commented coop-data-doc.yml from values.
 
     Used by both `init` (defaults) and the `setup` wizard (entered/refreshed
-    values). All scalars are JSON-quoted, which is valid YAML. ``reviews``
-    renders nothing when empty, so configs without review files are
-    byte-identical to before the key existed; ``include_schemas`` likewise
-    renders only when non-empty.
+    values). All scalars are JSON-quoted, which is valid YAML.
+    ``include_schemas`` renders only when non-empty.
     """
     if repos is None:
         repos = {}
@@ -523,18 +521,6 @@ def render_config_yaml(
     else:
         include_schemas_block = ""
 
-    if reviews:
-        lines = [
-            "# Review-findings JSON files (coop-sql-review / coop-dax-review",
-            "# `check --format json` output) composed into the portal at build time.",
-            "# Paths are relative to this file; `--reviews` on build/check extends the list.",
-            "reviews:",
-        ]
-        lines.extend(f"  - {json.dumps(p)}" for p in reviews)
-        reviews_block = "\n".join(lines) + "\n\n"
-    else:
-        reviews_block = ""
-
     if catalog_dependencies:
         lines = [
             "# The database's own dependency lists (`sqlsc dependencies` writes",
@@ -564,6 +550,5 @@ def render_config_yaml(
         output_dir=json.dumps(output_dir),
         site_dir=json.dumps(site_dir),
         sql_dialect=json.dumps(sql_dialect),
-        reviews_block=reviews_block,
         catalog_dependencies_block=catalog_dependencies_block,
     )
