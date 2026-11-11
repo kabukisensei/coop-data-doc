@@ -1352,3 +1352,22 @@ def test_qualified_measure_ref_in_impact_and_unused_list(tmp_path: Path):
     assert result.exit_code == 0, result.output
     impact = json.loads(result.output)
     assert "measure:sales.sales plan" in impact["measure:sales.total sales"]
+
+
+def test_a_retired_reviews_list_is_a_warning_and_a_stale_findings_page_goes(tmp_path: Path):
+    # The review-findings composition was removed with coop-sql-review /
+    # coop-dax-review. An older config that still lists files loads and builds
+    # with one advisory warning, and a portal built before the removal
+    # loses its findings.md on the next build.
+    setup_workspace(tmp_path)
+    config = tmp_path / "coop-data-doc.yml"
+    config.write_text(config.read_text(encoding="utf-8") + 'reviews:\n  - "missing.json"\n', encoding="utf-8")
+    stale = tmp_path / "data-docs" / "findings.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("# Review findings\n", encoding="utf-8")
+
+    assert run(["build", "--non-interactive", "--skip-html"], tmp_path).exit_code == 0
+    assert not stale.exists()
+    diagnostics = json.loads((tmp_path / "data-docs" / "diagnostics.json").read_text(encoding="utf-8"))
+    assert "reviews_retired" in json.dumps(diagnostics)
+    assert run(["build", "--non-interactive", "--reviews", "x.json"], tmp_path).exit_code == 2

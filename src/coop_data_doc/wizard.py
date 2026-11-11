@@ -1060,8 +1060,6 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
         output_dir=output_dir,
         site_dir=site_dir,
         sql_dialect=sql_dialect,
-        # carry an existing reviews: list through unchanged (not prompted separately)
-        reviews=existing.reviews if existing is not None else None,
         catalog_dependencies=existing.catalog_dependencies if existing is not None else None,
     )
     try:

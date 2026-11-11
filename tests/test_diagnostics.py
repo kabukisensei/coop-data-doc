@@ -25,8 +25,7 @@ def test_severity_classification():
 
 def test_every_emitted_category_is_registered():
     """The _SEVERITY map is 'the one place that classifies every warning'. Guard
-    it: every ``category="..."`` literal in the source (plus the reviews._warn
-    default parameter) must be an EXPLICIT key of _SEVERITY, so a new or typo'd
+    it: every ``category="..."`` literal in the source must be an EXPLICIT key of _SEVERITY, so a new or typo'd
     category is a test failure instead of a silent fall-through to the warning
     default — which would mask a category that should be error-severity."""
     src = Path(coop_data_doc.__file__).parent
@@ -34,8 +33,6 @@ def test_every_emitted_category_is_registered():
     for path in src.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         emitted |= set(re.findall(r"""category\s*=\s*["']([a-z_]+)["']""", text))
-    # reviews._warn defaults category to reviews_unreadable (not a literal at a call site)
-    emitted.add("reviews_unreadable")
     unregistered = sorted(c for c in emitted if c not in _SEVERITY)
     assert unregistered == [], f"unregistered warning categories: {unregistered}"
 
