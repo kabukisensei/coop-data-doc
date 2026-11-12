@@ -1354,3 +1354,77 @@ def test_module_kind_shown_on_page(tmp_path: Path):
     render_markdown(g, tmp_path, "Test Estate")
     assert "**Kind:** Trigger" in page_path(tmp_path, "stored_proc:dbo.tr_audit").read_text(encoding="utf-8")
     assert "**Kind:**" not in page_path(tmp_path, "stored_proc:dbo.usp_load").read_text(encoding="utf-8")
+
+
+def test_unused_tables_and_columns(tmp_path: Path):
+    # A model read by a report lists the tables and columns nothing uses: a
+    # dimension that is only joined (never shown or calculated on) is an unused
+    # table; a used table's columns are listed unless a report shows or filters
+    # them, DAX references them, or a relationship uses them as a key.
+
+    g = LineageGraph()
+    model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    model.metadata["relationships"] = [
+        {"from": "fact.fktask", "to": "task.pktask", "active": True, "bidirectional": False},
+        {"from": "fact.fkcustomer", "to": "customer.pkcustomer", "active": True, "bidirectional": False},
+    ]
+    cols = lambda *names: [Column(name=n) for n in names]
+    fact = g.add_node(
+        make_node(
+            NodeType.PBI_TABLE,
+            "sales",
+            "fact",
+            display_name="Fact",
+            columns=cols("fktask", "fkcustomer", "amount", "qty", "price", "linetotal", "legacycode"),
+        )
+    )
+    fact.metadata["calculated_columns"] = {"linetotal": "[qty] * [price]"}
+    fact.metadata["hidden_columns"] = ["legacycode"]
+    g.add_node(
+        make_node(
+            NodeType.PBI_TABLE, "sales", "task", display_name="Task", columns=cols("pktask", "taskname")
+        )
+    )
+    customer = g.add_node(
+        make_node(
+            NodeType.PBI_TABLE,
+            "sales",
+            "customer",
+            display_name="Customer",
+            columns=cols("pkcustomer", "customername", "region"),
+        )
+    )
+    measure = g.add_node(make_node(NodeType.MEASURE, "sales", "total", display_name="Total"))
+    measure.metadata.update({"dax": "SUM(Fact[Amount])", "home_table": fact.id})
+    report = g.add_node(make_node(NodeType.REPORT, "", "dash", display_name="Dash"))
+    report.metadata["field_refs"] = [
+        _ref(customer.id, "CustomerName", "column"),
+        _ref(fact.id, "LineTotal", "column", role="filter"),
+    ]
+    g.add_edge(Edge(source_id=model.id, target_id=report.id, edge_type=EdgeType.FEEDS))
+
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
+    section = page.split("## Unused tables and columns", 1)[1].split("\n## ", 1)[0]
+    tables_part, columns_part = section.split("Columns (", 1)
+    assert "[Task](" in tables_part  # only joined, never shown -> unused table
+    assert "[Fact](" not in tables_part and "[Customer](" not in tables_part
+    assert "`region`" in columns_part
+    assert "`legacycode` (hidden)" in columns_part
+    for used in ("customername", "pkcustomer", "fktask", "fkcustomer", "amount", "qty", "price", "linetotal"):
+        assert f"`{used}`" not in columns_part, used
+    # Task's columns are not listed separately: the whole table is unused
+    assert "`taskname`" not in columns_part
+
+
+def test_unused_fields_skipped_without_a_report(tmp_path: Path):
+    # with no parsed report reading the model, nothing can be judged
+
+    g = LineageGraph()
+    g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+    g.add_node(
+        make_node(NodeType.PBI_TABLE, "sales", "task", display_name="Task", columns=[Column(name="x")])
+    )
+    render_markdown(g, tmp_path, "Test")
+    page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
+    assert "## Unused tables and columns" not in page

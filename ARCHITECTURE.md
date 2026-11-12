@@ -144,6 +144,13 @@ deterministic:
   functional user can walk a report number back to the SQL behind it.
 - **Unused measures** (semantic models) — a cleanup roll-up of measures nothing
   references or shows, with a matching advisory badge on each measure's page.
+- **Unused tables and columns** (semantic models a parsed report reads) — model
+  tables and columns no report shows or filters and no DAX in the model references
+  (measures, calculated tables, calculated columns). A table that is only joined is
+  listed; relationship key columns are not. Hidden columns are marked. Advisory:
+  RLS, calculation groups, field parameters, sort-by columns and outside reports are
+  not seen (`render/unused_fields.py`). Measures carry `home_table` and tables carry
+  `hidden_columns` / `calculated_columns` metadata for it.
 - **Report pages are deliberately minimal** — just the model(s) a report draws
   from and the measures/tables it references (no per-visual detail); the nav
   nests each report under every model it draws from.

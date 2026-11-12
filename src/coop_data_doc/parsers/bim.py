@@ -176,6 +176,24 @@ def parse_bim(
                     },
                 )
             )
+            # kept for the unused-fields report: hidden columns and the DAX of
+            # calculated columns (the columns that DAX references count as used)
+            hidden_columns = sorted(
+                {
+                    normalize_identifier(c["name"])
+                    for c in table_columns
+                    if c.get("name") and c.get("isHidden")
+                }
+            )
+            if hidden_columns:
+                table_node.metadata["hidden_columns"] = hidden_columns
+            calculated_columns = {
+                normalize_identifier(c["name"]): _expression_text(c.get("expression"))
+                for c in table_columns
+                if c.get("name") and str(c.get("type") or "").lower() == "calculated" and c.get("expression")
+            }
+            if calculated_columns:
+                table_node.metadata["calculated_columns"] = dict(sorted(calculated_columns.items()))
             graph.add_edge(
                 Edge(
                     source_id=table_node.id,
@@ -244,9 +262,13 @@ def parse_bim(
                             {
                                 "dax": _expression_text(measure.get("expression")),
                                 "description": str(measure.get("description") or ""),
+                                "home_table": table_node.id,
                             }
                             if measure.get("description")
-                            else {"dax": _expression_text(measure.get("expression"))}
+                            else {
+                                "dax": _expression_text(measure.get("expression")),
+                                "home_table": table_node.id,
+                            }
                         ),
                     )
                 )
