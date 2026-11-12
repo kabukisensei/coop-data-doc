@@ -19,6 +19,7 @@ from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, no
 from coop_data_doc.graph.serialize import to_json_str
 from coop_data_doc.render.estate_map import render_estate_map_page
 from coop_data_doc.render.paths import doc_relpath, slug
+from coop_data_doc.render.unused_fields import unused_fields
 
 INTENT_BEGIN = "<!-- intent:begin -->"
 INTENT_END = "<!-- intent:end -->"
@@ -454,6 +455,35 @@ _UNUSED_MEASURE_CAVEAT = (
 )
 
 
+_UNUSED_FIELDS_CAVEAT = (
+    "not shown or filtered in any parsed report and not referenced by any DAX in this "
+    "model. RLS, calculation groups, field parameters, sort-by columns, hierarchies and "
+    "reports outside these repos aren't tracked, so confirm before hiding or deleting."
+)
+
+
+def _unused_fields_section(graph: LineageGraph, node: Node) -> str:
+    """Roll-up on a semantic-model page listing the model's tables and columns
+    nothing parsed uses, so a cleanup can hide or deprecate them. "" when the
+    model has no parsed report (nothing can be judged) or everything is used."""
+    found = unused_fields(graph, node)
+    if found is None or (not found.tables and not found.columns):
+        return ""
+    lines = ["## Unused tables and columns", "", f"_Defined in this model but {_UNUSED_FIELDS_CAVEAT}_", ""]
+    if found.tables:
+        lines += ["Tables:", ""]
+        lines.extend(f"- [{_link_text(t.display)}]({doc_relpath(t)})" for t in found.tables)
+        lines.append("")
+    if found.columns:
+        lines += ["Columns (in tables that are otherwise used):", ""]
+        lines.extend(
+            f"- [{_link_text(t.display)}]({doc_relpath(t)}) `{column}`" + (" (hidden)" if hidden else "")
+            for t, column, hidden in found.columns
+        )
+        lines.append("")
+    return "\n".join(lines).rstrip("\n")
+
+
 def _unused_measures_section(graph: LineageGraph, node: Node, used: set[str]) -> str:
     """Roll-up on a semantic-model page listing its measures that nothing
     depends on — MeasureLens-style dead-measure detection for cleanup. Returns
@@ -830,6 +860,13 @@ def render_node_page(
             [unused_section, ""]
             if node.node_type is NodeType.SEMANTIC_MODEL
             and (unused_section := _unused_measures_section(graph, node, used_measures))
+            else []
+        ),
+        # unused tables/columns roll-up for cleanup, semantic models only ("" when none)
+        *(
+            [fields_section, ""]
+            if node.node_type is NodeType.SEMANTIC_MODEL
+            and (fields_section := _unused_fields_section(graph, node))
             else []
         ),
         # full "trace back to source" tree on measures + model-facing gold objects

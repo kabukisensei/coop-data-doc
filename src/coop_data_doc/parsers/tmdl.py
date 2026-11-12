@@ -371,7 +371,11 @@ def parse_table_file(
                     schema_name=model_key,
                     display_name=measure_name,
                     source_file=entry.path,
-                    metadata=({"dax": dax, "description": measure_desc} if measure_desc else {"dax": dax}),
+                    metadata=(
+                        {"dax": dax, "description": measure_desc, "home_table": table_node.id}
+                        if measure_desc
+                        else {"dax": dax, "home_table": table_node.id}
+                    ),
                 )
             )
             graph.add_edge(
@@ -401,6 +405,8 @@ def parse_table_file(
                 # current_column pointing at the column so its own `dataType:` (a property
                 # line, which ends the body) still attaches HERE, not to the previous column.
                 _dax, i = _consume_expression(lines, i, indent, expr)
+                # kept so the unused-fields report sees the columns it references
+                table_node.metadata.setdefault("calculated_columns", {})[name] = _dax
             continue
 
         datatype_match = _DATATYPE_RE.match(stripped)
@@ -413,6 +419,10 @@ def parse_table_file(
         if hidden_match and current_column is not None:
             if hidden_match.group(1).strip().lower() == "true":
                 hidden_cols.add(current_column.name)  # a hidden data column (issue #27)
+                hidden = table_node.metadata.setdefault("hidden_columns", [])
+                if current_column.name not in hidden:
+                    hidden.append(current_column.name)
+                    hidden.sort()
             i += 1
             continue
 
