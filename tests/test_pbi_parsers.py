@@ -6,7 +6,7 @@ from pathlib import Path
 from coop_data_doc.config import Config, RepoConfig
 from coop_data_doc.crawler import FileEntry, FileKind, crawl
 from coop_data_doc.graph import LineageGraph, to_json_str
-from coop_data_doc.parsers.dax import extract_refs
+from coop_data_doc.parsers.dax import extract_refs, extract_table_names
 from coop_data_doc.parsers.mcode import extract_source
 from coop_data_doc.parsers.pbir import (
     link_visual_bindings,
@@ -179,6 +179,22 @@ def test_mcode_static_calculation_table():
 
 
 # ---- dax unit tests --------------------------------------------------------
+
+
+def test_extract_table_names_reads_table_arguments():
+    # #105: a table named as a table argument, quoted or bare, in any case; never a
+    # comment, a string literal, a bracketed name, an unknown word or a VAR's name
+    tables = {"orders", "returns", "filter"}
+    assert extract_table_names("COUNTROWS(Orders)", tables) == {"orders"}
+    assert extract_table_names("SUMX('Orders', 1) + COUNTROWS(FILTER(returns, TRUE()))", tables) == {
+        "orders",
+        "returns",
+        "filter",  # a word spelled like a table counts: it errs toward used
+    }
+    assert extract_table_names("SUM(Orders[Id]) // Returns", tables) == {"orders"}
+    assert extract_table_names('"Orders" & [Returns] /* Orders */', tables) == set()
+    assert extract_table_names("VAR Orders = 1 RETURN Orders + COUNTROWS(Returns)", tables) == {"returns"}
+    assert extract_table_names("COUNTROWS('O''Brien')", {"obrien"}) == {"obrien"}
 
 
 def test_dax_refs():

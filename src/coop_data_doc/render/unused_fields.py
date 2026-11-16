@@ -10,7 +10,9 @@ column is *used* when any of these names it:
   column. A qualified ``Table[Name]`` marks that column; a bare ``[Name]`` (row
   context) marks a column of that name in every table of the model, and a
   calculated column's bare refs its own table's columns, so a column is never
-  reported while any DAX could be reading it;
+  reported while any DAX could be reading it. A table named as a table argument
+  (``COUNTROWS(Orders)``, ``SUMX('Orders', ...)``) is a used table, though its
+  columns are judged on their own (#105);
 * for a table, also: any DAX reference edge to it, any column of it in use, or
   any measure it hosts (its measures are reported separately as unused measures).
 
@@ -26,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from coop_data_doc.graph.model import EdgeType, LineageGraph, Node, NodeType, normalize_identifier
-from coop_data_doc.parsers.dax import extract_qualified_refs, extract_refs
+from coop_data_doc.parsers.dax import extract_qualified_refs, extract_refs, extract_table_names
 
 
 @dataclass
@@ -68,6 +70,8 @@ def unused_fields(graph: LineageGraph, model: Node) -> UnusedFields | None:
     key_columns: set[tuple[str, str]] = set()  # relationship endpoints
 
     def mark_dax(dax: str, own_table: str | None = None) -> None:
+        for table_key in extract_table_names(dax, by_name):
+            used_tables.add(by_name[table_key])
         for table_key, member in extract_qualified_refs(dax):
             table_id = by_name.get(table_key)
             if table_id is not None:

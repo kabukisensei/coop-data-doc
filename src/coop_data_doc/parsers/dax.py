@@ -10,6 +10,7 @@ removed before matching so they can never produce references.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 
 from coop_data_doc.config import ParseWarning
 from coop_data_doc.graph.model import (
@@ -126,6 +127,30 @@ def extract_refs(dax: str) -> tuple[set[str], set[str]]:
         if name not in _DAX_KEYWORDS:
             tables.add(name)
     return measures, tables
+
+
+_NAME_RE = re.compile(r"'((?:[^'\n]|'')+)'|\b([A-Za-z_][A-Za-z0-9_]*)\b")
+_BRACKETED_RE = re.compile(r"\[[^\[\]]*\]")
+_VAR_RE = re.compile(r"\bVAR\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+
+def extract_table_names(dax: str, tables: Collection[str]) -> set[str]:
+    """The known tables (normalized names) the expression names anywhere: as a
+    table argument (``COUNTROWS(Orders)``, ``SUMX('Orders', ...)``) as much as
+    before a ``[Column]``. Comments, string literals and bracketed names never
+    count, and a name a ``VAR`` declares is the variable's, not a table's (#105).
+    Any other word spelled like a table counts, so an unparsed reference errs
+    toward *used*, never toward *unused*."""
+    text = _BRACKETED_RE.sub(" ", _clean(dax))
+    shadowed = {normalize_identifier(match.group(1)) for match in _VAR_RE.finditer(text)}
+    known = set(tables) - shadowed
+    found: set[str] = set()
+    for match in _NAME_RE.finditer(text):
+        raw = match.group(1).replace("''", "'") if match.group(1) is not None else match.group(2)
+        name = normalize_identifier(raw)
+        if name in known:
+            found.add(name)
+    return found
 
 
 def extract_qualified_refs(dax: str) -> set[tuple[str, str]]:
