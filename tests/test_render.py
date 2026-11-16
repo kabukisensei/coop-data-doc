@@ -1417,6 +1417,69 @@ def test_unused_tables_and_columns(tmp_path: Path):
     assert "`taskname`" not in columns_part
 
 
+def test_table_named_as_a_dax_table_argument_is_used(tmp_path: Path):
+    # #105: COUNTROWS(Orders), SUMX('Orders', 1) and a table inside FILTER name the
+    # table without a [Column]; the table is used, its columns still judged alone.
+    # A comment, a string literal or a VAR spelled like a table marks nothing.
+
+    def build(dax: str) -> tuple[str, str]:
+        g = LineageGraph()
+        model = g.add_node(make_node(NodeType.SEMANTIC_MODEL, "", "sales", display_name="Sales"))
+        g.add_node(
+            make_node(
+                NodeType.PBI_TABLE, "sales", "orders", display_name="Orders", columns=[Column(name="id")]
+            )
+        )
+        g.add_node(
+            make_node(
+                NodeType.PBI_TABLE, "sales", "returns", display_name="Returns", columns=[Column(name="id")]
+            )
+        )
+        home = g.add_node(
+            make_node(
+                NodeType.PBI_TABLE,
+                "sales",
+                "measures",
+                display_name="Measures",
+                columns=[Column(name="dummy")],
+            )
+        )
+        home.metadata["measure_table"] = True
+        measure = g.add_node(make_node(NodeType.MEASURE, "sales", "order count", display_name="Order Count"))
+        measure.metadata.update({"dax": dax, "home_table": home.id})
+        report = g.add_node(make_node(NodeType.REPORT, "", "dash", display_name="Dash"))
+        report.metadata["field_refs"] = [_ref(home.id, "Order Count", "measure")]
+        g.add_edge(Edge(source_id=model.id, target_id=report.id, edge_type=EdgeType.FEEDS))
+        render_markdown(g, tmp_path, "Test")
+        page = page_path(tmp_path, "semantic_model:sales").read_text(encoding="utf-8")
+        section = page.split("## Unused tables and columns", 1)[1].split("\n## ", 1)[0]
+        return section.split("Columns (", 1) if "Columns (" in section else (section, "")
+
+    for dax in (
+        "COUNTROWS(Orders)",
+        "COUNTROWS('Orders')",
+        "SUMX(Orders, 1)",
+        "COUNTROWS(FILTER(Orders, TRUE()))",
+        "SUM(Orders[Id])",
+        "VAR n = COUNTROWS ( orders ) RETURN n",
+    ):
+        tables_part, columns_part = build(dax)
+        assert "[Orders](" not in tables_part, dax
+        assert "[Returns](" in tables_part, dax
+        if "[Id]" in dax:
+            assert "`id`" not in columns_part, dax
+        else:
+            assert "`id`" in columns_part, dax  # the table is used; the column is not shown as used
+    for dax in (
+        "COUNTROWS(Returns) // Orders",
+        'COUNTROWS(Returns) & "Orders"',
+        "VAR Orders = COUNTROWS(Returns) RETURN Orders",
+        "[Orders]",
+    ):
+        tables_part, _ = build(dax)
+        assert "[Orders](" in tables_part, dax
+
+
 def test_unused_fields_skipped_without_a_report(tmp_path: Path):
     # with no parsed report reading the model, nothing can be judged
 
