@@ -1478,6 +1478,24 @@ def test_table_named_as_a_dax_table_argument_is_used(tmp_path: Path):
     ):
         tables_part, _ = build(dax)
         assert "[Orders](" in tables_part, dax
+    # #108: DISTINCT(Orders) / VALUES(Orders) count the table's distinct rows, so
+    # dropping any column could change the measure: no column of it is reported.
+    for dax in (
+        "COUNTROWS(DISTINCT(Orders))",
+        "COUNTROWS(DISTINCT('Orders'))",
+        "COUNTROWS(VALUES(Orders))",
+        "COUNTROWS(DISTINCT(FILTER(Orders, TRUE())))",
+    ):
+        tables_part, columns_part = build(dax)
+        assert "[Orders](" not in tables_part, dax
+        assert "[Returns](" in tables_part, dax
+        assert "`id`" not in columns_part, dax
+    for dax in ("COUNTROWS(DISTINCT(Orders[Id]))", "COUNTROWS(DISTINCT(Returns))"):
+        tables_part, columns_part = build(dax)
+        if "Returns" in dax:
+            assert "[Orders](" in tables_part and "[Returns](" not in tables_part, dax
+        else:
+            assert "[Orders](" not in tables_part and "`id`" not in columns_part, dax
 
 
 def test_unused_fields_skipped_without_a_report(tmp_path: Path):

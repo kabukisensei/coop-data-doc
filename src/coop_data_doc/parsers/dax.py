@@ -153,6 +153,54 @@ def extract_table_names(dax: str, tables: Collection[str]) -> set[str]:
     return found
 
 
+_WHOLE_ROW_RE = re.compile(r"\b(?:DISTINCT|VALUES)\s*\(", re.IGNORECASE)
+_PLAIN_TABLE_RE = re.compile(r"^\s*(?:'((?:[^'\n]|'')+)'|([A-Za-z_][A-Za-z0-9_]*))\s*$")
+_COLUMN_ONLY_RE = re.compile(r"^\s*(?:'(?:[^'\n]|'')+'|[A-Za-z_][A-Za-z0-9_]*)?\s*\[[^\[\]]+\]\s*$")
+
+
+def _argument_end(text: str, start: int) -> int:
+    """Index of the ``)`` closing the call whose argument list starts at ``start``,
+    or ``len(text)`` when it is unbalanced."""
+    depth = 1
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(text)
+
+
+def extract_whole_row_tables(dax: str, tables: Collection[str]) -> set[str]:
+    """The known tables (normalized names) whose every column the expression
+    depends on: the table argument of ``DISTINCT(Orders)`` or ``VALUES(Orders)``,
+    whose result is the table's distinct *rows*, so dropping any column can change
+    it (#108). The column overload (``DISTINCT(Orders[Product])``) names no whole
+    row. A table expression that is not a plain name (``DISTINCT(FILTER(Orders,
+    ...))``) cannot be resolved here, so every known table it names counts: an
+    unparsed shape errs toward *used*, never toward *unused*. A ``VAR`` spelled
+    like a table is the variable's, not the table's."""
+    text = _clean(dax)
+    shadowed = {normalize_identifier(match.group(1)) for match in _VAR_RE.finditer(text)}
+    known = set(tables) - shadowed
+    found: set[str] = set()
+    for match in _WHOLE_ROW_RE.finditer(text):
+        argument = text[match.end() : _argument_end(text, match.end())]
+        if _COLUMN_ONLY_RE.match(argument):
+            continue
+        plain = _PLAIN_TABLE_RE.match(argument)
+        if plain:
+            raw = plain.group(1).replace("''", "'") if plain.group(1) is not None else plain.group(2)
+            name = normalize_identifier(raw)
+            if name in known:
+                found.add(name)
+            continue
+        found |= extract_table_names(argument, known)
+    return found
+
+
 def extract_qualified_refs(dax: str) -> set[tuple[str, str]]:
     """Every table-qualified ``Table[Name]`` reference as (normalized table
     name, member name as written). DAX allows a measure to be qualified by a

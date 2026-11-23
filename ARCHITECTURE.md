@@ -147,7 +147,9 @@ deterministic:
 - **Unused tables and columns** (semantic models a parsed report reads) — model
   tables and columns no report shows or filters and no DAX in the model references
   (measures, calculated tables, calculated columns). A table that is only joined is
-  listed; relationship key columns are not. Hidden columns are marked. Advisory:
+  listed; relationship key columns are not, and neither is any column of a table
+  some DAX takes whole as `DISTINCT(Orders)` or `VALUES(Orders)` (its distinct rows
+  depend on every column). Hidden columns are marked. Advisory:
   RLS, calculation groups, field parameters, sort-by columns and outside reports are
   not seen (`render/unused_fields.py`). Measures carry `home_table` and tables carry
   `hidden_columns` / `calculated_columns` metadata for it.
