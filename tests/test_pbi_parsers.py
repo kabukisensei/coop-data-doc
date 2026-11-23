@@ -6,7 +6,7 @@ from pathlib import Path
 from coop_data_doc.config import Config, RepoConfig
 from coop_data_doc.crawler import FileEntry, FileKind, crawl
 from coop_data_doc.graph import LineageGraph, to_json_str
-from coop_data_doc.parsers.dax import extract_refs, extract_table_names
+from coop_data_doc.parsers.dax import extract_refs, extract_table_names, extract_whole_row_tables
 from coop_data_doc.parsers.mcode import extract_source
 from coop_data_doc.parsers.pbir import (
     link_visual_bindings,
@@ -1755,3 +1755,27 @@ def test_tmdl_fixture_qualified_measure_refs_and_unused_list():
     section = _unused_measures_section(graph, graph.nodes["semantic_model:sales"], used)
     assert "KPI Total" not in section
     assert "Forecast" in section and "Sales Plan" in section
+
+
+def test_extract_whole_row_tables_reads_distinct_and_values_table_arguments():
+    # #108: DISTINCT(table) / VALUES(table) depend on every column's values.
+    tables = {"orders", "returns"}
+    assert extract_whole_row_tables("COUNTROWS(DISTINCT(Orders))", tables) == {"orders"}
+    assert extract_whole_row_tables("COUNTROWS ( distinct ( 'Orders' ) )", tables) == {"orders"}
+    assert extract_whole_row_tables("COUNTROWS(VALUES(Returns))", tables) == {"returns"}
+    # the column overload and a plain table argument name no whole row
+    assert extract_whole_row_tables("COUNTROWS(DISTINCT(Orders[Product]))", tables) == set()
+    assert extract_whole_row_tables("COUNTROWS(DISTINCT('Orders'[Product]))", tables) == set()
+    assert extract_whole_row_tables("COUNTROWS(Orders) + COUNTROWS(FILTER(Returns, TRUE()))", tables) == set()
+    # a table expression that is not a plain name errs toward used
+    assert extract_whole_row_tables("COUNTROWS(DISTINCT(FILTER(Orders, [Qty] > 1)))", tables) == {"orders"}
+    # comments, literals and VARs never count
+    assert extract_whole_row_tables("COUNTROWS(DISTINCT(Returns)) // DISTINCT(Orders)", tables) == {"returns"}
+    assert extract_whole_row_tables('"DISTINCT(Orders)" & COUNTROWS(Returns)', tables) == set()
+    assert (
+        extract_whole_row_tables(
+            "VAR Orders = FILTER(Returns, TRUE()) RETURN COUNTROWS(DISTINCT(Orders))", tables
+        )
+        == set()
+    )
+    assert extract_whole_row_tables("COUNTROWS(DISTINCT('O''Brien'))", {"obrien"}) == {"obrien"}
