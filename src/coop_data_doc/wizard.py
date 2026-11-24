@@ -248,13 +248,25 @@ def _candidate_config(
     mappings: list[tuple[str, str]],
     layers: dict[str, dict[str, list[str]]],
     ignore_schemas: list[str],
+    extra_repos: dict[str, dict[str, object]] | None = None,
 ) -> Config:
     """A throwaway Config built from the wizard's in-flight answers (never
-    written to disk), for dry-run scanning/linking."""
+    written to disk), for dry-run scanning/linking. ``extra_repos`` are the
+    saved config's other repos (a second live source's folder, say), which the
+    wizard keeps but never asks about: the dry run must see them too, or the
+    layer step never offers their schemas."""
+    repos: dict[str, dict[str, object]] | None = None
+    if extra_repos:
+        repos = {key: dict(repo) for key, repo in extra_repos.items()}
+        if sql_path is not None:
+            repos["sql"] = {"path": sql_path, "include": sql_include, "exclude": sql_exclude}
+        if pbi_path is not None:
+            repos["powerbi"] = {"path": pbi_path, "include": pbi_include, "exclude": pbi_exclude}
     rendered = render_config_yaml(
         project_name=project_name,
         sql_path=sql_path,
         pbi_path=pbi_path,
+        repos=repos,
         mappings=mappings,
         layers=layers,
         ignore_schemas=ignore_schemas,
@@ -282,6 +294,7 @@ def _scan_estate(
     pbi_include: list[str],
     pbi_exclude: list[str],
     sql_dialect: str,
+    extra_repos: dict[str, dict[str, object]] | None = None,
 ) -> LineageGraph | None:
     """Parse the estate ONCE, before the layer and mapping questions, so both
     steps confirm discovered facts instead of asking for typed names (issue
@@ -293,8 +306,16 @@ def _scan_estate(
     prompts."""
     import logging
 
+    def on_disk(path: object) -> bool:
+        return isinstance(path, str) and (base_dir / Path(path).expanduser()).resolve().is_dir()
+
+    # A kept repo that is not on disk (not cloned, no snapshot yet) is left out
+    # of the dry run; it never turns the scan off for the repos being set up.
+    extra_repos = {
+        key: repo for key, repo in sorted((extra_repos or {}).items()) if on_disk(repo.get("path"))
+    }
     paths = [path for path in (sql_path, pbi_path) if path is not None]
-    if not paths or not all((base_dir / Path(path).expanduser()).resolve().is_dir() for path in paths):
+    if not all(on_disk(path) for path in paths) or not (paths or extra_repos):
         return None  # nothing to scan; callers use manual entry
 
     from coop_data_doc.cli import build_graph  # lazy: avoid the wizard<->cli cycle
@@ -315,6 +336,7 @@ def _scan_estate(
         mappings=[],
         layers={},
         ignore_schemas=[],
+        extra_repos=extra_repos,
     )
     try:
         parsed, _ = build_graph(config, progress=Progress(should_enable(quiet=False)))
@@ -364,6 +386,7 @@ def _autosuggest_mappings(
     sql_dialect: str,
     mappings: list[tuple[str, str]],
     parsed: LineageGraph | None,
+    extra_repos: dict[str, dict[str, object]] | None = None,
 ) -> list[tuple[str, str]] | None:
     """Propose the schema_mappings actually needed to link Power BI tables to
     their SQL sources, deriving each from where the unresolved tables' object
@@ -409,6 +432,7 @@ def _autosuggest_mappings(
             mappings=working,
             layers=layers,
             ignore_schemas=ignore_schemas,
+            extra_repos=extra_repos,
         )
 
     io.notice("\nConnecting Power BI tables to their SQL sources (read-only, a few seconds)…")
@@ -843,6 +867,13 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
     #     step later both confirm discovered facts instead of asking the user
     #     to type schema names from memory (issue #35) ---
     sql_dialect = existing.sql_dialect if existing else "tsql"
+    # The saved config's other repos (kept as they are below): scanned too, so
+    # a second live source's schemas are offered in the layer step.
+    extra_repos: dict[str, dict[str, object]] = {
+        key: {"path": repo.path, "include": list(repo.include), "exclude": list(repo.exclude)}
+        for key, repo in (existing.repos.items() if existing else [])
+        if key not in ("sql", "powerbi")
+    }
     parsed = _scan_estate(
         io=io,
         base_dir=base_dir,
@@ -854,6 +885,7 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
         pbi_include=pbi_include,
         pbi_exclude=pbi_exclude,
         sql_dialect=sql_dialect,
+        extra_repos=extra_repos,
     )
 
     # --- medallion layers: assign by SCHEMA (the common case) ---
@@ -1001,6 +1033,7 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
             sql_dialect=sql_dialect,
             mappings=mappings,
             parsed=parsed,
+            extra_repos=extra_repos,
         )
     if auto is not None:
         mappings = auto
@@ -1015,11 +1048,7 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
             if schema and model:
                 mappings.append((schema, model))
 
-    repos = {
-        key: {"path": repo.path, "include": list(repo.include), "exclude": list(repo.exclude)}
-        for key, repo in (existing.repos.items() if existing else [])
-        if key not in ("sql", "powerbi")
-    }
+    repos = {key: dict(repo) for key, repo in extra_repos.items()}
     if sql_path is not None:
         repos["sql"] = {"path": sql_path, "include": sql_include, "exclude": sql_exclude}
     if pbi_path is not None:
