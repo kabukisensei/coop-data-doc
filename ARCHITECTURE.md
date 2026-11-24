@@ -197,6 +197,7 @@ src/coop_data_doc/
 ├── diagnostics.py    severity-classified warnings → console / JSON / HTML page
 ├── progress.py       stderr progress bars + spinner (TTY-only)
 ├── wizard.py         interactive `setup` (repos, layers, ignore, mappings)
+├── live.py           `snapshot` — the only database-connected command: a live dev database's catalog written as source files (never imported by the pipeline)
 ├── upgrade.py        `upgrade` — the only networked command (PyPI/git); reports whether a newer release exists and prints the command to run (never self-updates)
 ├── render/           markdown.py, paths.py, site.py (layer-grouped nav)
 └── templates/assets/ vendored iframe-worker + first-party doc-tree.js/nav-collapse.js + custom.css + brand/ defaults

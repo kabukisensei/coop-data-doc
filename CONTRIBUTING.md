@@ -26,9 +26,13 @@ The original builder briefs live in `tasks/` and double as interface documentati
 2. **Offline at runtime.** No network, no DB connections, no LLM calls
    anywhere in the documentation pipeline. The built HTML must work over
    `file://` (vendored assets live in `src/coop_data_doc/templates/assets/`).
-   The single sanctioned exception is the explicit `upgrade` command
-   (`upgrade.py`), which checks PyPI/git for tool and dependency updates —
-   nothing in the pipeline may import it.
+   Two explicit commands are the only sanctioned exceptions, and nothing in
+   the pipeline may import either module: `upgrade` (`upgrade.py`), which
+   checks PyPI/git for tool and dependency updates, and `snapshot`
+   (`live.py`), which reads a live dev database's catalog (SELECT on catalog
+   views, read-only intent, never data rows) into source files the offline
+   pipeline then reads. `live.py` imports `pyodbc` / `azure-identity` (the
+   optional `live` extra) only inside its functions.
 3. **Parsers are pure.** No printing or exiting outside `cli.py`,
    `wizard.py`, `progress.py`, and `linker/interactive.py`; warnings are
    returned as `ParseWarning` values. Parsers/renderers may accept an optional

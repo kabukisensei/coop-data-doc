@@ -359,6 +359,7 @@ upstream link.
 | `output.dir` | string | Where the Markdown (agent docs) is written. Both output folders must be outside every configured source root, with no ancestor/descendant overlap, including resolved symlinks. Use sibling folders for sources and generated output. |
 | `output.site_dir` | string | Where the HTML site is built. **Must be a separate folder from `output.dir`** — not the same folder and not nested inside it (each build wipes `site_dir`, which would clobber your Markdown). Side-by-side like `./data-docs` + `./data-docs-site` is the convention. |
 | `sql_dialect` | string | sqlglot dialect for the SQL repo (`tsql` covers SQL Server / Azure SQL / Fabric warehouse). |
+| `live_sources.<name>` | mapping | A development database `coop-data-doc snapshot` reads into a repo folder: `server`, `database`, `repo` (a key under `repos`, one per live source), `environment` (must be `dev`), optional `auth` (`entra` default, or `windows`) and `tenant_id`. Only the `snapshot` command connects. See [SQL from a live dev database](#sql-from-a-live-dev-database). |
 | `catalog_dependencies` | list of paths | The database's own dependency lists (`Dependencies.json`, written by `sqlsc dependencies` from [coop-sql-source-control](https://github.com/kabukisensei/coop-sql-source-control)); paths relative to this file. Each reference the parse did not link becomes a `catalog_dependency_unparsed` warning on the referencing object's script. Never adds an edge, never affects exit codes. See [SQL from coop-sql-source-control](#sql-from-coop-sql-source-control). |
 
 ### SQL from coop-sql-source-control
@@ -388,6 +389,52 @@ before 1.0.4 scripted it, becomes an `sqlsc_declaration_mismatch` warning. The
 object stays documented under its declared name and nothing is redirected; the
 warning never affects exit codes. Script the object again with sqlsc 1.0.4 or later
 to correct the file.
+
+### SQL from a live dev database
+
+When the SQL is not in a repo, `coop-data-doc snapshot` reads it from the development
+database itself and writes it as files, and `build` reads those files like any repo:
+
+```yaml
+repos:
+  warehouse:
+    path: "./live/warehouse"        # a folder of its own; the snapshot owns it
+    include: ["**/*.sql"]
+live_sources:
+  dev_warehouse:
+    server: "<host>.datawarehouse.fabric.microsoft.com"
+    database: "<database name>"
+    repo: warehouse                 # the repo above receives the files
+    environment: dev                # required; any other value is refused
+```
+
+```bash
+pipx install 'coop-data-doc[live]'            # once: adds pyodbc + azure-identity
+coop-data-doc snapshot --build                # read the database, then rebuild the docs
+coop-data-doc snapshot --if-older-than 7 --build   # the same, at most once a week
+```
+
+- **What is read:** the catalog only (`sys.objects`, `sys.sql_modules`, `sys.columns`,
+  `sys.sql_expression_dependencies`). Views, procedures, functions and triggers are
+  written as the database stores them; each table becomes a plain `CREATE TABLE` of its
+  columns. No rows of data are read, nothing is changed, and the connection asks for
+  read-only intent.
+- **Sign-in:** Entra ID from the machine's `az login` (default), or `auth: windows` for
+  a SQL Server on the domain. A password cannot be configured. Add `tenant_id` when the
+  database is in another tenant. The machine needs the ODBC Driver 18 for SQL Server.
+- **The folder:** a snapshot only writes into an empty folder or its own earlier
+  snapshot (it keeps a `.coop-data-doc-snapshot.json` there), deletes only files it
+  wrote, and refuses a folder holding anything else. A failed read leaves last week's
+  snapshot as it was.
+- **The dependency check:** the snapshot's `Dependencies.json` is used automatically
+  (no `catalog_dependencies` entry needed). A platform that does not list dependencies
+  only loses that cross-check.
+- **Reported, not guessed:** an object whose definition this sign-in cannot see (no
+  `VIEW DEFINITION`, or encrypted) is left out and named in the output, and so is a
+  module renamed with `sp_rename`, whose stored text still declares the old name.
+
+What a snapshot cannot see is the same as for a repo: notebooks, pipelines, dataflows
+and shortcuts that load a table, and anything inside dynamic SQL.
 
 ### include / exclude — choosing what gets crawled
 
@@ -504,6 +551,7 @@ markers is regenerated, so put your notes inside them.
 | `coop-data-doc build` | identical to `update` — two names for the same command |
 | `coop-data-doc scan` | crawl + parse + link only; writes `graph.json`, no rendering |
 | `coop-data-doc check [--lenient]` | CI gate — fails on stale docs, unresolved references, corrupt/undecodable files, or risky/unresolved warnings (`regex_fallback`, `dynamic_sql`, `unresolved_partition_source`, `ambiguous_visual_binding`); `--lenient` tolerates only those warnings, never a corrupt file |
+| `coop-data-doc snapshot [SOURCE...] [--build] [--if-older-than DAYS] [--json]` | read each `live_sources` dev database's object definitions (catalog only, read-only) into its repo folder; `--build` rebuilds the docs afterwards. Needs the `live` extra |
 | `coop-data-doc upgrade` | check for a newer release and print the exact upgrade command (does **not** self-update) |
 | `coop-data-doc help [command]` | show help (same as `--help`) |
 
@@ -581,8 +629,9 @@ pipx upgrade coop-data-doc      # run in a regular terminal, where the tool isn'
 
 It also lists any out-of-date direct dependencies (flagging major-version jumps for you to
 review), but it never pulls, reinstalls, or updates anything itself — you copy and run the
-printed command. This is the single command that touches the internet; documentation
-builds are always fully offline.
+printed command. `upgrade` is the single command that touches the internet, and
+`snapshot` is the single command that connects to a database (and only when you run
+it); documentation builds are always fully offline.
 
 After running the printed command, `coop-data-doc --version` should report the new version.
 If it still shows the old number, force a clean re-pull: `pipx reinstall coop-data-doc`.

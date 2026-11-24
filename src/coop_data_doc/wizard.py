@@ -1061,6 +1061,9 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
         site_dir=site_dir,
         sql_dialect=sql_dialect,
         catalog_dependencies=existing.catalog_dependencies if existing is not None else None,
+        live_sources=(
+            {k: v.model_dump() for k, v in existing.live_sources.items()} if existing is not None else None
+        ),
     )
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)

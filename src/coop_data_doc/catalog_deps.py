@@ -53,7 +53,19 @@ def load(config: Config) -> tuple[list[tuple[str, dict]], list[ParseWarning]]:
     plus a ``catalog_dependencies_unreadable`` warning for each file that can't be used."""
     entries: list[tuple[str, dict]] = []
     warnings: list[ParseWarning] = []
-    for raw in config.catalog_dependencies:
+    listed = list(config.catalog_dependencies)
+    resolved = {(config.base_dir / Path(raw).expanduser()).resolve() for raw in listed}
+    # a live source's snapshot carries its own list; use it when it is there
+    for name in sorted(config.live_sources):
+        repo = config.repos.get(config.live_sources[name].repo)
+        if repo is None:
+            continue
+        raw = (Path(repo.path) / "Dependencies.json").as_posix()
+        path = (config.base_dir / Path(raw).expanduser()).resolve()
+        if path not in resolved and path.is_file():
+            listed.append(raw)
+            resolved.add(path)
+    for raw in listed:
         path = (config.base_dir / Path(raw).expanduser()).resolve()
 
         def unreadable(why: str, raw: str = raw) -> None:
