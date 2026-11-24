@@ -1,5 +1,7 @@
 # Keeps the commit-SHA pins on GitHub Actions current: one grouped PR a week
-# when any action in .github/workflows/ has a newer release.
+# when any action in .github/workflows/ has a newer release. Python
+# dependencies in the root pyproject get one grouped PR a week for minor
+# and patch updates.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -10,3 +12,14 @@ updates:
       github-actions:
         patterns:
           - "*"
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      pip-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

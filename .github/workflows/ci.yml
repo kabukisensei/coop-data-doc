@@ -13,10 +13,11 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      # Pin ruff: new minor versions expand the default rule set and can break
-      # lint on code that previously passed — CI and the dev extra in
-      # pyproject.toml must move together.
-      - run: pip install ruff==0.16.1
+      # Ruff is pinned exactly in the dev extra (pyproject.toml). New minor
+      # versions expand the default rule set and can break lint on code that
+      # previously passed. Install that extra so CI uses the same pin as a
+      # local dev install.
+      - run: pip install -e ".[dev]"
       - run: ruff check src tests
       - run: ruff format --check src tests
 
