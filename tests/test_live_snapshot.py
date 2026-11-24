@@ -7,6 +7,7 @@ only ever deletes its own files, it refuses anything that is not a dev source or
 not its own folder, and the pipeline never loads the database code."""
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -555,6 +556,7 @@ def test_the_pipeline_never_loads_the_database_code(tmp_path: Path):
         capture_output=True,
         check=False,
         text=True,
-        env={"PYTHONPATH": src, "COOP_DATA_DOC_JOBS": "1"},
+        # the whole environment: Windows cannot load its socket provider without SystemRoot
+        env={**os.environ, "PYTHONPATH": src, "COOP_DATA_DOC_JOBS": "1"},
     )
     assert done.returncode == 0, done.stderr
