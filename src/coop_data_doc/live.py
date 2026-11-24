@@ -252,9 +252,7 @@ def _az_cli_token(source: LiveSource) -> str:
     if source.tenant_id:
         command += ["--tenant", source.tenant_id]
     try:
-        done = subprocess.run(
-            command, capture_output=True, text=True, timeout=60, check=False
-        )
+        done = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise LiveError(f"Could not get an Entra ID token from the Azure CLI: {type(exc).__name__}.") from exc
     token = done.stdout.strip()
