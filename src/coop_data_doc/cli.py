@@ -249,6 +249,17 @@ def resolve_graph(
     return result, warnings
 
 
+def _totals_line(graph: LineageGraph, result: ResolutionResult) -> str:
+    """The closing count. "Cross-repo links" are Power BI tables linked to the SQL
+    object they load; with no Power BI table in the docs there is nothing to link,
+    so the count is left out instead of reading as "0 links found"."""
+    line = f"{len(graph.nodes)} objects, {len(graph.edges)} lineage edges"
+    linkable = any(node.node_type == NodeType.PBI_TABLE for node in graph.nodes.values())
+    if linkable or result.resolved or result.unresolved:
+        line += f" ({result.resolved} cross-repo links; {len(result.unresolved)} unresolved)"
+    return line
+
+
 def run_pipeline(
     config: Config,
     interactive: bool,
@@ -411,11 +422,7 @@ def _scan(
         click.echo("", err=True)
         for line in diagnostics.console_lines():
             click.echo(line, err=True)
-        click.echo(
-            f"\n{len(graph.nodes)} objects, {len(graph.edges)} lineage edges "
-            f"({result.resolved} cross-repo links; {len(result.unresolved)} unresolved)",
-            err=True,
-        )
+        click.echo(f"\n{_totals_line(graph, result)}", err=True)
     return graph, diagnostics
 
 
