@@ -8,6 +8,7 @@ from click.testing import CliRunner
 from coop_data_doc import folders as F
 from coop_data_doc.cli import cli
 from coop_data_doc.config import Config
+from coop_data_doc.linker.cache import LineageCache
 from coop_data_doc.crawler import crawl
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -369,6 +370,36 @@ def test_resolve_lists_ambiguous_then_apply_resolves(tmp_path: Path):
     # 3. resolve again: the decision is cached, so it's no longer pending
     again = json.loads(_run(["resolve"], tmp_path).output)
     assert "pbi_table:sales.fact_sales" not in {u["cache_key"] for u in again["unresolved"]}
+
+
+def test_resolve_apply_writes_the_cache_once(tmp_path: Path, monkeypatch):
+    # N decisions used to rewrite the whole file N times inside put(), then once
+    # more. One publish must store every decision.
+    _workspace(tmp_path)
+    writes = {"n": 0}
+    real_write = LineageCache.write
+
+    def counting(self):
+        writes["n"] += 1
+        return real_write(self)
+
+    monkeypatch.setattr(LineageCache, "write", counting)
+    payload = json.dumps(
+        {
+            "decisions": [
+                {"cache_key": "pbi_table:sales.ext_unresolved", "external": True},
+                {"cache_key": "pbi_table:sales.orders_native", "skip": True},
+                {"cache_key": "pbi_table:sales.fact_sales", "target": "gold_table:dbo.fact_sales"},
+            ]
+        }
+    )
+    res = _run(["resolve-apply"], tmp_path, stdin=payload)
+    assert res.exit_code == 0, res.output
+    assert writes["n"] == 1
+    saved = LineageCache.load(tmp_path / ".lineage-cache.json")
+    assert saved.mappings["pbi_table:sales.ext_unresolved"].method == "external"
+    assert saved.mappings["pbi_table:sales.orders_native"].method == "skip"
+    assert saved.mappings["pbi_table:sales.fact_sales"].target == "gold_table:dbo.fact_sales"
 
 
 def test_resolve_apply_external_and_skip(tmp_path: Path):

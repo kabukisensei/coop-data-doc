@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,92 @@ def test_prune_invalid_persist_deletes_and_writes(tmp_path: Path):
     reloaded = cache_at(tmp_path)
     assert stale not in reloaded.mappings
     assert reloaded.mappings[valid].target == "view:sales.dim_customer"
+
+
+def _previous_cache(path: Path) -> bytes:
+    original = b'{"version": 1, "mappings": {"keep": {"method": "skip", "target": null}}}\n'
+    path.write_bytes(original)
+    return original
+
+
+def _stray_cache_files(directory: Path) -> list[str]:
+    return sorted(path.name for path in directory.iterdir() if path.name != ".lineage-cache.json")
+
+
+def test_replace_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkeypatch):
+    # A failure at the publish step must leave the previous answers byte-identical
+    # and must not leave the temporary file behind.
+    path = tmp_path / ".lineage-cache.json"
+    original = _previous_cache(path)
+    cache = LineageCache.load(path)
+    cache.mappings["new"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
+
+    def boom(*_a, **_k):
+        raise OSError("locked by another process")
+
+    monkeypatch.setattr(os, "replace", boom)
+    wrote = cache.write()
+    assert path.read_bytes() == original
+    assert _stray_cache_files(tmp_path) == []
+    assert wrote is False
+    assert [w.category for w in cache.warnings] == ["cache_write_failed"]
+    assert cache.mappings["new"].target == "view:sales.dim_customer"
+
+
+def test_fsync_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkeypatch):
+    path = tmp_path / ".lineage-cache.json"
+    original = _previous_cache(path)
+    cache = LineageCache.load(path)
+    cache.mappings["new"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
+
+    def boom(_fd):
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(os, "fsync", boom)
+    wrote = cache.write()
+    assert path.read_bytes() == original
+    assert _stray_cache_files(tmp_path) == []
+    assert wrote is False
+    assert [w.category for w in cache.warnings] == ["cache_write_failed"]
+
+
+def test_temp_write_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkeypatch):
+    path = tmp_path / ".lineage-cache.json"
+    original = _previous_cache(path)
+    cache = LineageCache.load(path)
+    cache.mappings["new"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "fdopen", boom)
+    wrote = cache.write()
+    assert path.read_bytes() == original
+    assert _stray_cache_files(tmp_path) == []
+    assert wrote is False
+    assert [w.category for w in cache.warnings] == ["cache_write_failed"]
+
+
+def test_put_persists_each_answer_immediately(tmp_path: Path, monkeypatch):
+    # Interactive answers still hit disk one at a time. Bulk apply is the path
+    # that collapses to a single write.
+    cache = cache_at(tmp_path)
+    writes = {"n": 0}
+    real_write = LineageCache.write
+
+    def counting(self):
+        writes["n"] += 1
+        return real_write(self)
+
+    monkeypatch.setattr(LineageCache, "write", counting)
+    cache.put("a", CacheEntry(target=None, method="skip"))
+    assert '"a"' in cache.path.read_text(encoding="utf-8")
+    cache.put("b", CacheEntry(target="view:sales.dim_customer", method="interactive"))
+    text = cache.path.read_text(encoding="utf-8")
+    assert '"a"' in text
+    assert '"b"' in text
+    assert writes["n"] == 2
+    assert _stray_cache_files(tmp_path) == []
 
 
 def test_write_failure_records_warning_never_raises(tmp_path: Path, monkeypatch):
