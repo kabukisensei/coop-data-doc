@@ -423,6 +423,7 @@ coop-data-doc snapshot --if-older-than 7 --build   # the same, at most once a we
 - **Sign-in:** Entra ID from the machine's `az login` (default), or `auth: windows` for
   a SQL Server on the domain. A password cannot be configured. Add `tenant_id` when the
   database is in another tenant. The machine needs the ODBC Driver 18 for SQL Server.
+  Without `azure-identity` (only `pyodbc` installed), the token is read from the Azure CLI.
 - **The folder:** a snapshot only writes into an empty folder or its own earlier
   snapshot (it keeps a `.coop-data-doc-snapshot.json` there), deletes only files it
   wrote, and refuses a folder holding anything else. A failed read leaves last week's

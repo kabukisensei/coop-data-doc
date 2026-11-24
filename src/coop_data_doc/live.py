@@ -211,8 +211,8 @@ def connection_string(source: LiveSource, driver: str) -> str:
 def _entra_token(source: LiveSource) -> str:
     try:
         from azure.identity import DefaultAzureCredential
-    except ImportError as exc:
-        raise LiveError(_MISSING_EXTRA) from exc
+    except ImportError:
+        return _az_cli_token(source)
     import logging
 
     # azure-identity logs every credential it tried as a WARNING with a traceback
@@ -231,6 +231,42 @@ def _entra_token(source: LiveSource) -> str:
         ) from exc
 
 
+_AZ_RESOURCE = "https://database.windows.net/"
+
+
+def _az_cli_token(source: LiveSource) -> str:
+    """The signed-in Azure CLI's token, for an install without azure-identity (the
+    CLI is what `az login` signs in). The token goes from the CLI's output straight
+    to the driver; it is never logged or printed."""
+    import shutil
+    import subprocess
+
+    az = shutil.which("az")
+    if az is None:
+        raise LiveError(
+            "Could not get an Entra ID token: neither azure-identity nor the Azure CLI (`az`) is "
+            "installed. Install the Azure CLI and run `az login`, or install the `live` extra."
+        )
+    command = [az, "account", "get-access-token", "--resource", _AZ_RESOURCE]
+    command += ["--query", "accessToken", "--output", "tsv"]
+    if source.tenant_id:
+        command += ["--tenant", source.tenant_id]
+    try:
+        done = subprocess.run(
+            command, capture_output=True, text=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LiveError(f"Could not get an Entra ID token from the Azure CLI: {type(exc).__name__}.") from exc
+    token = done.stdout.strip()
+    if done.returncode != 0 or not token:
+        first = (done.stderr.strip().splitlines() or ["no token returned"])[0]
+        raise LiveError(
+            "Could not get an Entra ID token. Run `az login` (add --tenant <id> for another "
+            f"tenant) and try again. Details: {first[:300]}"
+        )
+    return token
+
+
 def pack_token(token: str) -> bytes:
     """An access token in the layout the ODBC driver's SQL_COPT_SS_ACCESS_TOKEN takes."""
     encoded = token.encode("utf-16-le")
@@ -238,9 +274,9 @@ def pack_token(token: str) -> bytes:
 
 
 _MISSING_EXTRA = (
-    "Reading a live database needs the optional `live` extra (pyodbc, azure-identity) and the "
-    "ODBC Driver 18 for SQL Server. Install with: pipx install 'coop-data-doc[live]' --force "
-    "(or pipx inject coop-data-doc pyodbc azure-identity); on Windows the driver is "
+    "Reading a live database needs pyodbc and the ODBC Driver 18 for SQL Server. Install with: "
+    "pipx install 'coop-data-doc[live]' --force (or pipx inject coop-data-doc pyodbc, which "
+    "signs in through the Azure CLI); on Windows the driver is "
     "`winget install --id Microsoft.msodbcsql.18 -e`."
 )
 

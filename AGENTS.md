@@ -320,6 +320,8 @@ live_sources:
 `coop-data-doc snapshot` is the **only** command that opens a database connection;
 `scan` / `build` / `check` / `lineage` read the written files and never connect. It
 needs the optional `live` extra (`pyodbc`, `azure-identity`) and the ODBC Driver 18.
+With `pyodbc` alone (no `azure-identity`) the Entra token comes from the signed-in
+Azure CLI (`az account get-access-token`); it is never printed or logged.
 
 - **Reads** (SELECT on catalog views, `ApplicationIntent=ReadOnly`, no data rows):
   `sys.objects`, `sys.sql_modules`, `sys.columns`, `sys.sql_expression_dependencies`.
