@@ -1475,6 +1475,7 @@ def resolve_apply(config_path: str | None, json_src) -> None:
         raise click.ClickException('expected {"decisions": [...]} (or a JSON list of decisions).')
     config = _load_config(config_path)
     cache = LineageCache.load(config.base_dir / ".lineage-cache.json")
+    cache.defer_writes = True
     applied = 0
     for decision in decisions:
         if not isinstance(decision, dict):

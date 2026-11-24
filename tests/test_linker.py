@@ -197,9 +197,7 @@ def _stray_cache_files(directory: Path) -> list[str]:
     return sorted(path.name for path in directory.iterdir() if path.name != ".lineage-cache.json")
 
 
-def test_replace_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkeypatch):
-    # A failure at the publish step must leave the previous answers byte-identical
-    # and must not leave the temporary file behind.
+def test_replace_failure_keeps_previous_cache_removes_temp(tmp_path: Path, monkeypatch):
     path = tmp_path / ".lineage-cache.json"
     original = _previous_cache(path)
     cache = LineageCache.load(path)
@@ -217,7 +215,7 @@ def test_replace_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkeypat
     assert cache.mappings["new"].target == "view:sales.dim_customer"
 
 
-def test_fsync_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkeypatch):
+def test_fsync_failure_keeps_previous_cache_removes_temp(tmp_path: Path, monkeypatch):
     path = tmp_path / ".lineage-cache.json"
     original = _previous_cache(path)
     cache = LineageCache.load(path)
@@ -234,7 +232,7 @@ def test_fsync_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkeypatch
     assert [w.category for w in cache.warnings] == ["cache_write_failed"]
 
 
-def test_temp_write_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkeypatch):
+def test_temp_write_failure_keeps_previous_cache_removes_temp(tmp_path: Path, monkeypatch):
     path = tmp_path / ".lineage-cache.json"
     original = _previous_cache(path)
     cache = LineageCache.load(path)
@@ -252,8 +250,6 @@ def test_temp_write_failure_keeps_previous_cache_and_temp(tmp_path: Path, monkey
 
 
 def test_put_persists_each_answer_immediately(tmp_path: Path, monkeypatch):
-    # Interactive answers still hit disk one at a time. Bulk apply is the path
-    # that collapses to a single write.
     cache = cache_at(tmp_path)
     writes = {"n": 0}
     real_write = LineageCache.write
@@ -273,6 +269,24 @@ def test_put_persists_each_answer_immediately(tmp_path: Path, monkeypatch):
     assert _stray_cache_files(tmp_path) == []
 
 
+def test_write_keeps_existing_cache_permissions(tmp_path: Path):
+    path = tmp_path / ".lineage-cache.json"
+    _previous_cache(path)
+    path.chmod(0o640)
+    cache = LineageCache.load(path)
+    cache.mappings["new"] = CacheEntry(target=None, method="skip")
+    assert cache.write() is True
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_new_cache_file_follows_umask(tmp_path: Path):
+    mask = os.umask(0)
+    os.umask(mask)
+    cache = cache_at(tmp_path)
+    cache.put("a", CacheEntry(target=None, method="skip"))
+    assert cache.path.stat().st_mode & 0o777 == (0o666 & ~mask)
+
+
 def test_write_failure_records_warning_never_raises(tmp_path: Path, monkeypatch):
     # A locked/read-only .lineage-cache.json (Windows OneDrive/Defender) must not
     # crash write(): it records a cache_write_failed warning and returns False,
@@ -282,7 +296,7 @@ def test_write_failure_records_warning_never_raises(tmp_path: Path, monkeypatch)
     def boom(*_a, **_k):
         raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(os, "replace", boom)
     cache.mappings["k"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
     assert cache.write() is False
     assert [w.category for w in cache.warnings] == ["cache_write_failed"]
@@ -298,7 +312,7 @@ def test_interactive_link_survives_unwritable_cache(tmp_path: Path, fake_q, monk
     def boom(*_a, **_k):
         raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(os, "replace", boom)
     graph = build_graph()
     result, warnings = link_graph(graph, make_config(), cache, interactive_mode=True)
 
