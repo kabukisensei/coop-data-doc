@@ -70,3 +70,6 @@ node_modules/
 
 # Local agent state
 .claude/
+
+# Verification transcripts (scripts/verify.sh). The temp venv is under /tmp.
+.cache/

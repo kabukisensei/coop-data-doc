@@ -1,0 +1,29 @@
+# Verification fixture for scripts/verify.sh. Not a product sample.
+# Output folders are siblings of the source roots so a build is allowed to publish.
+
+project_name: "Verify Estate"
+
+repos:
+  sql:
+    path: ./sql
+    include: ["tables/**/*.sql", "views/**/*.sql", "procs/**/*.sql"]
+    exclude: []
+  powerbi:
+    path: ./pbi
+    include: ["**/*.tmdl", "**/definition.pbir"]
+    exclude: []
+
+schema_mappings: []
+
+layers:
+  gold:
+    schemas: ["dbo", "sales"]
+    paths: []
+
+ignore_schemas: []
+
+output:
+  dir: ./data-docs
+  site_dir: ./data-docs-site
+
+sql_dialect: "tsql"
