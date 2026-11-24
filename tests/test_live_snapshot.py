@@ -617,3 +617,12 @@ def test_azure_cli_failures_are_one_line_and_never_show_a_token(monkeypatch):
     with pytest.raises(live.LiveError) as caught:
         live._entra_token(load_source())
     assert "az login" in str(caught.value) and "more" not in str(caught.value)
+
+
+def test_a_token_handed_over_in_the_environment_is_used_as_is(monkeypatch):
+    monkeypatch.setenv(live.TOKEN_ENV, "  handed-token\n")
+    monkeypatch.setitem(sys.modules, "azure.identity", None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: pytest.fail("no sign-in when a token is handed over")
+    )
+    assert live._entra_token(load_source()) == "handed-token"

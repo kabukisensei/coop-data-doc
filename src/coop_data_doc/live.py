@@ -208,7 +208,14 @@ def connection_string(source: LiveSource, driver: str) -> str:
     return ";".join(parts) + ";"
 
 
+TOKEN_ENV = "COOP_DATA_DOC_ACCESS_TOKEN"
+
+
 def _entra_token(source: LiveSource) -> str:
+    # a caller that already holds a token for this database (coop, a pipeline) hands it over
+    handed = os.environ.get(TOKEN_ENV, "").strip()
+    if handed:
+        return handed
     try:
         from azure.identity import DefaultAzureCredential
     except ImportError:
