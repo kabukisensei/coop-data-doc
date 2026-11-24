@@ -562,3 +562,67 @@ def test_the_pipeline_never_loads_the_database_code(tmp_path: Path):
         env={**os.environ, "PYTHONPATH": src, "COOP_DATA_DOC_JOBS": "1"},
     )
     assert done.returncode == 0, done.stderr
+
+
+class _Done:
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def test_without_azure_identity_the_token_comes_from_the_azure_cli(monkeypatch):
+    import shutil
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return _Done(0, stdout="tok-123\n")
+
+    monkeypatch.setitem(sys.modules, "azure.identity", None)  # import -> ImportError
+    monkeypatch.setattr(shutil, "which", lambda name: "/bin/az" if name == "az" else None)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    source = load_source()
+    source.tenant_id = "11111111-2222-3333-4444-555555555555"
+
+    assert live._entra_token(source) == "tok-123"
+    assert calls == [
+        [
+            "/bin/az",
+            "account",
+            "get-access-token",
+            "--resource",
+            "https://database.windows.net/",
+            "--query",
+            "accessToken",
+            "--output",
+            "tsv",
+            "--tenant",
+            "11111111-2222-3333-4444-555555555555",
+        ]
+    ]
+
+
+def test_azure_cli_failures_are_one_line_and_never_show_a_token(monkeypatch):
+    import shutil
+
+    monkeypatch.setitem(sys.modules, "azure.identity", None)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(live.LiveError, match="Azure CLI"):
+        live._entra_token(load_source())
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/bin/az")
+    monkeypatch.setattr(
+        subprocess, "run", lambda command, **kw: _Done(1, stderr="ERROR: Please run 'az login'.\nmore")
+    )
+    with pytest.raises(live.LiveError) as caught:
+        live._entra_token(load_source())
+    assert "az login" in str(caught.value) and "more" not in str(caught.value)
+
+
+def test_a_token_handed_over_in_the_environment_is_used_as_is(monkeypatch):
+    monkeypatch.setenv(live.TOKEN_ENV, "  handed-token\n")
+    monkeypatch.setitem(sys.modules, "azure.identity", None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: pytest.fail("no sign-in when a token is handed over")
+    )
+    assert live._entra_token(load_source()) == "handed-token"

@@ -320,6 +320,8 @@ live_sources:
 `coop-data-doc snapshot` is the **only** command that opens a database connection;
 `scan` / `build` / `check` / `lineage` read the written files and never connect. It
 needs the optional `live` extra (`pyodbc`, `azure-identity`) and the ODBC Driver 18.
+With `pyodbc` alone (no `azure-identity`) the Entra token comes from the signed-in
+Azure CLI (`az account get-access-token`); it is never printed or logged.
 
 - **Reads** (SELECT on catalog views, `ApplicationIntent=ReadOnly`, no data rows):
   `sys.objects`, `sys.sql_modules`, `sys.columns`, `sys.sql_expression_dependencies`.
@@ -499,6 +501,7 @@ Use `--strict` to make unresolved items fatal (exit 2).
 |----------|--------|
 | `COOP_DATA_DOC_CONFIG` | Default config file path (overrides `./coop-data-doc.yml`) |
 | `COOP_DATA_DOC_JOBS` | Default SQL-parse worker count when `--jobs` is omitted (capped at 8, floored at 1; a non-integer is ignored). An explicit `--jobs N` always wins. Set `1` for pool-free, fully in-process runs. |
+| `COOP_DATA_DOC_ACCESS_TOKEN` | An Entra ID access token for `https://database.windows.net/` that `snapshot` uses instead of signing in (for a caller that already holds one, such as coop). Never printed, logged or written. Nothing else reads it. |
 | `COOP_DATA_DOC_CONNECT_TIMEOUT` | Seconds `snapshot` waits for a database sign-in in all, over two tries (default 90, minimum 5). Nothing else reads it. |
 | `COOP_DATA_DOC_DISCOVERY_ROOTS` | Fence for upward config discovery: `os.pathsep`-separated directories; only folders at or below one of them are searched for `coop-data-doc.yml`. Set it in a test suite, CI job or review sandbox so a run inside a disposable folder can never pick up a config above it and scan a real estate. `--config` and `COOP_DATA_DOC_CONFIG` are unaffected. The test suite's `conftest.py` sets it for every test. |
 
