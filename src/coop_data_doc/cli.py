@@ -19,7 +19,7 @@ from pathlib import Path
 import click
 import questionary
 
-from coop_data_doc import __version__, catalog_deps, sqlsc_layout
+from coop_data_doc import __version__, catalog_deps, cross_database, sqlsc_layout
 from coop_data_doc.config import (
     DEFAULT_PBI_INCLUDE,
     DEFAULT_SQL_EXCLUDE,
@@ -156,6 +156,8 @@ def build_graph(
     # no nodes, no diagnostics — must be flagged, never silently uncovered
     warnings += flag_silent_sql_files(sql_entries, graph, warnings)
     resolve_stub_references(graph)
+    # a three-part reference to a database a live source snapshots joins that object
+    warnings += cross_database.link(graph, config)
 
     tmdl = inventory.by_kind(FileKind.TMDL)
     bim = inventory.by_kind(FileKind.BIM)
@@ -272,7 +274,7 @@ def run_pipeline(
         return graph, ResolutionResult(), warnings
     result, link_warnings = resolve_graph(graph, config, interactive, progress, pending_out, deferred_caches)
     warnings += link_warnings
-    if config.catalog_dependencies:
+    if config.catalog_dependencies or config.live_sources:
         # the database's own dependency list: report what the parse missed (never adds edges)
         entries, dep_warnings = catalog_deps.load(config)
         warnings += dep_warnings + catalog_deps.check(graph, config, entries)
@@ -872,6 +874,7 @@ def _render_kwargs_from_config(config: Config) -> dict:
         "site_dir": config.output.site_dir,
         "sql_dialect": config.sql_dialect,
         "catalog_dependencies": list(config.catalog_dependencies),
+        "live_sources": {k: v.model_dump() for k, v in sorted(config.live_sources.items())},
         "coverage": {k: v.model_dump() for k, v in sorted(config.coverage.items())},
     }
 
@@ -1283,6 +1286,7 @@ def _config_to_dict(config: Config) -> dict:
         "branding": branding,
         "sql_dialect": config.sql_dialect,
         "catalog_dependencies": list(config.catalog_dependencies),
+        "live_sources": {k: v.model_dump() for k, v in sorted(config.live_sources.items())},
         "coverage": {k: v.model_dump() for k, v in sorted(config.coverage.items())},
     }
 
@@ -1362,6 +1366,10 @@ def _apply_config_patch(kwargs: dict, patch: dict) -> None:
         kwargs["sql_dialect"] = patch["sql_dialect"]
     if "catalog_dependencies" in patch:
         kwargs["catalog_dependencies"] = [str(p) for p in patch["catalog_dependencies"]]
+    if "live_sources" in patch:
+        if not isinstance(patch["live_sources"], dict):
+            raise TypeError("live_sources must be a JSON object")
+        kwargs["live_sources"] = {str(k): dict(v) for k, v in patch["live_sources"].items()}
 
 
 @cli.command("show-config")
@@ -1685,6 +1693,91 @@ def update(
             file=sys.stderr,
         )
     _run_build(ctx, config_path, non_interactive, strict, skip_html, serve, no_parse_cache, jobs)
+
+
+@cli.command()
+@click.argument("sources", nargs=-1)
+@click.option("--config", "config_path", default=None, help="Config file path (default: discover).")
+@click.option(
+    "--if-older-than",
+    "if_older_than",
+    type=click.FloatRange(min=0),
+    default=None,
+    metavar="DAYS",
+    help="Skip a source whose snapshot is younger than DAYS (no connection is made).",
+)
+@click.option("--build", "then_build", is_flag=True, help="Rebuild the docs after a snapshot was taken.")
+@click.option("--json", "as_json", is_flag=True, help="Print the result as JSON on stdout.")
+@click.pass_context
+def snapshot(
+    ctx: click.Context,
+    sources: tuple[str, ...],
+    config_path: str | None,
+    if_older_than: float | None,
+    then_build: bool,
+    as_json: bool,
+) -> None:
+    """Read live dev databases' object definitions into their source folders.
+
+    For each database under `live_sources` (or only the SOURCES named): connect
+    read-only, read the catalog (definitions, table columns, the dependency
+    list; never data rows) and replace that source's snapshot folder. This is
+    the only command that touches a database; `build` then reads the files.
+    Needs the `live` extra: pipx install 'coop-data-doc[live]'.
+    """
+    from coop_data_doc.live import LiveError, snapshot_source
+
+    selected = _selected_config_path(config_path)
+    if selected is None:
+        raise ConfigError(f"No {DEFAULT_CONFIG} found in this folder or any parent.")
+    # lenient: a live source's folder does not exist before its first snapshot
+    config = _load_config_lenient(selected)
+    config._base_dir = selected.resolve().parent
+    names = list(sources) or sorted(config.live_sources)
+    if not names:
+        raise click.ClickException(
+            "No live_sources in the config. Add one (server, database, repo, environment: dev); "
+            "see `coop-data-doc help snapshot` and the README."
+        )
+    results = []
+    for name in names:
+        try:
+            results.append(snapshot_source(config, name, if_older_than=if_older_than))
+        except LiveError as exc:
+            raise click.ClickException(f"snapshot of '{name}' failed: {exc}") from exc
+    if as_json:
+        click.echo(json.dumps({"command": "snapshot", "sources": [r.to_json() for r in results]}, indent=2))
+    for result in results:
+        if result.skipped:
+            click.echo(f"{result.source}: snapshot of {result.taken_at} is fresh; nothing read.", err=True)
+            continue
+        total = sum(result.counts.values())
+        kinds = ", ".join(f"{count} {kind}" for kind, count in sorted(result.counts.items())) or "no objects"
+        click.echo(
+            f"{result.source}: {total} object(s) ({kinds}) in {result.path}; "
+            f"{result.written} file(s) changed, {result.removed} removed.",
+            err=True,
+        )
+        if result.dependencies is None:
+            click.echo(
+                f"  warning: the database did not list its dependencies ({result.dependencies_error}); "
+                "lineage is not cross-checked.",
+                err=True,
+            )
+        for item in result.unread:
+            click.echo(
+                f"  warning: {item['type']} {item['schema']}.{item['name']} is not documented: {item['why']} "
+                "to this sign-in.",
+                err=True,
+            )
+        for item in result.renamed:
+            click.echo(
+                f"  warning: {item['type']} {item['schema']}.{item['name']} still declares the name "
+                f"'{item['declared']}' (renamed with sp_rename); the docs show it under that old name.",
+                err=True,
+            )
+    if then_build and any(not r.skipped for r in results):
+        _run_build(ctx, str(selected), True, False, False, False)
 
 
 @cli.command()

@@ -14,7 +14,15 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 DEFAULT_CONFIG = "coop-data-doc.yml"
 
@@ -168,6 +176,31 @@ def _within_discovery_roots(directory: Path) -> bool:
     return any(resolved == root or root in resolved.parents for root in roots)
 
 
+class LiveSource(BaseModel):
+    """A live development database whose object definitions `coop-data-doc snapshot`
+    writes into one of the configured repos (a folder of its own). Only that command
+    connects; scan/build read the written files. No password is ever configured:
+    sign-in is Entra ID (`az login`) or Windows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    server: str
+    database: str
+    # the repo key (under `repos`) whose folder receives the snapshot
+    repo: str
+    # must say dev: a snapshot refuses any other value (fail closed)
+    environment: str = ""
+    auth: Literal["entra", "windows"] = "entra"
+    tenant_id: str | None = None
+
+    @field_validator("server", "database", "repo")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be empty")
+        return value.strip()
+
+
 class Config(BaseModel):
     """Validated coop-data-doc.yml. Relative paths resolve against the
     config file's directory, not the current working directory.
@@ -197,6 +230,8 @@ class Config(BaseModel):
     # parsed lineage is checked against; a missed reference becomes a
     # catalog_dependency_unparsed warning. Paths resolve against this file's folder.
     catalog_dependencies: list[str] = Field(default_factory=list)
+    # live development databases `coop-data-doc snapshot` writes into a repo folder
+    live_sources: dict[str, LiveSource] = Field(default_factory=dict)
 
     @field_validator("layers")
     @classmethod
@@ -205,6 +240,21 @@ class Config(BaseModel):
         if bad:
             raise ValueError(f"unknown layer(s) {bad}; valid layers are {list(VALID_LAYERS)}")
         return value
+
+    @model_validator(mode="after")
+    def _check_live_sources(self) -> Config:
+        taken: dict[str, str] = {}
+        for name in sorted(self.live_sources):
+            repo = self.live_sources[name].repo
+            if repo not in self.repos:
+                raise ValueError(f"live_sources.{name}.repo names '{repo}', which is not under `repos`")
+            if repo in taken:
+                raise ValueError(
+                    f"live_sources.{name} and live_sources.{taken[repo]} both write to repo '{repo}'; "
+                    "give each live source a repo folder of its own"
+                )
+            taken[repo] = name
+        return self
 
     # directory of the loaded config file; relative paths resolve against it
     _base_dir: Path = PrivateAttr(default=Path("."))
@@ -412,7 +462,7 @@ ignore_schemas: {ignore_schemas}
 # to this file; colors as hex). Leave empty for the default theme.
 {branding_block}
 
-{catalog_dependencies_block}output:
+{catalog_dependencies_block}{live_sources_block}output:
   dir: {output_dir}        # markdown docs (for agents)
   site_dir: {site_dir}     # html portal (for humans)
 
@@ -442,6 +492,7 @@ def render_config_yaml(
     sql_dialect: str = "tsql",
     coverage: dict[str, dict] | None = None,
     catalog_dependencies: list[str] | None = None,
+    live_sources: dict[str, dict] | None = None,
 ) -> str:
     """Render a commented coop-data-doc.yml from values.
 
@@ -533,6 +584,24 @@ def render_config_yaml(
     else:
         catalog_dependencies_block = ""
 
+    if live_sources:
+        lines = [
+            "# Live development databases. `coop-data-doc snapshot` reads each one's object",
+            "# definitions (read-only, no data rows) into the named repo's folder; scan and",
+            "# build then read those files. `environment` must be dev.",
+            "live_sources:",
+        ]
+        for key, live in sorted(live_sources.items()):
+            lines.append(f"  {json.dumps(key)}:")
+            lines.extend(
+                f"    {field}: {json.dumps(live[field])}"
+                for field in ("server", "database", "repo", "environment", "auth", "tenant_id")
+                if live.get(field) not in (None, "")
+            )
+        live_sources_block = "\n".join(lines) + "\n\n"
+    else:
+        live_sources_block = ""
+
     coverage_block = ""
     if coverage:
         coverage_block = "\n# Declared coverage within the selected source/layer scope; omitted = unknown.\n"
@@ -551,4 +620,5 @@ def render_config_yaml(
         site_dir=json.dumps(site_dir),
         sql_dialect=json.dumps(sql_dialect),
         catalog_dependencies_block=catalog_dependencies_block,
+        live_sources_block=live_sources_block,
     )

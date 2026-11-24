@@ -40,6 +40,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff==0.16.1"]
+# Only `coop-data-doc snapshot` (reading a live dev database's catalog) needs
+# these; the offline pipeline never imports them. Also needs the ODBC Driver 18.
+live = ["pyodbc>=5.1", "azure-identity>=1.17"]
 
 [project.scripts]
 coop-data-doc = "coop_data_doc.cli:main"

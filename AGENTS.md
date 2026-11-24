@@ -42,7 +42,7 @@ Linux and macOS are equally supported; every command below is copy-paste on both
 - **Tests:** `.venv/bin/python -m pytest -q` — expect the full suite to pass in a few seconds, with zero failures.
 - **Lint:** `.venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests` — pass looks like `All checks passed!` then `N files already formatted`.
 - **Before starting any work:** `git pull --ff-only`. If the tree is dirty or the pull fails: stop and report — do not stash, reset, or commit around it.
-- **Secrets:** none exist and none are needed (the pipeline is offline). Never add tokens, connection strings, or credentials to code, config, or fixtures.
+- **Secrets:** none exist and none are needed (the pipeline is offline; `snapshot` signs in with the machine's own Entra ID or Windows sign-in and accepts no password). Never add tokens, connection strings, or credentials to code, config, or fixtures.
 - **Releases:** pushing a `v*` tag publishes to PyPI (`.github/workflows/publish.yml`). Never create or push a `v*` tag unless Aaron explicitly requested a release and named the version — a clean tree or a finished task is **not** a release signal.
 - **Headless machines (VPS/CI):** run only this repo's unit tests and fixtures. The full-corpus reference estates (`fabric` / `fabric-dw`, see `CONTRIBUTING.md` → Testing strategy) live on Azure DevOps with interactive-only auth and **cannot be cloned or pulled headlessly**; any task needing them (full estate builds, the ~948-object benchmark) is Aaron's-Mac-only — report it back instead of attempting it.
 
@@ -141,6 +141,7 @@ opt-in. `config-set` accepts it like any other key.
 | `coop-data-doc config-set` | Apply a JSON patch to the config, non-interactively | `--from-json` (file or `-`), `--config` |
 | `coop-data-doc resolve` | List ambiguous cross-repo links + candidates (JSON) | `--config` |
 | `coop-data-doc resolve-apply` | Write link decisions to the cache (run `build` separately to apply them) | `--from-json` (file or `-`), `--config` |
+| `coop-data-doc snapshot [SOURCE...]` | Read each `live_sources` dev database's catalog into its repo folder (the only database-connected command; see "Live dev database snapshot") | `--build`, `--if-older-than DAYS`, `--json`, `--config` |
 | `coop-data-doc upgrade` | Check for a newer release and print the upgrade command (does **not** self-update) | — |
 | `coop-data-doc help [CMD]` | Show help | — |
 
@@ -299,6 +300,76 @@ Skipped: referencing objects not in the graph, referenced objects in ignored or
 not-included schemas, sequences, `#temp` tables and table variables. Neither the
 list nor the parser sees inside dynamic SQL.
 
+## Live dev database snapshot (`live_sources`, `snapshot`)
+
+For an estate whose SQL is not in a repo. The config names a development database
+and the repo folder that receives its definitions:
+
+```yaml
+repos:
+  warehouse: {path: ./live/warehouse, include: ["**/*.sql"]}
+live_sources:
+  dev_warehouse:
+    server: <host>
+    database: <name>
+    repo: warehouse      # a key under repos; one repo per live source
+    environment: dev     # required: any other value is refused before connecting
+    # auth: entra (default, the machine's `az login`) | windows;  tenant_id: optional
+```
+
+`coop-data-doc snapshot` is the **only** command that opens a database connection;
+`scan` / `build` / `check` / `lineage` read the written files and never connect. It
+needs the optional `live` extra (`pyodbc`, `azure-identity`) and the ODBC Driver 18.
+
+- **Reads** (SELECT on catalog views, `ApplicationIntent=ReadOnly`, no data rows):
+  `sys.objects`, `sys.sql_modules`, `sys.columns`, `sys.sql_expression_dependencies`.
+  Left out: the `sys`, `INFORMATION_SCHEMA`, `queryinsights`, `_rsc` and `sqlsc` schemas.
+- **Writes**, in the repo folder: `Tables/`, `Views/`, `Stored Procedures/`,
+  `Functions/`, `Triggers/` with one `<schema>.<name>.sql` each (modules as stored;
+  a table as a plain `CREATE TABLE` of its columns), `Dependencies.json` (the
+  `sqlsc dependencies` shape, picked up without a `catalog_dependencies` entry) and
+  `.coop-data-doc-snapshot.json` (the manifest: `taken_at`, counts, `unread`,
+  `renamed`, `files`).
+- **All or nothing:** the whole catalog is read before any file is written; a failed
+  read leaves the previous snapshot untouched. Only files named in the previous
+  manifest are deleted. A folder holding anything a snapshot did not write is refused.
+- `--if-older-than DAYS` skips a source whose `taken_at` is younger, without
+  connecting (`skipped: true`). `--build` runs a non-interactive `build` when at
+  least one snapshot was taken.
+- **Exit codes:** `0` done (also when skipped); `1` not configured, not a dev
+  source, the extra or driver missing, sign-in or connection failed, or the folder
+  refused. Warnings never change the exit code.
+
+**Two live sources (a Warehouse and a Lakehouse).** A three-part reference
+`<database>.<schema>.<name>` joins the object the live source for that database
+documents, when exactly one live source names the database and the object's file is
+in that source's repo and in no other live source's repo. Otherwise it stays a
+definition-less placeholder (never guess lineage). Objects are identified by
+`schema.name` without the database, so the same `schema.name` in two live sources
+is one object in the docs: that is reported as `live_source_name_collision`, and a
+reference to it as `cross_database_ambiguous`. Both are advisory warnings.
+
+`--json` prints, on stdout:
+
+```json
+{"command": "snapshot", "sources": [{
+  "source": "dev_warehouse", "path": "/abs/live/warehouse", "skipped": false,
+  "taken_at": "2026-11-24T06:00:00Z",
+  "counts": {"procedure": 12, "table": 40, "view": 31},
+  "written": 3, "removed": 1,
+  "unread": [{"schema": "dbo", "name": "v_secret", "type": "view", "why": "no definition visible"}],
+  "renamed": [{"schema": "dbo", "name": "v_new", "type": "view", "declared": "v_old"}],
+  "dependencies": 118, "dependencies_error": null
+}]}
+```
+
+`unread` objects are absent from the docs (this sign-in lacks `VIEW DEFINITION`, the
+module is encrypted, or two names differ only by case). `renamed` modules are
+documented under the old name their stored `CREATE` still declares; nothing is
+rewritten (never guess lineage). `dependencies: null` means the platform did not list
+its dependencies and the lineage is not cross-checked. A snapshot sees what a repo
+would: not notebooks, pipelines, dataflows or shortcuts, and not inside dynamic SQL.
+
 ## sqlsc File Names (`sqlsc_declaration_mismatch`)
 
 In a repo kept by coop-sql-source-control (a `sqlsc.yml` at, above, or up to three
@@ -428,6 +499,7 @@ Use `--strict` to make unresolved items fatal (exit 2).
 |----------|--------|
 | `COOP_DATA_DOC_CONFIG` | Default config file path (overrides `./coop-data-doc.yml`) |
 | `COOP_DATA_DOC_JOBS` | Default SQL-parse worker count when `--jobs` is omitted (capped at 8, floored at 1; a non-integer is ignored). An explicit `--jobs N` always wins. Set `1` for pool-free, fully in-process runs. |
+| `COOP_DATA_DOC_CONNECT_TIMEOUT` | Seconds `snapshot` waits for a database sign-in in all, over two tries (default 90, minimum 5). Nothing else reads it. |
 | `COOP_DATA_DOC_DISCOVERY_ROOTS` | Fence for upward config discovery: `os.pathsep`-separated directories; only folders at or below one of them are searched for `coop-data-doc.yml`. Set it in a test suite, CI job or review sandbox so a run inside a disposable folder can never pick up a config above it and scan a real estate. `--config` and `COOP_DATA_DOC_CONFIG` are unaffected. The test suite's `conftest.py` sets it for every test. |
 
 ## Python API (Advanced)

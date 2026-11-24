@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from coop_data_doc import cross_database
 from coop_data_doc.config import Config, ParseWarning
 from coop_data_doc.graph.model import LineageGraph, NodeType, normalize_identifier
 from coop_data_doc.layering import SYSTEM_SCHEMAS
@@ -53,7 +54,19 @@ def load(config: Config) -> tuple[list[tuple[str, dict]], list[ParseWarning]]:
     plus a ``catalog_dependencies_unreadable`` warning for each file that can't be used."""
     entries: list[tuple[str, dict]] = []
     warnings: list[ParseWarning] = []
-    for raw in config.catalog_dependencies:
+    listed = list(config.catalog_dependencies)
+    resolved = {(config.base_dir / Path(raw).expanduser()).resolve() for raw in listed}
+    # a live source's snapshot carries its own list; use it when it is there
+    for name in sorted(config.live_sources):
+        repo = config.repos.get(config.live_sources[name].repo)
+        if repo is None:
+            continue
+        raw = (Path(repo.path) / "Dependencies.json").as_posix()
+        path = (config.base_dir / Path(raw).expanduser()).resolve()
+        if path not in resolved and path.is_file():
+            listed.append(raw)
+            resolved.add(path)
+    for raw in listed:
         path = (config.base_dir / Path(raw).expanduser()).resolve()
 
         def unreadable(why: str, raw: str = raw) -> None:
@@ -125,7 +138,11 @@ def check(graph: LineageGraph, config: Config, entries: list[tuple[str, dict]]) 
             )
             if out_of_scope(ref_key[0]):
                 continue
-            targets = by_key.get(ref_key, [])
+            targets = list(by_key.get(ref_key, []))
+            # a database a live source snapshots: its object is documented without the database
+            local = cross_database.local_schema(config, ref_key[0])
+            if local is not None:
+                targets += by_key.get((local, ref_key[1]), [])
             label = f"{ref_key[0]}.{ref_key[1]}"
         else:
             # the module names it without a schema and the database could not resolve

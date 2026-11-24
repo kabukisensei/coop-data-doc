@@ -62,8 +62,11 @@ Semver policy and rationale: `CONTRIBUTING.md` → "Releasing".
    proves it. Never parallelize a cross-file pass.
 2. **Offline pipeline** — no network/DB/LLM anywhere in doc generation;
    built HTML must work over `file://` (vendored assets in
-   `src/coop_data_doc/templates/assets/`). Sole exception: the explicit
-   `upgrade` command (`upgrade.py`); the pipeline never imports it.
+   `src/coop_data_doc/templates/assets/`). Two explicit commands are the
+   only exceptions, and the pipeline never imports either module: `upgrade`
+   (`upgrade.py`) and `snapshot` (`live.py`, which reads a live dev
+   database's catalog into source files that the offline pipeline then
+   reads; `tests/test_live_snapshot.py` proves the pipeline never loads it).
 3. **Pure parsers** (convention, reviewed not CI-enforced) — no print/exit
    outside `cli.py`, `wizard.py`, `progress.py`, and `linker/interactive.py`;
    warnings are returned as `ParseWarning` values.
