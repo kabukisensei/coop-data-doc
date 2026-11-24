@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,115 @@ def test_prune_invalid_persist_deletes_and_writes(tmp_path: Path):
     assert reloaded.mappings[valid].target == "view:sales.dim_customer"
 
 
+def _previous_cache(path: Path) -> bytes:
+    original = b'{"version": 1, "mappings": {"keep": {"method": "skip", "target": null}}}\n'
+    path.write_bytes(original)
+    return original
+
+
+def _stray_cache_files(directory: Path) -> list[str]:
+    return sorted(path.name for path in directory.iterdir() if path.name != ".lineage-cache.json")
+
+
+def test_replace_failure_keeps_previous_cache_removes_temp(tmp_path: Path, monkeypatch):
+    path = tmp_path / ".lineage-cache.json"
+    original = _previous_cache(path)
+    cache = LineageCache.load(path)
+    cache.mappings["new"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
+
+    def boom(*_a, **_k):
+        raise OSError("locked by another process")
+
+    monkeypatch.setattr(os, "replace", boom)
+    wrote = cache.write()
+    assert path.read_bytes() == original
+    assert _stray_cache_files(tmp_path) == []
+    assert wrote is False
+    assert [w.category for w in cache.warnings] == ["cache_write_failed"]
+    assert cache.mappings["new"].target == "view:sales.dim_customer"
+
+
+def test_fsync_failure_keeps_previous_cache_removes_temp(tmp_path: Path, monkeypatch):
+    path = tmp_path / ".lineage-cache.json"
+    original = _previous_cache(path)
+    cache = LineageCache.load(path)
+    cache.mappings["new"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
+
+    def boom(_fd):
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(os, "fsync", boom)
+    wrote = cache.write()
+    assert path.read_bytes() == original
+    assert _stray_cache_files(tmp_path) == []
+    assert wrote is False
+    assert [w.category for w in cache.warnings] == ["cache_write_failed"]
+
+
+def test_temp_write_failure_keeps_previous_cache_removes_temp(tmp_path: Path, monkeypatch):
+    path = tmp_path / ".lineage-cache.json"
+    original = _previous_cache(path)
+    cache = LineageCache.load(path)
+    cache.mappings["new"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "fdopen", boom)
+    wrote = cache.write()
+    assert path.read_bytes() == original
+    assert _stray_cache_files(tmp_path) == []
+    assert wrote is False
+    assert [w.category for w in cache.warnings] == ["cache_write_failed"]
+
+
+def test_put_persists_each_answer_immediately(tmp_path: Path, monkeypatch):
+    cache = cache_at(tmp_path)
+    writes = {"n": 0}
+    real_write = LineageCache.write
+
+    def counting(self):
+        writes["n"] += 1
+        return real_write(self)
+
+    monkeypatch.setattr(LineageCache, "write", counting)
+    cache.put("a", CacheEntry(target=None, method="skip"))
+    assert '"a"' in cache.path.read_text(encoding="utf-8")
+    cache.put("b", CacheEntry(target="view:sales.dim_customer", method="interactive"))
+    text = cache.path.read_text(encoding="utf-8")
+    assert '"a"' in text
+    assert '"b"' in text
+    assert writes["n"] == 2
+    assert _stray_cache_files(tmp_path) == []
+
+
+def test_write_keeps_existing_cache_permissions(tmp_path: Path):
+    """A rewrite keeps the mode the platform stored.
+
+    POSIX keeps every permission bit, so ``0o640`` round-trips. Windows
+    stores only the read-only flag. ``chmod(0o640)`` does not change that
+    flag, and ``stat`` reports the writable mode ``0o666`` either way, so
+    the exact group-read mode is asserted only on POSIX.
+    """
+    path = tmp_path / ".lineage-cache.json"
+    _previous_cache(path)
+    if os.name == "posix":
+        path.chmod(0o640)
+    before = path.stat().st_mode & 0o777
+    cache = LineageCache.load(path)
+    cache.mappings["new"] = CacheEntry(target=None, method="skip")
+    assert cache.write() is True
+    assert path.stat().st_mode & 0o777 == before
+
+
+def test_new_cache_file_matches_open_mode(tmp_path: Path):
+    probe = tmp_path / "opened.txt"
+    probe.write_text("x", encoding="utf-8")
+    cache = cache_at(tmp_path)
+    cache.put("a", CacheEntry(target=None, method="skip"))
+    assert cache.path.stat().st_mode & 0o777 == probe.stat().st_mode & 0o777
+
+
 def test_write_failure_records_warning_never_raises(tmp_path: Path, monkeypatch):
     # A locked/read-only .lineage-cache.json (Windows OneDrive/Defender) must not
     # crash write(): it records a cache_write_failed warning and returns False,
@@ -195,7 +305,7 @@ def test_write_failure_records_warning_never_raises(tmp_path: Path, monkeypatch)
     def boom(*_a, **_k):
         raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(os, "replace", boom)
     cache.mappings["k"] = CacheEntry(target="view:sales.dim_customer", method="interactive")
     assert cache.write() is False
     assert [w.category for w in cache.warnings] == ["cache_write_failed"]
@@ -211,7 +321,7 @@ def test_interactive_link_survives_unwritable_cache(tmp_path: Path, fake_q, monk
     def boom(*_a, **_k):
         raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(os, "replace", boom)
     graph = build_graph()
     result, warnings = link_graph(graph, make_config(), cache, interactive_mode=True)
 
