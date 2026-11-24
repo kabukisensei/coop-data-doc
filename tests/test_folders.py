@@ -9,6 +9,7 @@ from coop_data_doc import folders as F
 from coop_data_doc.cli import cli
 from coop_data_doc.config import Config
 from coop_data_doc.crawler import crawl
+from coop_data_doc.linker.cache import LineageCache
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -371,6 +372,34 @@ def test_resolve_lists_ambiguous_then_apply_resolves(tmp_path: Path):
     assert "pbi_table:sales.fact_sales" not in {u["cache_key"] for u in again["unresolved"]}
 
 
+def test_resolve_apply_writes_the_cache_once(tmp_path: Path, monkeypatch):
+    _workspace(tmp_path)
+    writes = {"n": 0}
+    real_write = LineageCache.write
+
+    def counting(self):
+        writes["n"] += 1
+        return real_write(self)
+
+    monkeypatch.setattr(LineageCache, "write", counting)
+    payload = json.dumps(
+        {
+            "decisions": [
+                {"cache_key": "pbi_table:sales.ext_unresolved", "external": True},
+                {"cache_key": "pbi_table:sales.orders_native", "skip": True},
+                {"cache_key": "pbi_table:sales.fact_sales", "target": "gold_table:dbo.fact_sales"},
+            ]
+        }
+    )
+    res = _run(["resolve-apply"], tmp_path, stdin=payload)
+    assert res.exit_code == 0, res.output
+    assert writes["n"] == 1
+    saved = LineageCache.load(tmp_path / ".lineage-cache.json")
+    assert saved.mappings["pbi_table:sales.ext_unresolved"].method == "external"
+    assert saved.mappings["pbi_table:sales.orders_native"].method == "skip"
+    assert saved.mappings["pbi_table:sales.fact_sales"].target == "gold_table:dbo.fact_sales"
+
+
 def test_resolve_apply_external_and_skip(tmp_path: Path):
     _workspace(tmp_path)
     payload = json.dumps(
@@ -401,7 +430,7 @@ def test_resolve_apply_fails_loud_on_unwritable_cache(tmp_path: Path, monkeypatc
     def boom(*_a, **_k):
         raise OSError("locked by another process")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(os, "replace", boom)
     decision = json.dumps(
         {"decisions": [{"cache_key": "pbi_table:sales.fact_sales", "target": "gold_table:dbo.fact_sales"}]}
     )

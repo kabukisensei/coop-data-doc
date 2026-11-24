@@ -1,8 +1,9 @@
 """Persistent resolution cache (Module 4).
 
 `.lineage-cache.json` lives next to the user's config and is meant to be
-committed: every interactive answer is written immediately (crash-safe),
-keys are sorted, and formatting is stable so diffs stay minimal.
+committed: every interactive answer is written immediately, keys are sorted,
+and formatting is stable so diffs stay minimal. The write replaces the file
+in one step, so a crash mid-save keeps the previous answers.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from coop_data_doc.atomic import atomic_write_text
 from coop_data_doc.config import ParseWarning
 from coop_data_doc.graph.model import LineageGraph
 
@@ -152,16 +154,17 @@ class LineageCache:
     def write(self) -> bool:
         """Persist with sorted keys and stable formatting for clean git diffs.
 
-        Returns True on a successful write. An ``OSError`` (a locked or
-        read-only file — Windows OneDrive/Defender routinely hold short-lived
-        locks on small JSON files) is caught, recorded on ``self.warnings`` as
-        a ``cache_write_failed`` warning, and reported as False rather than
-        crashing the caller. The mapping was already stored in memory before
-        this call, so a later successful ``write()`` in the same session
-        persists every accumulated answer — transient locks self-heal. Unlike
-        the derivable parse cache, these are human answers, so callers that
-        can't rely on a later write (``resolve-apply``) must check the return
-        value and surface a hard error.
+        Returns True on a successful write. An ``OSError`` (a locked file —
+        Windows OneDrive/Defender routinely hold short-lived locks on small
+        JSON files) is caught, recorded on ``self.warnings`` as a
+        ``cache_write_failed`` warning, and reported as False rather than
+        crashing the caller. There is no retry in this call. The mapping was
+        already stored in memory before this call, so a later successful
+        ``write()`` in the same session persists every accumulated answer —
+        transient locks self-heal. Unlike the derivable parse cache, these
+        are human answers, so callers that can't rely on a later write
+        (``resolve-apply``) must check the return value and surface a hard
+        error. A failed call leaves the previous file bytes unchanged.
         """
         payload = {
             "version": self.VERSION,
@@ -173,10 +176,9 @@ class LineageCache:
             },
         }
         try:
-            self.path.write_text(
+            atomic_write_text(
+                self.path,
                 json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-                newline="\n",
             )
         except OSError as exc:
             self.warnings.append(
