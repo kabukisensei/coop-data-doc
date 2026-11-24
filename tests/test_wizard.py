@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import questionary as _questionary
+import yaml
 
 from coop_data_doc import wizard, wizard_io
 from coop_data_doc.config import Config, render_config_yaml
@@ -1279,3 +1280,72 @@ def test_ctrl_c_writes_nothing(tmp_path: Path, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         wizard.run_setup(config_path)
     assert not config_path.exists()
+
+
+def test_layer_checkboxes_offer_the_schemas_of_every_kept_repo(tmp_path: Path, monkeypatch):
+    # A config with a second SQL repo (a second live source's folder, written
+    # by coop, never asked about by the wizard): its schemas are scanned and
+    # offered in the layer step too, a kept repo that is not on disk does not
+    # turn the scan off, and both repos and the live sources round-trip.
+    make_sql_estate(tmp_path)
+    lake = tmp_path / "live" / "lake" / "Tables"
+    lake.mkdir(parents=True)
+    (lake / "lh.customers.sql").write_text("CREATE TABLE lh.customers (id INT);\n", encoding="utf-8")
+    config_path = tmp_path / "coop-data-doc.yml"
+    config_path.write_text(
+        render_config_yaml(
+            project_name="Estate",
+            repos={
+                "sql": {"path": "./sql-repo", "include": ["**/*.sql"], "exclude": []},
+                "powerbi": {"path": "./pbi-repo", "include": ["**/*.tmdl"], "exclude": []},
+                "sql_lake": {"path": "./live/lake", "include": ["**/*.sql"], "exclude": []},
+                "sql_gone": {"path": "./live/not-read-yet", "include": ["**/*.sql"], "exclude": []},
+            },
+            mappings=[],
+            layers={},
+            output_dir="./docs",
+            site_dir="./site",
+            live_sources={
+                "dev_lake": {
+                    "server": "host.example",
+                    "database": "lake",
+                    "repo": "sql_lake",
+                    "environment": "dev",
+                },
+            },
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    captured: dict = {}
+
+    def router(kind, message, kwargs):
+        if kind == "checkbox" and "Gold layer" in message:
+            captured["gold"] = [c.value for c in kwargs["choices"]]
+            return ["lh"]
+        if kind == "checkbox" and "layer" in message:
+            return []
+        if "SQL repo path" in message:
+            return "./sql-repo"
+        if "Power BI repo path" in message:
+            return "./pbi-repo"
+        if "Markdown output" in message:
+            return "./docs"
+        if "HTML site" in message:
+            return "./site"
+        if kind == "checkbox":
+            return [c.value for c in kwargs.get("choices", [])]
+        if kind == "confirm":
+            return False
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(wizard_io, "questionary", RoutedQuestionary(router))
+    # Saved, though not runnable yet: one kept repo's folder is not on disk.
+    assert wizard.run_setup(config_path) is None
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "lh" in captured["gold"]  # the second repo's schema is offered
+    assert {"erp", "stg", "mart"} <= set(captured["gold"])  # with the first repo's
+    assert saved["layers"]["gold"]["schemas"] == ["lh"]
+    assert sorted(saved["repos"]) == ["powerbi", "sql", "sql_gone", "sql_lake"]
+    assert saved["repos"]["sql_lake"]["path"] == "./live/lake"
+    assert sorted(saved["live_sources"]) == ["dev_lake"]
