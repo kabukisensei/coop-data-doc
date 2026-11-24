@@ -19,7 +19,7 @@ from pathlib import Path
 import click
 import questionary
 
-from coop_data_doc import __version__, catalog_deps, sqlsc_layout
+from coop_data_doc import __version__, catalog_deps, cross_database, sqlsc_layout
 from coop_data_doc.config import (
     DEFAULT_PBI_INCLUDE,
     DEFAULT_SQL_EXCLUDE,
@@ -156,6 +156,8 @@ def build_graph(
     # no nodes, no diagnostics — must be flagged, never silently uncovered
     warnings += flag_silent_sql_files(sql_entries, graph, warnings)
     resolve_stub_references(graph)
+    # a three-part reference to a database a live source snapshots joins that object
+    warnings += cross_database.link(graph, config)
 
     tmdl = inventory.by_kind(FileKind.TMDL)
     bim = inventory.by_kind(FileKind.BIM)

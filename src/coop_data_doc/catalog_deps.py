@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from coop_data_doc import cross_database
 from coop_data_doc.config import Config, ParseWarning
 from coop_data_doc.graph.model import LineageGraph, NodeType, normalize_identifier
 from coop_data_doc.layering import SYSTEM_SCHEMAS
@@ -137,7 +138,11 @@ def check(graph: LineageGraph, config: Config, entries: list[tuple[str, dict]]) 
             )
             if out_of_scope(ref_key[0]):
                 continue
-            targets = by_key.get(ref_key, [])
+            targets = list(by_key.get(ref_key, []))
+            # a database a live source snapshots: its object is documented without the database
+            local = cross_database.local_schema(config, ref_key[0])
+            if local is not None:
+                targets += by_key.get((local, ref_key[1]), [])
             label = f"{ref_key[0]}.{ref_key[1]}"
         else:
             # the module names it without a schema and the database could not resolve

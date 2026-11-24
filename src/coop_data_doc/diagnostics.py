@@ -85,6 +85,10 @@ _SEVERITY: dict[str, str] = {
     # an sqlsc file (its name is the database's name) whose CREATE declares another
     # object, e.g. one renamed after it was scripted: documented as declared, never a gate
     "sqlsc_declaration_mismatch": "warning",
+    # two live sources define the same schema.name (one node holds both), and a
+    # cross-database reference that therefore could not be joined: never a gate
+    "live_source_name_collision": "warning",
+    "cross_database_ambiguous": "warning",
     # a classified .sql file that contributed zero nodes and zero warnings
     # (unsupported DDL, empty file) — a coverage gap, never silent (issue #31)
     "sql_no_objects": "warning",

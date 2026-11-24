@@ -340,6 +340,15 @@ needs the optional `live` extra (`pyodbc`, `azure-identity`) and the ODBC Driver
   source, the extra or driver missing, sign-in or connection failed, or the folder
   refused. Warnings never change the exit code.
 
+**Two live sources (a Warehouse and a Lakehouse).** A three-part reference
+`<database>.<schema>.<name>` joins the object the live source for that database
+documents, when exactly one live source names the database and the object's file is
+in that source's repo and in no other live source's repo. Otherwise it stays a
+definition-less placeholder (never guess lineage). Objects are identified by
+`schema.name` without the database, so the same `schema.name` in two live sources
+is one object in the docs: that is reported as `live_source_name_collision`, and a
+reference to it as `cross_database_ambiguous`. Both are advisory warnings.
+
 `--json` prints, on stdout:
 
 ```json

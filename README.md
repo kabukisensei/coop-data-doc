@@ -434,6 +434,14 @@ coop-data-doc snapshot --if-older-than 7 --build   # the same, at most once a we
   `VIEW DEFINITION`, or encrypted) is left out and named in the output, and so is a
   module renamed with `sp_rename`, whose stored text still declares the old name.
 
+- **A Warehouse and a Lakehouse:** give each its own repo folder and live source (a
+  Lakehouse's SQL analytics endpoint lists its tables like any database). A view that
+  reads `<lakehouse>.<schema>.<table>` joins the table the Lakehouse snapshot
+  documents. Objects are named `schema.name` without the database, so the same
+  `schema.name` in both is shown as one object and reported
+  (`live_source_name_collision`); a reference to it is not joined
+  (`cross_database_ambiguous`).
+
 What a snapshot cannot see is the same as for a repo: notebooks, pipelines, dataflows
 and shortcuts that load a table, and anything inside dynamic SQL.
 
