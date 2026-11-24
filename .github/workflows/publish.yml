@@ -69,16 +69,32 @@ jobs:
         run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
 
   website:
-    # The coop-website sync (its .github/workflows/sync-release.yml, which moves the
-    # site's badges, pins and changelog and opens the PR) is a reusable workflow in a
-    # PRIVATE repository, and GitHub lets only private repositories call those; this
-    # repository is public, so a `uses:` of it fails at planning and the tag's run
-    # never starts. This job prints the command a person runs in a coop-website clone.
-    needs: [build, release]
+    # After the GitHub Release exists, ask kabukisensei/coop-website to sync.
+    # This workflow runs only on tag push, so the tag is github.ref_name
+    # (there is no workflow_dispatch inputs.tag). The receiver expects
+    # event_type coop-release and client_payload {repo, tag} with tag vX.Y.Z.
+    # No `if:` — the release job is gated only by needs: publish, and this
+    # job waits on that same release job.
+    name: dispatch the coop-website sync
+    needs: [release]
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
-      - name: Say how to sync the site
+      - name: Dispatch coop-release
         env:
-          VERSION: ${{ needs.build.outputs.version }}
+          DISPATCH_TOKEN: ${{ secrets.COOP_WEBSITE_DISPATCH_TOKEN }}
+          TAG: ${{ github.ref_name }}
         run: |
-          echo "::warning::sync the site by hand in a coop-website clone:  bash scripts/sync-release.sh coop-data-doc $VERSION"
+          repo="${GITHUB_REPOSITORY#*/}"
+          if [ -z "${DISPATCH_TOKEN}" ]; then
+            echo "::notice title=coop-website sync skipped::No COOP_WEBSITE_DISPATCH_TOKEN secret. The release is published. Run the sync-release workflow in kabukisensei/coop-website by hand (repo: ${repo}, tag: ${TAG})."
+            exit 0
+          fi
+          if [ -z "${TAG}" ]; then echo "::error::No release tag to send."; exit 1; fi
+          payload="$(jq -n --arg repo "$repo" --arg tag "$TAG" '{event_type:"coop-release",client_payload:{repo:$repo,tag:$tag}}')"
+          curl --fail-with-body --silent --show-error --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data "${payload}" \
+            "https://api.github.com/repos/kabukisensei/coop-website/dispatches"

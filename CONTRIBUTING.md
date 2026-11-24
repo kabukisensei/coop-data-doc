@@ -134,4 +134,10 @@ config/output changes.
 
 Publishing is automated via trusted publishing (`.github/workflows/publish.yml`):
 push a matching tag — `git tag vX.Y.Z && git push origin vX.Y.Z` — and the release
-builds and uploads to PyPI on its own (no tokens). After the release is published, the workflow prints the coop-website sync command to run by hand (`bash scripts/sync-release.sh coop-data-doc X.Y.Z` in a site clone, which opens the site's sync pull request: badge, pins, changelog); the site's reusable sync workflow lives in a private repository, which a public repository like this one cannot call.
+builds and uploads to PyPI on its own (no tokens), then opens the GitHub Release.
+After that release job succeeds, the workflow dispatches a `coop-release` event to
+`kabukisensei/coop-website` (`client_payload` `repo` + `tag`, tag `vX.Y.Z`) so the
+site sync (badge, pins, changelog) runs automatically. The dispatch runs only when
+the `COOP_WEBSITE_DISPATCH_TOKEN` secret exists. Without it, the job prints a
+notice and succeeds; run the `sync-release` workflow in `kabukisensei/coop-website`
+by hand with `repo: coop-data-doc` and `tag: vX.Y.Z`.
