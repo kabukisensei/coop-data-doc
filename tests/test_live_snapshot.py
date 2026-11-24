@@ -28,6 +28,7 @@ OBJECTS = [
     (3, "dbo", "usp_load_customers", "P "),
     (4, "dbo", "fn_region", "IF"),
     (5, "queryinsights", "exec_requests_history", "V "),  # the platform's: never written
+    (8, "sqlsc", "ObjectLock", "U "),  # coop-sql-source-control's bookkeeping: never written
 ]
 MODULES = [
     (
@@ -53,6 +54,7 @@ COLUMNS = [
     (1, 1, "customer_id", "int", 4, 10, 0, False),
     (1, 3, "region", "nvarchar", 40, 0, 0, True),
     (1, 4, "balance", "decimal", 9, 18, 2, True),
+    (8, 1, "object_name", "varchar", 200, 0, 0, False),
 ]
 DEPENDENCIES = [
     ("sales", "dim_customer", "V ", "silver", "customers", "U ", None, None),

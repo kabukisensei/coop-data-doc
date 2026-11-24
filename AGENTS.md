@@ -323,6 +323,7 @@ needs the optional `live` extra (`pyodbc`, `azure-identity`) and the ODBC Driver
 
 - **Reads** (SELECT on catalog views, `ApplicationIntent=ReadOnly`, no data rows):
   `sys.objects`, `sys.sql_modules`, `sys.columns`, `sys.sql_expression_dependencies`.
+  Left out: the `sys`, `INFORMATION_SCHEMA`, `queryinsights`, `_rsc` and `sqlsc` schemas.
 - **Writes**, in the repo folder: `Tables/`, `Views/`, `Stored Procedures/`,
   `Functions/`, `Triggers/` with one `<schema>.<name>.sql` each (modules as stored;
   a table as a plain `CREATE TABLE` of its columns), `Dependencies.json` (the

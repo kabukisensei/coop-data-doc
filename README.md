@@ -418,7 +418,8 @@ coop-data-doc snapshot --if-older-than 7 --build   # the same, at most once a we
   `sys.sql_expression_dependencies`). Views, procedures, functions and triggers are
   written as the database stores them; each table becomes a plain `CREATE TABLE` of its
   columns. No rows of data are read, nothing is changed, and the connection asks for
-  read-only intent.
+  read-only intent. Fabric's own schemas (`queryinsights`, `_rsc`) and
+  coop-sql-source-control's bookkeeping schema (`sqlsc`) are left out.
 - **Sign-in:** Entra ID from the machine's `az login` (default), or `auth: windows` for
   a SQL Server on the domain. A password cannot be configured. Add `tenant_id` when the
   database is in another tenant. The machine needs the ODBC Driver 18 for SQL Server.

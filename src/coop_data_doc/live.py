@@ -57,8 +57,9 @@ TOKEN_SCOPE = "https://database.windows.net/.default"
 DEFAULT_CONNECT_DEADLINE = 90
 QUERY_TIMEOUT_SECONDS = 300
 
-# Schemas the platform owns (Fabric's query insights and result-set cache).
-_PLATFORM_SCHEMAS = frozenset({"sys", "information_schema", "queryinsights", "_rsc"})
+# Schemas that are never the team's: the platform's (Fabric's query insights and
+# result-set cache) and coop-sql-source-control's own bookkeeping tables (`sqlsc`).
+_PLATFORM_SCHEMAS = frozenset({"sys", "information_schema", "queryinsights", "_rsc", "sqlsc"})
 
 # sys.objects type code -> (folder, word used in Dependencies.json)
 _TYPES: dict[str, tuple[str, str]] = {
