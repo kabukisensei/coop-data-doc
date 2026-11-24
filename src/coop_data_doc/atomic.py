@@ -22,9 +22,9 @@ def atomic_write_text(path: Path | str, text: str) -> None:
 
     A locked destination raises ``OSError`` on that attempt. On any failure
     before the replace, the previous file is left as it was and the temporary
-    file is removed. The replaced file keeps the destination's permission
-    bits. A new file uses ``0o666`` masked by the process umask, the same as
-    ``open``.
+    file is removed. On POSIX the replaced file keeps the destination's
+    permission bits. Windows keeps only the read-only flag. A new file uses
+    ``0o666`` masked by the process umask, the same mode ``open`` creates.
     """
     destination = Path(path)
     directory = destination.parent

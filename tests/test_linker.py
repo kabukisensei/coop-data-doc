@@ -270,21 +270,30 @@ def test_put_persists_each_answer_immediately(tmp_path: Path, monkeypatch):
 
 
 def test_write_keeps_existing_cache_permissions(tmp_path: Path):
+    """A rewrite keeps the mode the platform stored.
+
+    POSIX keeps every permission bit, so ``0o640`` round-trips. Windows
+    stores only the read-only flag. ``chmod(0o640)`` does not change that
+    flag, and ``stat`` reports the writable mode ``0o666`` either way, so
+    the exact group-read mode is asserted only on POSIX.
+    """
     path = tmp_path / ".lineage-cache.json"
     _previous_cache(path)
-    path.chmod(0o640)
+    if os.name == "posix":
+        path.chmod(0o640)
+    before = path.stat().st_mode & 0o777
     cache = LineageCache.load(path)
     cache.mappings["new"] = CacheEntry(target=None, method="skip")
     assert cache.write() is True
-    assert path.stat().st_mode & 0o777 == 0o640
+    assert path.stat().st_mode & 0o777 == before
 
 
-def test_new_cache_file_follows_umask(tmp_path: Path):
-    mask = os.umask(0)
-    os.umask(mask)
+def test_new_cache_file_matches_open_mode(tmp_path: Path):
+    probe = tmp_path / "opened.txt"
+    probe.write_text("x", encoding="utf-8")
     cache = cache_at(tmp_path)
     cache.put("a", CacheEntry(target=None, method="skip"))
-    assert cache.path.stat().st_mode & 0o777 == (0o666 & ~mask)
+    assert cache.path.stat().st_mode & 0o777 == probe.stat().st_mode & 0o777
 
 
 def test_write_failure_records_warning_never_raises(tmp_path: Path, monkeypatch):
