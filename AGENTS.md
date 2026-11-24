@@ -332,6 +332,11 @@ Azure CLI (`az account get-access-token`); it is never printed or logged.
   `sqlsc dependencies` shape, picked up without a `catalog_dependencies` entry) and
   `.coop-data-doc-snapshot.json` (the manifest: `taken_at`, counts, `unread`,
   `renamed`, `files`).
+- **The docs show the day of the read.** A live source's repo carries
+  `live_snapshot: "YYYY-MM-DD"` (UTC day of the manifest's `taken_at`) under
+  `coverage.sources.<repo>` in `graph.json` / `manifest.json`, and the index page's
+  coverage table says "read from the dev database on YYYY-MM-DD". The day only, so a
+  second read on one day leaves the docs byte-identical. No readable manifest: no date.
 - **All or nothing:** the whole catalog is read before any file is written; a failed
   read leaves the previous snapshot untouched. Only files named in the previous
   manifest are deleted. A folder holding anything a snapshot did not write is refused.

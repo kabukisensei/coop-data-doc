@@ -497,6 +497,33 @@ def test_cli_snapshot_json_and_build(tmp_path: Path, monkeypatch):
     assert again.exit_code == 0 and json.loads(again.stdout)["sources"][0]["skipped"] is True
 
 
+def test_the_docs_say_which_day_dev_was_read_and_count_no_power_bi_links(tmp_path: Path):
+    config_path = workspace(tmp_path)
+    take(config_path)
+    built = run(["build", "--non-interactive"], tmp_path)
+    assert built.exit_code == 0, built.output
+    # no Power BI table in the docs: nothing to link, so no "0 cross-repo links"
+    assert "lineage edges" in built.output and "cross-repo links" not in built.output
+    graph = json.loads((tmp_path / "data-docs" / "graph.json").read_text(encoding="utf-8"))
+    assert graph["coverage"]["sources"]["warehouse"]["live_snapshot"] == "2026-11-24"
+    assert "live_snapshot" not in graph["coverage"]["sources"]["sql"]
+    index = (tmp_path / "data-docs" / "index.md").read_text(encoding="utf-8")
+    assert "read from the dev database on 2026-11-24" in index
+    first = (tmp_path / "data-docs" / "graph.json").read_bytes()
+
+    # a second read on the same day leaves the docs byte-identical
+    take(config_path, now=NOW.replace(hour=23))
+    assert run(["build", "--non-interactive"], tmp_path).exit_code == 0
+    assert (tmp_path / "data-docs" / "graph.json").read_bytes() == first
+
+    # a manifest that cannot be read shows no date at all
+    (tmp_path / "live" / "warehouse" / ".coop-data-doc-snapshot.json").write_text("{", encoding="utf-8")
+    assert run(["build", "--non-interactive"], tmp_path).exit_code == 0
+    assert "read from the dev database" not in (tmp_path / "data-docs" / "index.md").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_cli_reports_a_missing_source_and_no_sources(tmp_path: Path):
     config_path = workspace(tmp_path)
     result = run(["snapshot", "nope"], tmp_path)

@@ -189,6 +189,9 @@ Markdown docs: /Users/you/repos/my-data-docs/data-docs
 HTML portal:   file:///Users/you/repos/my-data-docs/data-docs-site/index.html
 ```
 
+"Cross-repo links" counts the Power BI tables linked to the SQL object they load. A
+build with no Power BI tables has nothing to link and leaves that count out.
+
 A **Warnings** block is normal and informational — the build succeeded if you see the
 object count and the two output paths. (Each warning category is explained in
 [Troubleshooting](#troubleshooting).) The first run may also ask a few **mapping
