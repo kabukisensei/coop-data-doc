@@ -320,8 +320,10 @@ so **the schema *is* the folder** — listing `schemas` is all you need, and you
 schema). You can mix both — a node is assigned the first layer (gold → silver → bronze) hit
 by **either** its schema or its path — but most estates only ever fill in `schemas`. The
 setup wizard reflects this: it asks for schemas layer-by-layer (a checked schema is both
-included in the docs and assigned that layer — unchecked schemas are excluded) and only
-asks about folders if you opt into the "advanced" question.
+included in the docs and assigned that layer — unchecked schemas are excluded) and asks
+about folders only behind one "less common settings" question. That question (default No)
+also covers the HTML site folder, the schemas to drop and the site's logo and colors: No
+keeps what the config has, or the defaults for a new one.
 
 Each layer is optional — **omit `bronze` or `silver` entirely to skip it.** Anything no rule
 matches falls back to a read/write heuristic (a table that's only ever read → silver; one

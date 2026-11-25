@@ -90,6 +90,7 @@ def test_fresh_setup_with_layers(tmp_path: Path, monkeypatch):
         "Bronze layer — schemas": "erp_orders, erp_finance",
         "Silver layer — schemas": "stg",
         "Gold layer — schemas": "mart, common, silver",
+        "less common settings": True,  # the one gate in front of the six rare settings
         "FOLDER instead of a schema": True,  # opt into the advanced folder step
         "Gold layer — folder": "**/dim/**, **/fact/**",
     }
@@ -98,6 +99,8 @@ def test_fresh_setup_with_layers(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "coop-data-doc.yml"
 
     config = wizard.run_setup(config_path)
+    assert config.output.dir == "./docs"
+    assert config.output.site_dir == "./site"
 
     assert config is not None
     assert config.project_name == "My Estate"
@@ -185,7 +188,7 @@ def test_wizard_reprompts_when_site_dir_nested(tmp_path: Path, monkeypatch):
         if "HTML site" in message:
             return next(site_answers)
         if kind == "confirm":
-            return False
+            return "less common settings" in message
         return kwargs.get("default", "")
 
     fake = RoutedQuestionary(router)
@@ -1349,3 +1352,52 @@ def test_layer_checkboxes_offer_the_schemas_of_every_kept_repo(tmp_path: Path, m
     assert sorted(saved["repos"]) == ["powerbi", "sql", "sql_gone", "sql_lake"]
     assert saved["repos"]["sql_lake"]["path"] == "./live/lake"
     assert sorted(saved["live_sources"]) == ["dev_lake"]
+
+
+RARE_PROMPTS = (
+    "HTML site output",
+    "FOLDER instead",
+    "Schemas to DROP",
+    "Logo image",
+    "brand color",
+    "Accent color",
+)
+
+
+def test_wizard_keeps_rare_settings_behind_one_question(tmp_path: Path, monkeypatch):
+    # No (the default) asks none of the six and writes the defaults...
+    make_repos(tmp_path)
+    answers = {"SQL repo path": "./sql-repo", "Power BI repo path": "./pbi-repo"}
+    fake = RoutedQuestionary(default_router(answers))
+    monkeypatch.setattr(wizard_io, "questionary", fake)
+    config_path = tmp_path / "coop-data-doc.yml"
+    config = wizard.run_setup(config_path)
+    assert config is not None
+    asked = [msg for _, msg, _ in fake.calls]
+    assert sum("less common settings" in msg for msg in asked) == 1
+    assert not [msg for msg in asked if any(key in msg for key in RARE_PROMPTS)]
+    assert (config.output.dir, config.output.site_dir) == ("./data-docs", "./data-docs-site")
+    assert config.ignore_schemas == []
+
+    # ...and on a config that has them, No keeps every one as it is.
+    text = config_path.read_text(encoding="utf-8")
+    saved = yaml.safe_load(text)
+    saved["output"] = {"dir": "./md", "site_dir": "./html"}
+    saved["ignore_schemas"] = ["staging"]
+    saved["layers"] = {"gold": {"schemas": [], "paths": ["**/gold/**"]}}
+    saved["branding"] = {"logo": "logo.png", "primary_color": "#112233", "accent_color": "#445566"}
+    config_path.write_text(yaml.safe_dump(saved), encoding="utf-8")
+    answers = {"already exists": True, "SQL repo path": "./sql-repo", "Power BI repo path": "./pbi-repo"}
+    fake = RoutedQuestionary(default_router(answers))
+    monkeypatch.setattr(wizard_io, "questionary", fake)
+    again = wizard.run_setup(config_path)
+    assert again is not None
+    assert not [msg for _, msg, _ in fake.calls if any(key in msg for key in RARE_PROMPTS)]
+    assert (again.output.dir, again.output.site_dir) == ("./md", "./html")
+    assert again.ignore_schemas == ["staging"]
+    assert again.layers["gold"].paths == ["**/gold/**"]
+    assert (again.branding.logo, again.branding.primary_color, again.branding.accent_color) == (
+        "logo.png",
+        "#112233",
+        "#445566",
+    )

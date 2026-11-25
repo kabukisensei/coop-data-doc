@@ -760,30 +760,49 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
             base_dir,
         )
 
+    output_default = existing.output.dir if existing else "./data-docs"
     output_dir = (
-        io.text(
-            "output_dir",
-            "Markdown output folder:",
-            default=existing.output.dir if existing else "./data-docs",
-        ).strip()
-        or "./data-docs"
+        io.text("output_dir", "Markdown output folder:", default=output_default).strip() or output_default
     )
+
+    # Six settings almost every setup leaves alone (the HTML site folder,
+    # folder-based layers, schemas to drop, and the site's logo and two
+    # colors) sit behind one question. No keeps what the config has, or the
+    # defaults for a new one; every one of them is a key in the YAML too.
+    advanced = io.confirm(
+        "advanced",
+        "Also change the less common settings: HTML site folder, layers by folder, "
+        "schemas to drop, site logo and colors? (No keeps "
+        + ("what this config has" if existing else "the defaults")
+        + ")",
+        default=False,
+    )
+
     # The HTML site is rebuilt by wiping its folder, so it must sit beside the
     # markdown dir, never inside it. Default to a sibling and reject a conflict.
     site_default = existing.output.site_dir if existing else _sibling_site(output_dir)
     while True:
         site_dir = (
-            io.text(
-                "site_dir",
-                "HTML site output folder (must be separate from the markdown folder):",
-                default=site_default,
-            ).strip()
-            or site_default
+            (
+                io.text(
+                    "site_dir",
+                    "HTML site output folder (must be separate from the markdown folder):",
+                    default=site_default,
+                ).strip()
+                or site_default
+            )
+            if advanced
+            else site_default
         )
         out_abs = (base_dir / Path(output_dir).expanduser()).resolve()
         site_abs = (base_dir / Path(site_dir).expanduser()).resolve()
         if not output_dirs_conflict(out_abs, site_abs):
             break
+        if not advanced:
+            # Unasked, the saved site folder collides with the markdown folder
+            # just answered: take the sibling, which never collides.
+            site_default = _sibling_site(output_dir)
+            continue
         io.notice(
             "  ✗ The HTML site folder can't be the same as — or inside — the markdown\n"
             "    folder. Each build wipes the site folder, which would clobber your\n"
@@ -917,13 +936,17 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
             for layer in VALID_LAYERS
             if existing and layer in existing.layers
         }
-        if sql_path is None
+        if sql_path is None or not advanced
         else {}
     )
-    if sql_path is not None and io.confirm(
-        "layer_paths",
-        "Advanced: does any layer map to a FOLDER instead of a schema?",
-        default=had_paths,
+    if (
+        sql_path is not None
+        and advanced
+        and io.confirm(
+            "layer_paths",
+            "Advanced: does any layer map to a FOLDER instead of a schema?",
+            default=had_paths,
+        )
     ):
         for layer in VALID_LAYERS:
             existing_rule = existing.layers.get(layer) if existing else None
@@ -941,7 +964,7 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
         if schemas or paths:
             layers[layer] = {"schemas": schemas, "paths": paths}
 
-    if sql_path is not None:
+    if sql_path is not None and advanced:
         io.notice("\n── Schemas to drop ──")
         io.notice(
             "  Only the schemas checked above are documented, so most estates need nothing\n"
@@ -960,36 +983,41 @@ def run_setup(config_path: Path, io: WizardIO | None = None) -> Config | None:
 
     # --- optional company branding for the HTML site ---
     existing_brand = existing.branding if existing else None
-    io.notice("\n── Branding (optional — blank to skip) ──")
+    logo_default = existing_brand.logo if existing_brand and existing_brand.logo else ""
+    # colors default to the Cooptimize brand theme
+    primary_default = (
+        existing_brand.primary_color
+        if existing_brand and existing_brand.primary_color
+        else DEFAULT_PRIMARY_COLOR
+    )
+    accent_default = (
+        existing_brand.accent_color
+        if existing_brand and existing_brand.accent_color
+        else DEFAULT_ACCENT_COLOR
+    )
+    logo, primary, accent = logo_default, primary_default, accent_default
+    if advanced:
+        io.notice("\n── Branding (optional — blank to skip) ──")
+        logo = io.text(
+            "logo",
+            "Logo image path (shown in the site header; relative to this config):",
+            default=logo_default,
+        ).strip()
+        primary = io.text(
+            "primary_color",
+            "Primary brand color (hex; default = Cooptimize navy):",
+            default=primary_default,
+        ).strip()
+        accent = io.text(
+            "accent_color",
+            "Accent color (hex; default = Cooptimize red-orange):",
+            default=accent_default,
+        ).strip()
     branding: dict[str, str] = {}
-    logo = io.text(
-        "logo",
-        "Logo image path (shown in the site header; relative to this config):",
-        default=(existing_brand.logo if existing_brand and existing_brand.logo else ""),
-    ).strip()
     if logo:
         branding["logo"] = logo
-    # colors default to the Cooptimize brand theme; press Enter to keep it
-    primary = io.text(
-        "primary_color",
-        "Primary brand color (hex; default = Cooptimize navy):",
-        default=(
-            existing_brand.primary_color
-            if existing_brand and existing_brand.primary_color
-            else DEFAULT_PRIMARY_COLOR
-        ),
-    ).strip()
     if primary:
         branding["primary_color"] = primary
-    accent = io.text(
-        "accent_color",
-        "Accent color (hex; default = Cooptimize red-orange):",
-        default=(
-            existing_brand.accent_color
-            if existing_brand and existing_brand.accent_color
-            else DEFAULT_ACCENT_COLOR
-        ),
-    ).strip()
     if accent:
         branding["accent_color"] = accent
     # carry an existing favicon through unchanged (not prompted separately)
